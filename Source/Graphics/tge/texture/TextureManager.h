@@ -36,19 +36,32 @@ namespace Tga
 
 		void Update();
 
-		/* Requires DX11 includes */
-		ID3D11ShaderResourceView* GetDefaultNormalMapResource() const { return myDefaultNormalMapResource.Get(); }
+		/* Requires DX11 includes. DX11-only -- returns null under DX12, matching
+		   GetRenderTargetView()'s existing "no raw D3D11 view exists" convention
+		   for this port (unused externally today, checked via grep). */
+		ID3D11ShaderResourceView* GetDefaultNormalMapResource() const { return myDefaultNormalMapResource ? myDefaultNormalMapResource->GetShaderResourceView() : nullptr; }
 	private:
 		DXGI_FORMAT GetTextureFormat(struct ID3D11ShaderResourceView* aResourceView) const;
+		// DX12 counterpart of TryGetTexture's DDS/WIC/TGA loading block below
+		// -- see the .cpp for why this needs to be a wholly separate path
+		// rather than an inline branch (DirectXTex's *11-suffixed loaders
+		// this file otherwise uses take an ID3D11Device* directly; no DX12
+		// equivalent is vendored). Returns null on any load failure.
+		Texture* LoadTextureDx12(rhi::IDevice& aDevice, const char* aResolvedPathUtf8, const std::wstring& aResolvedPathW,
+		                          const char* aUnresolvedPath, TextureSrgbMode aSrgbMode, Texture* aExistingTexture);
 
 		std::unordered_map<StringId, std::unique_ptr<Texture>> myResourceViews;
 		void CreateErrorSquareTexture();
-		ComPtr<ID3D11ShaderResourceView> CreateWhiteSquareTexture();
+		void CreateWhiteSquareTexture();
 		void CreateDefaultNormalmapTexture();
 		void OnTextureChanged(StringId aFile);
-		
-		ComPtr<ID3D11ShaderResourceView> myFailedResource;
-		ComPtr<ID3D11ShaderResourceView> myDefaultNormalMapResource;
+
+		// Procedural fallback textures. Full Texture objects (not a raw
+		// ComPtr<ID3D11ShaderResourceView>, matching myWhiteSquareTexture's
+		// existing shape) so they can hold either backend's storage via
+		// CreateSolidTexture -- see the .cpp.
+		std::unique_ptr<Texture> myFailedResource;
+		std::unique_ptr<Texture> myDefaultNormalMapResource;
 		std::unique_ptr<Texture> myWhiteSquareTexture;
 	};
 }

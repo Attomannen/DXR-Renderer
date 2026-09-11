@@ -816,16 +816,22 @@ const PixelShader* DX11::ForceLoadPixelShader(const char* aShaderPath, bool addT
 	StringId id = StringRegistry::RegisterOrGetString(aShaderPath);
 	PixelShader& shader = ourLoadedPixelShaders[id];
 
-	HRESULT result;
-
 	std::ifstream file;
 	file.open(csoStream.GetData(), std::ios::binary);
 	std::string data = { std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>() };
-	result = DX11::Device->CreatePixelShader(data.data(), data.size(), nullptr, shader.shader.ReleaseAndGetAddressOf());
-	if (FAILED(result))
+
+	// DX11::Device is null under DX12 (see DX11::InitDx12) -- the raw
+	// ID3D11PixelShader object is a DX11-only bridge (PrepareRender binds via
+	// the RHI module below regardless of backend); skip it entirely on DX12
+	// rather than dereferencing a null device.
+	if (DX11::Device)
 	{
-		ourLoadedPixelShaders.erase(id);
-		return nullptr;
+		HRESULT result = DX11::Device->CreatePixelShader(data.data(), data.size(), nullptr, shader.shader.ReleaseAndGetAddressOf());
+		if (FAILED(result))
+		{
+			ourLoadedPixelShaders.erase(id);
+			return nullptr;
+		}
 	}
 	file.close();
 
@@ -833,6 +839,11 @@ const PixelShader* DX11::ForceLoadPixelShader(const char* aShaderPath, bool addT
 	{
 		if (shader.module) r->Destroy(shader.module);
 		shader.module = r->CreateShaderModule(rhi::ShaderKind::Pixel, data.data(), data.size());
+		if (!shader.module.IsValid() && !DX11::Device)
+		{
+			ourLoadedPixelShaders.erase(id);
+			return nullptr;
+		}
 	}
 
 	return &shader;
@@ -864,16 +875,23 @@ const VertexShader* DX11::ForceLoadVertexShader(const char* aShaderPath, bool ad
 	}
 #endif
 
-	HRESULT result;
-
 	std::ifstream file;
 	file.open(csoStream.GetData(), std::ios::binary);
 	shader.data = { std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>() };
-	result = DX11::Device->CreateVertexShader(shader.data.data(), shader.data.size(), nullptr, shader.shader.ReleaseAndGetAddressOf());
-	if (FAILED(result))
+
+	// DX11::Device is null under DX12 (see DX11::InitDx12) -- the raw
+	// ID3D11VertexShader object is a DX11-only bridge (shader.data, read
+	// above regardless of backend, is what both PrepareRender's RHI module
+	// bind and the input-layout reflection actually need); skip it entirely
+	// on DX12 rather than dereferencing a null device.
+	if (DX11::Device)
 	{
-		ourLoadedVertexShaders.erase(id);
-		return nullptr;
+		HRESULT result = DX11::Device->CreateVertexShader(shader.data.data(), shader.data.size(), nullptr, shader.shader.ReleaseAndGetAddressOf());
+		if (FAILED(result))
+		{
+			ourLoadedVertexShaders.erase(id);
+			return nullptr;
+		}
 	}
 	file.close();
 
@@ -881,6 +899,11 @@ const VertexShader* DX11::ForceLoadVertexShader(const char* aShaderPath, bool ad
 	{
 		if (shader.module) r->Destroy(shader.module);
 		shader.module = r->CreateShaderModule(rhi::ShaderKind::Vertex, shader.data.data(), shader.data.size());
+		if (!shader.module.IsValid() && !DX11::Device)
+		{
+			ourLoadedVertexShaders.erase(id);
+			return nullptr;
+		}
 	}
 
 	return &shader;
@@ -911,16 +934,22 @@ const ComputeShader* DX11::ForceLoadComputeShader(const char* aShaderPath, bool 
 	}
 #endif
 
-	HRESULT result;
-
 	std::ifstream file;
 	file.open(csoStream.GetData(), std::ios::binary);
 	std::string data = { std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>() };
-	result = DX11::Device->CreateComputeShader(data.data(), data.size(), nullptr, shader.shader.ReleaseAndGetAddressOf());
-	if (FAILED(result))
+
+	// DX11::Device is null under DX12 (see DX11::InitDx12) -- the raw
+	// ID3D11ComputeShader object is a DX11-only bridge (Dispatch binds via
+	// the RHI module below regardless of backend); skip it entirely on DX12
+	// rather than dereferencing a null device.
+	if (DX11::Device)
 	{
-		ourLoadedComputeShaders.erase(id);
-		return nullptr;
+		HRESULT result = DX11::Device->CreateComputeShader(data.data(), data.size(), nullptr, shader.shader.ReleaseAndGetAddressOf());
+		if (FAILED(result))
+		{
+			ourLoadedComputeShaders.erase(id);
+			return nullptr;
+		}
 	}
 	file.close();
 
@@ -928,6 +957,11 @@ const ComputeShader* DX11::ForceLoadComputeShader(const char* aShaderPath, bool 
 	{
 		if (shader.module) r->Destroy(shader.module);
 		shader.module = r->CreateShaderModule(rhi::ShaderKind::Compute, data.data(), data.size());
+		if (!shader.module.IsValid() && !DX11::Device)
+		{
+			ourLoadedComputeShaders.erase(id);
+			return nullptr;
+		}
 	}
 
 	return &shader;

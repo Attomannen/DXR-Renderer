@@ -42,6 +42,14 @@ bool Tga::Shader::SetInputLayout(std::vector<rhi::InputElement> someElements, co
 	if (!r || myInputElements.empty() || aVSBlob.empty())
 		return false;
 
+	// DX12 has no separate native input-layout object -- myInputElements
+	// (already set above) is fed directly into ResolveGraphicsPipeline's
+	// GraphicsPipelineDesc immediately before each draw (see
+	// Dx12CommandContext::SetInputLayout/ResolveGraphicsPipeline). myLayout
+	// (a DX11-only ID3D11InputLayout ComPtr) stays unused/empty on DX12.
+	if (r->GetBackend() == rhi::Backend::DX12)
+		return true;
+
 	void* native = r->CreateInputLayoutNative(myInputElements.data(), (uint32_t)myInputElements.size(),
 	                                          aVSBlob.data(), (uint32_t)aVSBlob.size());
 	if (!native)

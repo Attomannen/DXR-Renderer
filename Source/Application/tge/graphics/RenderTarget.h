@@ -24,7 +24,7 @@ class RenderTarget : public TextureResource
 	ComPtr<ID3D11RenderTargetView> myRenderTarget;
 	std::shared_ptr<const D3D11_VIEWPORT> myViewport;
 	mutable MigrationView<rhi::RtvHandle> myRhiRtv;       // lazily wraps myRenderTarget on DX11; owns the real handle directly on DX12 (bridge)
-	mutable MigrationView<rhi::TextureHandle> myRhiTexture; // DX12 only: keeps the owning texture alive (a D3D12 descriptor does not hold a ref like a D3D11 view does)
+	// myRhiTexture (DX12 only: keeps the owning texture alive) is inherited from TextureResource.
 	// True only for the DX12 swapchain's backbuffer wrapper (DX11::BackBuffer
 	// under -rhi=dx12): DX12's flip-model swapchain has a DIFFERENT resource
 	// per frame index, unlike DX11's single stable backbuffer, so this mode

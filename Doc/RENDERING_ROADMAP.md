@@ -513,11 +513,44 @@ subfolder. Four stages:
   **Net for milestone 3 so far**: DX12 now brings up its device, swapchain, backbuffer,
   depth buffer, AND a fully real, interactive ImGui UI, through the actual engine bootstrap —
   the frontier has moved from "can't create a depth buffer" to "can't load a texture asset."
-  **Still to do**: the DirectXTex `*11`→`*12` loader swap (`TextureManager.cpp` at minimum;
-  `CubemapPrefilter.cpp`'s `LoadBaseFromDDS`/`Export*` and `video.cpp`/`TextService.cpp`'s
-  `GetNativeSrv` uses share the same underlying gap) to get past scene/texture loading and
-  reach real 3D scene rendering; only then does the actual RenderDoc/PIX-clean,
-  visually-identical-to-DX11 checkpoint become pursuable.
+  **`TextureManager` DX12 texture loading — DONE, same day.** DirectXTex's `*11`-suffixed
+  loaders take an `ID3D11Device*` directly (no DX12 equivalent vendored); rather than adopt
+  the heavier DX12 loaders (their own `ResourceUploadBatch` + queue, handing back a raw
+  `ID3D12Resource*` with no adoption path into the RHI pool), used DirectXTex's
+  backend-agnostic CPU-side decode (`LoadFromDDSFile`/`LoadFromWICFile` → `ScratchImage`) fed
+  through the same `IDevice::CreateTexture(desc, subresources[], count)` path the procedural
+  fallback textures already used — `Dx12Device::CreateTexture`'s upload path was already
+  fully general over mip count and BC-compressed formats. New `TextureManager::LoadTextureDx12`
+  mirrors the DX11 loading block's exact trial order and gating; cubemaps/3D textures are
+  explicitly rejected with a clean error (not supported by this loader — `CubemapPrefilter`
+  handles those separately). `TextureResource` gained a shared `myRhiTexture` (hoisted up from
+  `RenderTarget`/`DepthBuffer`, deduplicating their identical declarations) and a new
+  `SetRhiTexture()` bridge for non-member code. Found and fixed two more real, **separate,
+  blocking** bugs along the way (not part of this fix but prerequisites to test it at all):
+  `DX11::ForceLoad{Vertex,Pixel,Compute}Shader` unconditionally dereferenced `DX11::Device`
+  (null under DX12) — would crash on the very first shader load; and `Shader::SetInputLayout`
+  unconditionally called the DX11-only `CreateInputLayoutNative` bridge instead of just using
+  the already-set `myInputElements` data DX12's PSO builder needs. Also added `fflush(stdout)`
+  to `Log::LogWrite` (a genuine, permanent fix — stdout is fully-buffered when piped/redirected,
+  so a real crash before a flush silently loses all prior console output, which is exactly what
+  made the first crash here look silent).
+  **Verified with real assets, not just "didn't crash":** `T_Default_c.dds` (1024×1024, 11 mip
+  levels — a full real mip chain) loads and creates correctly; cubemap DDSes hit the clean
+  rejection path; the engine then proceeds through `SpriteDrawer`/`ModelDrawer`/
+  `DeferredRenderer::Init()` (GI volume, shadow atlas, cluster grid, G-buffer all built) before
+  hitting a *different*, already-documented gap: `Dx12CommandContext::UpdateTexture`'s
+  mid-lifetime path (needed by `TextService`'s font atlas) — flagged as not-yet-implemented
+  back when milestone 2 shipped. DX11 regression-checked via a full `BENCH_SCREENSHOT` Sponza
+  run (not just process-liveness, given this touches the hottest texture-loading path in the
+  engine) — pixel-identical to the reference, before and after removing debug instrumentation.
+  **Frontier moved from "can't load a texture asset at all" to "can't re-upload a texture
+  after creation."**
+  **Still to do**: `UpdateTexture`'s mid-lifetime upload-heap copy path (unblocks `TextService`
+  and real text rendering under DX12) is the immediate next wall. Beyond that:
+  `CubemapPrefilter.cpp`'s own raw-D3D11 resource creation and `video.cpp`/`TextService.cpp`'s
+  remaining `GetNativeSrv` uses (still out of scope, per Stage 1's original accounting) —
+  only after those does the actual RenderDoc/PIX-clean, visually-identical-to-DX11 checkpoint
+  become pursuable.
   Checkpoint (unchanged): `-rhi=dx12` visually identical to `-rhi=dx11` on every scene +
   editor + Tutorials, PIX-clean, perf parity or better.
 - **Stage 3** — DXR inline `RayQuery` (SM 6.5) hardware-traced GI, replacing the Phase 6

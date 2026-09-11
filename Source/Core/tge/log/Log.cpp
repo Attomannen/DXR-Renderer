@@ -164,6 +164,10 @@ void Tga::Log::LogWrite(LogType aType, const char* aFile, int aLine, const char*
 	{
 		fprintf(stdout, "%s\n", printBuffer);
 	}
+	fflush(stdout);   // TEMP debugging aid: stdout is fully-buffered when
+	                  // redirected to a file/pipe (unlike a real console), so
+	                  // an unhandled crash loses everything printed so far
+	                  // unless flushed explicitly. Cheap enough to keep.
 
 	OutputDebugStringA(printBuffer);
 	OutputDebugStringA("\n");

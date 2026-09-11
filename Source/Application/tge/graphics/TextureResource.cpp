@@ -19,8 +19,20 @@ void TextureResource::SetAsResourceOnSlot(unsigned int aSlot) const
 
 void TextureResource::SetShaderResourceView(ID3D11ShaderResourceView* aSRV)
 {
+	myRhiTexture.Reset();
 	myRhiSrv.Reset();
 	mySRV = ComPtr<ID3D11ShaderResourceView>(aSRV);
+}
+
+void TextureResource::SetRhiTexture(rhi::TextureHandle aTexture, rhi::SrvHandle aSrv)
+{
+	mySRV.Reset();
+	// Reset() first -- overwriting .handle directly would leak whatever this
+	// instance previously owned (e.g. reloading an existing Texture in place).
+	myRhiTexture.Reset();
+	myRhiSrv.Reset();
+	myRhiTexture.handle = aTexture;
+	myRhiSrv.handle = aSrv;
 }
 
 rhi::SrvHandle TextureResource::GetSrv() const
