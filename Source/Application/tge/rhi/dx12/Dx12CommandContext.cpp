@@ -246,9 +246,19 @@ namespace Tga::rhi::dx12
 			if (rec->texture) TransitionResource(rec->texture, state);
 			if (rec->buffer)  TransitionResource(rec->buffer, ResourceState::GenericRead);
 		}
-		myBoundSrv[slot] = h;
-		if (HasStage(stage, ShaderStage::Vertex) || HasStage(stage, ShaderStage::Pixel)) mySrvTableDirtyGraphics = true;
-		if (HasStage(stage, ShaderStage::Compute)) mySrvTableDirtyCompute = true;
+		// Dirty-track on actual change, not on every call: a caller that rebinds
+		// the same handle every iteration of a loop (e.g. GenerateMips's mip
+		// chain reusing one sampler, or any repeated redundant bind) must not
+		// burn a fresh descriptor-table range each time -- see SetSampler's
+		// identical reasoning, which is where this was actually found to matter
+		// (the CBV/SRV/UAV scratch heap is far larger, so this is more a
+		// consistency fix here than a currently-hit limit).
+		if (myBoundSrv[slot] != h)
+		{
+			myBoundSrv[slot] = h;
+			if (HasStage(stage, ShaderStage::Vertex) || HasStage(stage, ShaderStage::Pixel)) mySrvTableDirtyGraphics = true;
+			if (HasStage(stage, ShaderStage::Compute)) mySrvTableDirtyCompute = true;
+		}
 	}
 
 	void Dx12CommandContext::SetShaderResources(ShaderStage stage, uint32_t firstSlot, uint32_t count, const SrvHandle* handles)
@@ -265,8 +275,12 @@ namespace Tga::rhi::dx12
 			if (rec->texture) TransitionResource(rec->texture, ResourceState::UnorderedAccess);
 			if (rec->buffer)  TransitionResource(rec->buffer, ResourceState::UnorderedAccess);
 		}
-		myBoundUav[slot] = h;
-		myUavTableDirtyCompute = true;
+		// See SetShaderResource's identical dirty-on-change reasoning.
+		if (myBoundUav[slot] != h)
+		{
+			myBoundUav[slot] = h;
+			myUavTableDirtyCompute = true;
+		}
 	}
 
 	void Dx12CommandContext::SetUnorderedAccesses(uint32_t firstSlot, uint32_t count, const UavHandle* handles)
@@ -278,6 +292,19 @@ namespace Tga::rhi::dx12
 	void Dx12CommandContext::SetSampler(ShaderStage stage, uint32_t slot, SamplerHandle h)
 	{
 		if (slot >= kNumSampler) return;
+		// Dirty-track on actual change, not on every call. The sampler scratch
+		// heap is hard-capped at 2048 (the real D3D12 hardware ceiling -- see
+		// kSamplerScratchPerFrame's comment -- there is no higher capacity to
+		// raise it to), and unlike the much larger CBV/SRV/UAV heap this limit
+		// is real and reachable: a caller that rebinds the identical sampler
+		// on every iteration of a loop (found 2026-09-12: GenerateMips's mip
+		// chain and CubemapPrefilter's per-mip prefilter dispatches both bind
+		// one fixed sampler dozens to hundreds of times per cubemap, across
+		// many cubemaps per GI-probe bake) was burning a fresh descriptor-
+		// table range every single time even though nothing had changed,
+		// exhausting the heap mid-frame well before any real variety of
+		// samplers was in play.
+		if (myBoundSampler[slot] == h) return;
 		myBoundSampler[slot] = h;
 		if (HasStage(stage, ShaderStage::Vertex) || HasStage(stage, ShaderStage::Pixel)) mySamplerTableDirtyGraphics = true;
 		if (HasStage(stage, ShaderStage::Compute)) mySamplerTableDirtyCompute = true;

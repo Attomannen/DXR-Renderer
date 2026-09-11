@@ -404,10 +404,16 @@ namespace Tga
         }
 
         // Run EquirectangularToCubemapCS
+        // NOTE: validity is `module.IsValid()`, not the raw `->shader` ComPtr --
+        // that's a DX11-only bridge ForceLoadComputeShader deliberately never
+        // populates on DX12 (see DX11.cpp), so checking it here always reads
+        // as "failed to load" under DX12 regardless of whether the shader
+        // actually loaded (found 2026-09-12: this silently disabled cubemap
+        // loading/prefiltering on DX12 while logging a misleading error).
         const ComputeShader* cs = DX11::LoadComputeShader("data/shaders/EquirectangularToCubemapCS");
-        if (!cs || !cs->shader) cs = DX11::LoadComputeShader("Shaders/EquirectangularToCubemapCS");
+        if (!cs || !cs->module.IsValid()) cs = DX11::LoadComputeShader("Shaders/EquirectangularToCubemapCS");
 
-        if (!cs || !cs->shader)
+        if (!cs || !cs->module.IsValid())
         {
             ERROR_PRINT("CubemapPrefilter: Could not load EquirectangularToCubemapCS.hlsl");
             return false;
@@ -494,10 +500,12 @@ namespace Tga
         }
 
         // Run CubeCrossToCubemapCS
+        // See EquirectangularToCubemapCS's load above for why this checks
+        // `module.IsValid()` and not the DX11-only `->shader` ComPtr.
         const ComputeShader* cs = DX11::LoadComputeShader("data/shaders/CubeCrossToCubemapCS");
-        if (!cs || !cs->shader) cs = DX11::LoadComputeShader("Shaders/CubeCrossToCubemapCS");
+        if (!cs || !cs->module.IsValid()) cs = DX11::LoadComputeShader("Shaders/CubeCrossToCubemapCS");
 
-        if (!cs || !cs->shader)
+        if (!cs || !cs->module.IsValid())
         {
             ERROR_PRINT("CubemapPrefilter: Could not load CubeCrossToCubemapCS.hlsl");
             return false;
@@ -749,13 +757,15 @@ namespace Tga
         }
 
         // Load Shaders
+        // See EquirectangularToCubemapCS's load above for why this checks
+        // `module.IsValid()` and not the DX11-only `->shader` ComPtr.
         const ComputeShader* specularCS = DX11::LoadComputeShader("data/shaders/PrefilterSpecularCS");
-        if (!specularCS || !specularCS->shader) specularCS = DX11::LoadComputeShader("Shaders/PrefilterSpecularCS");
+        if (!specularCS || !specularCS->module.IsValid()) specularCS = DX11::LoadComputeShader("Shaders/PrefilterSpecularCS");
 
         const ComputeShader* diffuseCS = DX11::LoadComputeShader("data/shaders/PrefilterDiffuseCS");
-        if (!diffuseCS || !diffuseCS->shader) diffuseCS = DX11::LoadComputeShader("Shaders/PrefilterDiffuseCS");
+        if (!diffuseCS || !diffuseCS->module.IsValid()) diffuseCS = DX11::LoadComputeShader("Shaders/PrefilterDiffuseCS");
 
-        if (!specularCS || !specularCS->shader || !diffuseCS || !diffuseCS->shader)
+        if (!specularCS || !specularCS->module.IsValid() || !diffuseCS || !diffuseCS->module.IsValid())
         {
             ERROR_PRINT("CubemapPrefilter: Failed to load PrefilterSpecularCS or PrefilterDiffuseCS.");
             return false;

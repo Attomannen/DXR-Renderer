@@ -1170,6 +1170,18 @@ namespace Tga::rhi::dx12
 	// ------------------------------------------------------------------ shaders / pipelines (milestone 2)
 	ShaderModuleHandle Dx12Device::CreateShaderModule(ShaderKind kind, const void* bytecode, size_t size)
 	{
+		// A genuinely missing/unreadable shader file reaches here with size==0
+		// (DX11::ForceLoad*Shader's file.open() failed silently, or the asset
+		// path just doesn't resolve on this try -- callers routinely try more
+		// than one candidate path and fall back on failure). DX11 catches this
+		// naturally: CreateXxxShader(nullptr, 0, ...) fails its own HRESULT
+		// check. DX12 has no equivalent validating call here, so returning a
+		// "valid" handle wrapping zero bytes would silently defeat every
+		// caller's `module.IsValid()` load-succeeded check (found 2026-09-12:
+		// this is exactly what made CubemapPrefilter's "try data/shaders/X,
+		// fall back to Shaders/X" logic skip the fallback and hand
+		// CreateComputePipelineState an empty compute shader).
+		if (!bytecode || size == 0) return {};
 		ShaderRec rec;
 		rec.kind = kind;
 		rec.bytecode.assign(static_cast<const uint8_t*>(bytecode), static_cast<const uint8_t*>(bytecode) + size);

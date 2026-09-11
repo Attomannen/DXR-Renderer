@@ -1095,7 +1095,11 @@ struct GameWorld::Impl
 			gss.UpdateGpuStates(true);
 
 			// skybox (fullscreen tri sampling the fallback cube at t0)
-			if (skyVS && skyVS->shader && skyPS && skyPS->shader)
+			// `.module.IsValid()`, not the DX11-only `->shader` ComPtr -- that's
+			// never populated on DX12 by design (see DX11::ForceLoad*Shader), so
+			// checking it here silently skipped the skybox draw on every DX12
+			// GI-probe capture (found 2026-09-12).
+			if (skyVS && skyVS->module.IsValid() && skyPS && skyPS->module.IsValid())
 			{
 				gss.Push();
 				gss.SetDepthStencilState(DepthStencilState::ReadOnlyLessOrEqual);
@@ -1182,7 +1186,8 @@ struct GameWorld::Impl
 				gss.SetCamera(cam);
 				gss.UpdateGpuStates(true);
 
-				if (!sealed && skyVS && skyVS->shader && skyPS && skyPS->shader)
+				// See the other skybox check above for why this is `.module.IsValid()`.
+				if (!sealed && skyVS && skyVS->module.IsValid() && skyPS && skyPS->module.IsValid())
 				{
 					gss.Push();
 					gss.SetDepthStencilState(DepthStencilState::ReadOnlyLessOrEqual);

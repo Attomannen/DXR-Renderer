@@ -510,6 +510,46 @@ subfolder. Four stages:
     the ImGui work.
   DX11 regression-checked after every change (process-liveness + `Game.sln`/`GameEditor.sln`
   both build 0 errors throughout).
+  **DX12 IBL cubemap prefiltering — fixed, RESOLVED (2026-09-12).** `CubemapPrefilter.cpp`
+  had been reporting `Failed to load PrefilterSpecularCS or PrefilterDiffuseCS` on every DX12
+  run all session (silently skipping specular/diffuse IBL prefiltering entirely, and — same
+  root cause — silently skipping the skybox draw in every DX12 GI-probe capture). Root cause,
+  found across 3 layers of the same underlying bug:
+  1. The "did it load" checks (`CubemapPrefilter.cpp` ×3 call sites, `GameWorld.cpp` ×2) tested
+     `shader->shader` — the DX11-only raw `ComPtr<ID3D11ComputeShader/VertexShader/PixelShader>`
+     — which `DX11::ForceLoad*Shader` deliberately never populates on DX12 (there's no
+     `ID3D11Device` to create it from). This made the check permanently read as "failed" on
+     DX12 regardless of whether the shader genuinely loaded. Fixed by switching all 5 sites to
+     the backend-agnostic `->module.IsValid()`, the same idiom `Dx12CommandContext::
+     GenerateMips` already used for its own VS/PS validity check.
+  2. That exposed a second, real bug the first one had been masking: `Dx12Device::
+     CreateShaderModule` allocated a "valid" module handle even for **zero-byte bytecode** —
+     so a shader file that genuinely failed to load (e.g. `CubemapPrefilter`'s "try
+     `data/shaders/X` first, fall back to `Shaders/X`" logic, where the first path doesn't
+     resolve to a real cooked asset) still reported `module.IsValid() == true`, skipping the
+     fallback and handing `CreateComputePipelineState` empty bytecode (`0x80070057`/
+     `E_INVALIDARG`, debug layer: *"A valid compute shader must be specified"*). DX11 never hit
+     this because its real `CreateComputeShader(nullptr, 0, ...)` call fails its own HRESULT
+     check naturally. Fixed: `CreateShaderModule` now returns a null handle for `size == 0`,
+     matching DX11's real behavior.
+  3. Fixing that let the prefilter's real compute dispatches run for the first time ever on
+     DX12 — which promptly hit the sampler descriptor-scratch-heap's hard 2048 ceiling (see
+     milestone 3's `GiProjectProbe` section below) mid-frame, since `GenerateMips`'s mip chain
+     and `GeneratePrefilteredCubemap`'s per-mip dispatch both rebind the *same* one fixed
+     sampler dozens to hundreds of times per cubemap. Root cause: `Dx12CommandContext::
+     SetSampler`/`SetShaderResource`/`SetUnorderedAccess` marked their descriptor table dirty
+     on **every call**, even when the bound handle hadn't actually changed — so a caller
+     rebinding an unchanged sampler every loop iteration burned a fresh table range each time
+     for nothing. Fixed generally (not per-caller): all three now compare against the
+     previously-bound handle and only mark dirty on an actual change — safe because a D3D12
+     root descriptor table stays bound across draws until explicitly rebound, so skipping the
+     reflush when nothing changed is correct, not just faster.
+  **Verified**: DX12 runs 200 frames clean (zero `DEVICE_HUNG`, zero asserts) with the real
+  prefilter pipeline now executing (`Prefiltering 8 mips` → `Generated prefiltered cubemap`
+  actually succeeding, previously always bailing out before reaching any GPU work). Re-ran
+  with the debug layer active: no new validation errors (the one isolated startup swapchain
+  message from the `DEVICE_HUNG` fix remains, unrelated). `BENCH_SCREENSHOT` comparison
+  DX11 vs DX12: visually consistent, no regression. DX11 regression-checked throughout.
   **Net for milestone 3 so far**: DX12 now brings up its device, swapchain, backbuffer,
   depth buffer, AND a fully real, interactive ImGui UI, through the actual engine bootstrap —
   the frontier has moved from "can't create a depth buffer" to "can't load a texture asset."

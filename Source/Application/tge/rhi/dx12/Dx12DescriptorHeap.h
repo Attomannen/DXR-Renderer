@@ -3,6 +3,7 @@
 #include <wrl/client.h>
 #include <vector>
 #include <cassert>
+#include <tge/log/Log.h>
 
 // Fixed-capacity descriptor heap with free-list slot allocation. One instance
 // per heap type (RTV, DSV, CBV/SRV/UAV, Sampler) on the DX12 device. Slot
@@ -65,7 +66,12 @@ namespace Tga::rhi::dx12
 		uint32_t AllocateRange(uint32_t count)
 		{
 			if (!myReservedSlotZero) { myReservedSlotZero = true; myNextFree = 1; }
-			assert(myNextFree + count <= myCapacity && "Dx12DescriptorHeap: scratch range exhausted -- raise its Init() capacity");
+			if (myNextFree + count > myCapacity)
+			{
+				ERROR_PRINT("Dx12DescriptorHeap: scratch range exhausted -- type=%d capacity=%u nextFree=%u count=%u -- raise its Init() capacity",
+					(int)myType, myCapacity, myNextFree, count);
+				assert(false && "Dx12DescriptorHeap: scratch range exhausted -- raise its Init() capacity");
+			}
 			uint32_t start = myNextFree;
 			myNextFree += count;
 			return start;
