@@ -16,17 +16,73 @@ rhi::DsvHandle DepthBuffer::GetDsv() const
 
 void DepthBuffer::SetAsActiveTarget()
 {
+	rhi::IDevice* dev = DX11::Rhi();
+	if (dev && dev->GetBackend() == rhi::Backend::DX12)
+	{
+		rhi::ICommandContext& ctx = dev->GetContext();
+		rhi::DsvHandle dsv = GetDsv();
+		ctx.SetRenderTargets(0, nullptr, dsv);
+		ctx.SetViewport(myViewport.TopLeftX, myViewport.TopLeftY, myViewport.Width, myViewport.Height, myViewport.MinDepth, myViewport.MaxDepth);
+		return;
+	}
+
 	DX11::Context->OMSetRenderTargets(0, nullptr, GetDepthStencilView());
 	DX11::Context->RSSetViewports(1, &myViewport);
 }
 
 void DepthBuffer::Clear(float aClearDepthValue /* = 1.0f */, uint8_t aClearStencilValue /* = 0 */)
 {
+	rhi::IDevice* dev = DX11::Rhi();
+	if (dev && dev->GetBackend() == rhi::Backend::DX12)
+	{
+		dev->GetContext().ClearDepthStencil(GetDsv(), aClearDepthValue, aClearStencilValue, true, true);
+		return;
+	}
 	DX11::Context->ClearDepthStencilView(myDepth.Get(), D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, aClearDepthValue, aClearStencilValue);
 }
 
 DepthBuffer DepthBuffer::Create(Vector2ui aSize)
 {
+	rhi::IDevice* rhiDev = DX11::Rhi();
+	if (rhiDev && rhiDev->GetBackend() == rhi::Backend::DX12)
+	{
+		rhi::TextureDesc desc = {};
+		desc.width = aSize.X;
+		desc.height = aSize.Y;
+		// The *logical* depth format goes here, not a typeless one -- CreateTexture
+		// checks IsDepth(desc.format) itself to decide the actual (typeless)
+		// resource format AND the DSV clear-value format; passing R32_Typeless
+		// directly skips that path and leaves the clear value format unset,
+		// which D3D12 rejects (CreateCommittedResource -> E_INVALIDARG) for a
+		// resource with the ALLOW_DEPTH_STENCIL flag.
+		desc.format = rhi::Format::D32_Float;
+		desc.bind = rhi::TextureBind::DepthStencil | rhi::TextureBind::ShaderResource;
+		desc.debugName = "DepthBuffer";
+
+		rhi::TextureHandle texHandle = rhiDev->CreateTexture(desc);
+		assert(texHandle.IsValid());
+
+		// Default descs: CreateDsv/CreateSrv both derive the correct DSV/linear-SRV
+		// formats automatically from the depth texture's own format when no
+		// override is given (see Dx12Device::CreateSrv/CreateDsv).
+		rhi::DsvHandle dsvHandle = rhiDev->CreateDsv(texHandle, {});
+		rhi::SrvHandle srvHandle = rhiDev->CreateSrv(texHandle, {});
+
+		DepthBuffer textureResult;
+		textureResult.myRhiTexture.handle = texHandle;
+		textureResult.myRhiDsv.handle = dsvHandle;
+		textureResult.myRhiSrv.handle = srvHandle;
+		textureResult.myViewport = {
+				0,
+				0,
+				static_cast<float>(aSize.X),
+				static_cast<float>(aSize.Y),
+				0,
+				1
+		};
+		return textureResult;
+	}
+
 	HRESULT result;
 	D3D11_TEXTURE2D_DESC desc = { 0 };
 	desc.Width = aSize.X;

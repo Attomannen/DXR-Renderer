@@ -19,7 +19,8 @@ class DepthBuffer : public TextureResource
 {
 	ComPtr<ID3D11DepthStencilView> myDepth = 0;
 	D3D11_VIEWPORT myViewport = {};
-	mutable MigrationView<rhi::DsvHandle> myRhiDsv;   // lazily wraps myDepth (bridge)
+	mutable MigrationView<rhi::DsvHandle> myRhiDsv;   // lazily wraps myDepth on DX11; owns the real handle directly on DX12 (bridge)
+	mutable MigrationView<rhi::TextureHandle> myRhiTexture; // DX12 only: keeps the owning texture alive (see RenderTarget's myRhiTexture)
 
 public:
 

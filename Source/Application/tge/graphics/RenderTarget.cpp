@@ -8,7 +8,16 @@ using namespace Tga;
 
 rhi::RtvHandle RenderTarget::GetRtv() const
 {
-	if (!myRhiRtv && myRenderTarget)
+	if (myIsDx12BackBuffer)
+	{
+		// DX12's flip-model swapchain has a different resource per frame
+		// index -- re-resolve the device's *current* backbuffer view every
+		// call rather than caching one (see the header's class comment).
+		rhi::IDevice* r = DX11::Rhi();
+		return r ? r->GetBackBufferRtv(mySrgbBackBuffer) : rhi::RtvHandle{};
+	}
+	if (myRhiRtv) return myRhiRtv.handle;   // already owns a real DX12 handle directly, or a cached DX11 wrap
+	if (myRenderTarget)
 		if (rhi::IDevice* r = DX11::Rhi())
 			myRhiRtv.handle = r->WrapNativeRtv(myRenderTarget.Get());
 	return myRhiRtv.handle;
@@ -41,23 +50,36 @@ RenderTarget RenderTarget::Create(Vector2ui aSize, rhi::Format aFormat)
 	rhi::RtvHandle rtvHandle = dev->CreateRtv(texHandle, {});
 	rhi::SrvHandle srvHandle = dev->CreateSrv(texHandle, {});
 
-	// The RHI's own handles are freed immediately below -- the ComPtrs just
-	// populated hold their own ref (GetNative*'s pointer is AddRef'd on
-	// assignment), so nothing depends on the pool entry staying alive. This
-	// sidesteps RenderTarget's copy semantics entirely: it's a value type
-	// (returned by value, reassigned wholesale on resize), so an owned
-	// rhi::TextureHandle with no ref-counting would need its own shared-
-	// ownership wrapper to copy safely -- not worth it when the existing
-	// ComPtr-based storage already does the job.
 	RenderTarget textureResult;
-	textureResult.myRenderTarget = static_cast<ID3D11RenderTargetView*>(dev->GetNativeRtv(rtvHandle));
-	textureResult.mySRV = static_cast<ID3D11ShaderResourceView*>(dev->GetNativeSrv(srvHandle));
 	textureResult.myViewport = std::make_shared<const D3D11_VIEWPORT>(D3D11_VIEWPORT{
 		0, 0, static_cast<float>(aSize.X), static_cast<float>(aSize.Y), 0, 1 });
 
-	dev->Destroy(rtvHandle);
-	dev->Destroy(srvHandle);
-	dev->Destroy(texHandle);
+	if (dev->GetBackend() == rhi::Backend::DX12)
+	{
+		// No raw view pointer exists to extract under DX12 -- the handles
+		// ARE the resource. Store them directly so MigrationView's destructor
+		// frees them when this RenderTarget is destroyed/reassigned, and its
+		// "copy does not propagate" semantics (each copy gets an independent
+		// empty handle) keep RenderTarget safely copyable -- the same
+		// property the DX11 lazy-wrap path already relies on for myRhiRtv/
+		// myRhiSrv, just fed directly instead of via a wrapped raw pointer.
+		// myRhiTexture additionally keeps the owning texture alive: unlike a
+		// D3D11 view, a D3D12 descriptor holds no reference of its own.
+		textureResult.myRhiTexture.handle = texHandle;
+		textureResult.myRhiRtv.handle = rtvHandle;
+		textureResult.myRhiSrv.handle = srvHandle;
+	}
+	else
+	{
+		// The RHI's own handles are freed immediately below -- the ComPtrs
+		// just populated hold their own ref (GetNative*'s pointer is AddRef'd
+		// on assignment), so nothing depends on the pool entry staying alive.
+		textureResult.myRenderTarget = static_cast<ID3D11RenderTargetView*>(dev->GetNativeRtv(rtvHandle));
+		textureResult.mySRV = static_cast<ID3D11ShaderResourceView*>(dev->GetNativeSrv(srvHandle));
+		dev->Destroy(rtvHandle);
+		dev->Destroy(srvHandle);
+		dev->Destroy(texHandle);
+	}
 	return textureResult;
 }
 
@@ -86,14 +108,33 @@ RenderTarget RenderTarget::Create(Vector2ui aSize, rhi::Format aFormat, rhi::For
 	rhi::SrvHandle srvHandle = dev->CreateSrv(texHandle, srvDesc);
 
 	RenderTarget textureResult;
-	textureResult.myRenderTarget = static_cast<ID3D11RenderTargetView*>(dev->GetNativeRtv(rtvHandle));
-	textureResult.mySRV = static_cast<ID3D11ShaderResourceView*>(dev->GetNativeSrv(srvHandle));
 	textureResult.myViewport = std::make_shared<const D3D11_VIEWPORT>(D3D11_VIEWPORT{
 		0, 0, static_cast<float>(aSize.X), static_cast<float>(aSize.Y), 0, 1 });
 
-	dev->Destroy(rtvHandle);
-	dev->Destroy(srvHandle);
-	dev->Destroy(texHandle);
+	if (dev->GetBackend() == rhi::Backend::DX12)
+	{
+		textureResult.myRhiTexture.handle = texHandle;
+		textureResult.myRhiRtv.handle = rtvHandle;
+		textureResult.myRhiSrv.handle = srvHandle;
+	}
+	else
+	{
+		textureResult.myRenderTarget = static_cast<ID3D11RenderTargetView*>(dev->GetNativeRtv(rtvHandle));
+		textureResult.mySRV = static_cast<ID3D11ShaderResourceView*>(dev->GetNativeSrv(srvHandle));
+		dev->Destroy(rtvHandle);
+		dev->Destroy(srvHandle);
+		dev->Destroy(texHandle);
+	}
+	return textureResult;
+}
+
+RenderTarget RenderTarget::CreateFromDeviceBackBuffer(bool aSrgb, Vector2ui aResolution)
+{
+	RenderTarget textureResult;
+	textureResult.myIsDx12BackBuffer = true;
+	textureResult.mySrgbBackBuffer = aSrgb;
+	textureResult.myViewport = std::make_shared<const D3D11_VIEWPORT>(D3D11_VIEWPORT{
+		0, 0, static_cast<float>(aResolution.X), static_cast<float>(aResolution.Y), 0, 1 });
 	return textureResult;
 }
 
@@ -169,11 +210,29 @@ RenderTarget RenderTarget::Create(ID3D11Texture2D* aTexture, DXGI_FORMAT aFormat
 
 void RenderTarget::Clear(Vector4f aClearColor)
 {
+	rhi::IDevice* dev = DX11::Rhi();
+	if (dev && dev->GetBackend() == rhi::Backend::DX12)
+	{
+		dev->GetContext().ClearRenderTarget(GetRtv(), &aClearColor.X);
+		return;
+	}
 	DX11::Context->ClearRenderTargetView(myRenderTarget.Get(), &aClearColor.X);
 }
 
 void RenderTarget::SetAsActiveTarget(DepthBuffer* aDepth)
 {
+	rhi::IDevice* dev = DX11::Rhi();
+	if (dev && dev->GetBackend() == rhi::Backend::DX12)
+	{
+		rhi::ICommandContext& ctx = dev->GetContext();
+		rhi::RtvHandle rtv = GetRtv();
+		rhi::DsvHandle dsv = aDepth ? aDepth->GetDsv() : rhi::DsvHandle{};
+		ctx.SetRenderTargets(1, &rtv, dsv);
+		if (myViewport)
+			ctx.SetViewport(myViewport->TopLeftX, myViewport->TopLeftY, myViewport->Width, myViewport->Height, myViewport->MinDepth, myViewport->MaxDepth);
+		return;
+	}
+
 	if(aDepth)
 	{
 		DX11::Context->OMSetRenderTargets(1, myRenderTarget.GetAddressOf(), aDepth->GetDepthStencilView());

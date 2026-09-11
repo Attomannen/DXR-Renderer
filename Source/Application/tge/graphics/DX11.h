@@ -77,6 +77,12 @@ public:
 	static void OnShaderFileChanged(StringId aShaderPath, ShaderType aShaderType);
 
 private:
+	// DX12 counterparts of Init/ResizeToWindowSize, selected via the TGE_RHI=dx12
+	// env var (see DX11::Init). Skip the raw D3D11 device/swapchain entirely and
+	// construct ourRhiDevice directly against the real window handle.
+	bool InitDx12(WindowsWindow* aWindowHandler);
+	bool ResizeToWindowSizeDx12();
+
 	static const PixelShader* ForceLoadPixelShader(const char* aShaderPath, bool addToFileWatcher = true);
 	static const VertexShader* ForceLoadVertexShader(const char* aShaderPath, bool addToFileWatcher = true);
 	static const ComputeShader* ForceLoadComputeShader(const char* aShaderPath, bool addToFileWatcher = true);

@@ -14,6 +14,7 @@ namespace Tga
 		case 0: r->Destroy(rhi::SrvHandle{ index, generation }); break;
 		case 1: r->Destroy(rhi::RtvHandle{ index, generation }); break;
 		case 2: r->Destroy(rhi::DsvHandle{ index, generation }); break;
+		case 3: r->Destroy(rhi::TextureHandle{ index, generation }); break;
 		}
 	}
 }

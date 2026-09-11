@@ -169,7 +169,17 @@ IDXGIAdapter* FindBestAdapter()
 bool DX11::Init(WindowsWindow* aWindowHandler)
 {
 	ourWindowHandler = aWindowHandler;
-	
+
+	// Backend selection: TGE_RHI=dx12 opts into the DX12 backend (Stage 2, in
+	// progress); anything else (unset included) keeps the shipping DX11 path
+	// below untouched. No CLI-flag plumbing exists yet, so this follows the
+	// codebase's existing BENCH_* env-var convention.
+	{
+		const char* rhiEnv = std::getenv("TGE_RHI");
+		if (rhiEnv && _stricmp(rhiEnv, "dx12") == 0)
+			return InitDx12(aWindowHandler);
+	}
+
 	HRESULT result;
 
 	DXGI_SWAP_CHAIN_DESC swapChainDesc = {};
@@ -298,8 +308,60 @@ bool DX11::Init(WindowsWindow* aWindowHandler)
 	return true;
 }
 
+bool DX11::InitDx12(WindowsWindow* aWindowHandler)
+{
+	ourWindowHandler = aWindowHandler;
+
+	uint32_t width = aWindowHandler->GetWidth();
+	uint32_t height = aWindowHandler->GetHeight();
+
+	rhi::DeviceDesc dd = {};
+	dd.nativeWindowHandle = aWindowHandler->GetWindowHandle();
+	dd.width = width;
+	dd.height = height;
+	dd.framesInFlight = 2;
+#if defined(_DEBUG)
+	dd.enableDebugLayer = true;
+#endif
+
+	ourRhiDevice = rhi::CreateDevice(rhi::Backend::DX12, dd);
+	if (!ourRhiDevice)
+	{
+		ERROR_PRINT("%s", "Failed to create DX12 device");
+		return false;
+	}
+
+	// No raw D3D11 device/context/swapchain under DX12 -- every remaining
+	// caller of these statics must go through the RHI (DX11::Rhi()) instead.
+	Device = nullptr;
+	Context = nullptr;
+	SwapChain = nullptr;
+
+	myBackBuffer = RenderTarget::CreateFromDeviceBackBuffer(true, { width, height });
+	myBackBufferNoSrgbConversion = RenderTarget::CreateFromDeviceBackBuffer(false, { width, height });
+	myDepthBuffer = Tga::DepthBuffer::Create({ width, height });
+
+	BackBuffer = &myBackBuffer;
+	BackBufferNoSrgbConversion = &myBackBufferNoSrgbConversion;
+	DepthBuffer = &myDepthBuffer;
+
+	ourRenderThreadId = std::this_thread::get_id();
+
+	// Unlike the DX11 path, deliberately skip SetAsActiveTarget() here: no
+	// command list has started recording yet (that happens on the first
+	// BeginFrame(), which binds the root signatures/descriptor heaps via
+	// Dx12Device::BeginFrame -> Dx12CommandContext::OnBeginFrame). BeginFrame()
+	// below unconditionally re-binds the backbuffer as the active target on
+	// every frame anyway, so nothing is lost.
+
+	return true;
+}
+
 bool DX11::ResizeToWindowSize()
 {
+	if (ourRhiDevice && ourRhiDevice->GetBackend() == rhi::Backend::DX12)
+		return ResizeToWindowSizeDx12();
+
 	ID3D11RenderTargetView* nullViews[] = { nullptr };
 	myContext->OMSetRenderTargets(ARRAYSIZE(nullViews), nullViews, nullptr);
 	myContext->OMSetDepthStencilState(0, 0);
@@ -358,6 +420,38 @@ bool DX11::ResizeToWindowSize()
 	return true;
 }
 
+bool DX11::ResizeToWindowSizeDx12()
+{
+	if (!ourWindowHandler) return false;
+
+	uint32_t width = ourWindowHandler->GetWidth();
+	uint32_t height = ourWindowHandler->GetHeight();
+
+	// The backbuffer wrappers hold no owned DX12 resources -- myIsDx12BackBuffer
+	// mode re-resolves the device's *current* backbuffer view every call (see
+	// RenderTarget::GetRtv) -- so nothing needs releasing there before the
+	// swapchain resizes. The depth buffer DOES own a real DX12 texture sized
+	// for the old resolution; drop it first so its MigrationView members
+	// release the old handles before we ask the device to resize.
+	myDepthBuffer = Tga::DepthBuffer();
+
+	if (!ourRhiDevice || !ourRhiDevice->Resize(width, height))
+	{
+		ERROR_PRINT("%s", "Could not resize DX12 swapchain!");
+		return false;
+	}
+
+	myBackBuffer = RenderTarget::CreateFromDeviceBackBuffer(true, { width, height });
+	myBackBufferNoSrgbConversion = RenderTarget::CreateFromDeviceBackBuffer(false, { width, height });
+	myDepthBuffer = Tga::DepthBuffer::Create({ width, height });
+
+	BackBuffer = &myBackBuffer;
+	BackBufferNoSrgbConversion = &myBackBufferNoSrgbConversion;
+	DepthBuffer = &myDepthBuffer;
+
+	return true;
+}
+
 void DX11::BeginFrame(Color aClearColor)
 {
 	if (ourRhiDevice) ourRhiDevice->BeginFrame();   // resets the RHI dynamic-constant ring
@@ -370,6 +464,16 @@ void DX11::BeginFrame(Color aClearColor)
 
 void DX11::EndFrame(bool aEnableVSync)
 {
+	// DX12's Dx12Device::EndFrame does the real present (it owns the swapchain);
+	// DX11::SwapChain is null under that backend, so presenting through it here
+	// would be a null-pointer dereference. The DX11 backend's own EndFrame is a
+	// no-op present, since DX11::SwapChain->Present below already did the work.
+	if (ourRhiDevice && ourRhiDevice->GetBackend() == rhi::Backend::DX12)
+	{
+		ourRhiDevice->EndFrame(aEnableVSync);
+		return;
+	}
+
 	if (aEnableVSync)
 	{
 		DX11::SwapChain->Present(1, 0);

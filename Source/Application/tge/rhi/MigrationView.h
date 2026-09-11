@@ -41,10 +41,11 @@ namespace Tga
 	private:
 		static constexpr int Kind()
 		{
-			// 0 = Srv, 1 = Rtv, 2 = Dsv (matches MigrationView.cpp dispatch)
+			// 0 = Srv, 1 = Rtv, 2 = Dsv, 3 = Texture (matches MigrationView.cpp dispatch)
 			if constexpr (std::is_same_v<H, rhi::SrvHandle>) return 0;
 			else if constexpr (std::is_same_v<H, rhi::RtvHandle>) return 1;
-			else return 2;
+			else if constexpr (std::is_same_v<H, rhi::DsvHandle>) return 2;
+			else return 3;
 		}
 	};
 }

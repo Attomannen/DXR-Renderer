@@ -421,11 +421,42 @@ subfolder. Four stages:
   **Still not implemented** (assert clearly if reached, nothing needs them yet):
   `ClearUnorderedAccessFloat`, `UpdateTexture`'s mid-lifetime path, `GenerateMips` (no DX12
   equivalent, needs a compute shader), timestamp queries, PIX markers, ImGui interop.
-  **Not yet wired into the live game** — `RenderTarget`/`DepthBuffer`/`TextureResource`'s
-  internal storage (`ComPtr<ID3D11RenderTargetView>` etc) cannot represent a DX12
-  descriptor-heap-based view at all, so no engine rendering code can run against this
-  backend until those three classes' storage is migrated to `rhi::Handle` types — milestone
-  3, the one large remaining piece. See memory `p5g3-dx12-port` for the full plan.
+  **Milestone 3 (in progress, 2026-09-11)**: `RenderTarget`/`DepthBuffer` storage migrated
+  to hold `rhi::Handle`s directly on DX12 (a `MigrationView<TextureHandle>` added alongside
+  the existing Rtv/Dsv/Srv ones, reusing its established "copy does not propagate, owner
+  destroys" semantics — no new ref-counting needed). `TextureResource` needed zero changes
+  (`GetSrv()` already preferred a populated `myRhiSrv` over the raw-pointer path).
+  `RenderTarget::Clear`/`SetAsActiveTarget`/`GetRtv` and `DepthBuffer::Clear`/
+  `SetAsActiveTarget`/`GetDsv` all branch on backend now. The DX12 swapchain's backbuffer
+  changes resource every frame (flip-model, unlike DX11's single stable backbuffer) — solved
+  with a dynamic-resolve mode (`RenderTarget::CreateFromDeviceBackBuffer`) that re-queries
+  `IDevice::GetBackBufferRtv()` every call instead of caching a handle.
+  `DX11::Init()`/`ResizeToWindowSize()` now branch on a `TGE_RHI=dx12` env var (no CLI-flag
+  plumbing exists yet) into `InitDx12()`/`ResizeToWindowSizeDx12()`, which construct the RHI
+  device directly against the real window handle and populate `BackBuffer`/
+  `BackBufferNoSrgbConversion`/`DepthBuffer` via the new factories, skipping the raw D3D11
+  device/swapchain block entirely. Also fixed a real bug this surfaced: `DX11::EndFrame()`
+  unconditionally called `DX11::SwapChain->Present(...)`, which is null under DX12 (the
+  DX12 backend presents its own swapchain from inside `Dx12Device::EndFrame`) — now branches.
+  **First real end-to-end run of the DX12 backend through the actual engine init path**
+  (not an isolated smoke test): `GameEditor_Debug.exe`/`GameMain_Debug.exe` launched with
+  `TGE_RHI=dx12` now get all the way through device/adapter/swapchain creation, backbuffer +
+  depth-buffer setup, and reach the first per-frame `BeginFrame()`. Caught and fixed one bug
+  along the way: `DepthBuffer::Create`'s DX12 branch was passing the typeless resource format
+  (`R32_Typeless`) instead of the logical depth format (`D32_Float`) to `CreateTexture`, which
+  needs the logical format itself to correctly derive both the typeless resource format *and*
+  the DSV clear-value format — D3D12 rejected the untyped clear value with `E_INVALIDARG`.
+  Fixed, rebuilt, reverified via the same launch.
+  It currently stops at `Dx12Device::GetNativeContext()` (an intentional `assert(false)`) —
+  this is the well-known, already-scoped-separately gap: `ImGuiInterface::Init()` runs
+  unconditionally in Debug builds (both Game and GameEditor) and calls
+  `ImGui_ImplDX11_Init` via the `GetNativeDevice`/`GetNativeContext` escape hatch, which has
+  no DX12 equivalent yet (`imgui_impl_dx11` → `imgui_impl_dx12` is explicitly a Stage 2
+  outline item, not part of milestone 3's scope). DX11 regression-checked throughout
+  (process-liveness smoke test after every change — zero impact on the shipping path).
+  **Still to do for milestone 3**: swap in `imgui_impl_dx12` (or stub ImGui out under DX12
+  temporarily) to get past that wall and reach real scene rendering; then the actual
+  RenderDoc/PIX-clean, visually-identical-to-DX11 checkpoint becomes possible to pursue.
   Checkpoint (unchanged): `-rhi=dx12` visually identical to `-rhi=dx11` on every scene +
   editor + Tutorials, PIX-clean, perf parity or better.
 - **Stage 3** — DXR inline `RayQuery` (SM 6.5) hardware-traced GI, replacing the Phase 6
