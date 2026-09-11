@@ -139,17 +139,37 @@ namespace Tga::rhi::dx12
 		List()->ClearDepthStencilView(h, flags, depth, stencil, 0, nullptr);
 	}
 
-	void Dx12CommandContext::ClearUnorderedAccessFloat(UavHandle, const float[4])
+	void Dx12CommandContext::ClearUnorderedAccessFloat(UavHandle h, const float rgba[4])
 	{
-		// ClearUnorderedAccessViewFloat needs BOTH a shader-visible GPU handle
-		// (easy -- copy into scratch like FlushComputeTables does) AND the raw
-		// ID3D12Resource* it views (this milestone's UavHandle only carries a
-		// heap slot index, via Pool<uint32_t,UavHandle> -- it doesn't remember
-		// which texture/buffer owns that view). No DX12 call site needs this
-		// yet (DeferredRenderer::ClearGi() only runs on the DX11 backend until
-		// milestone 3 wires the engine itself onto DX12), so it's deferred
-		// rather than guessed at.
-		assert(false && "Dx12: ClearUnorderedAccessFloat -- deferred, see comment");
+		// Implemented 2026-09-12: this milestone-2-era stub's original blocker
+		// ("UavHandle doesn't remember which texture/buffer owns that view") was
+		// closed by UavRec gaining owner texture/buffer fields (Dx12Device.h,
+		// same session as SetShaderResource/SetUnorderedAccess's owner-based
+		// auto-transitions) -- nothing left to defer.
+		UavRec* rec = myDevice.GetUav(h);
+		uint32_t* permSlot = myDevice.GetUavSlot(h);
+		if (!rec || !permSlot) return;
+
+		ID3D12Resource* resource = nullptr;
+		if (rec->texture) { if (TextureRec* t = myDevice.GetTexture(rec->texture)) resource = t->res.Get(); }
+		if (rec->buffer)  { if (BufferRec* b = myDevice.GetBuffer(rec->buffer))  resource = b->res.Get(); }
+		if (!resource) return;
+
+		// ClearUnorderedAccessViewFloat is unusual: it needs a CPU handle from a
+		// NON-shader-visible heap (the UAV's permanent, freelist-allocated one)
+		// *and* a GPU handle that is currently resident in the shader-visible
+		// heap actually bound on this command list. Copy the permanent
+		// descriptor into a fresh slot of this frame's own CBV/SRV/UAV scratch
+		// heap (already bound every frame via OnBeginFrame's SetDescriptorHeaps)
+		// just for this one call -- same pattern FlushGraphicsTables/
+		// FlushComputeTables use to populate their descriptor tables.
+		D3D12_CPU_DESCRIPTOR_HANDLE permCpu = myDevice.CbvSrvUavCpuHandle(*permSlot);
+		uint32_t scratchSlot = myDevice.CbvSrvUavScratch().AllocateRange(1);
+		D3D12_CPU_DESCRIPTOR_HANDLE scratchCpu = myDevice.CbvSrvUavScratch().Cpu(scratchSlot);
+		D3D12_GPU_DESCRIPTOR_HANDLE scratchGpu = myDevice.CbvSrvUavScratch().Gpu(scratchSlot);
+		myDevice.Raw()->CopyDescriptorsSimple(1, scratchCpu, permCpu, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+		List()->ClearUnorderedAccessViewFloat(scratchGpu, permCpu, resource, rgba, 0, nullptr);
 	}
 
 	// ---- pipeline state ----
@@ -437,29 +457,37 @@ namespace Tga::rhi::dx12
 	}
 
 	// ---- draw / dispatch ----
+	// LogDrawCall() calls below: match Dx11CommandContext's identical calls at each of its
+	// 4 Draw* sites -- a plain static counter (DX11.h), not a DX11-specific object, so it's
+	// backend-agnostic and safe here. Was missing entirely for DX12 (found 2026-09-12): every
+	// DX12 bench/perf-overlay draw-call count read 0 regardless of real scene complexity.
 	void Dx12CommandContext::Draw(uint32_t vertexCount, uint32_t startVertex)
 	{
 		ResolveGraphicsPipeline();
 		FlushGraphicsTables();
 		List()->DrawInstanced(vertexCount, 1, startVertex, 0);
+		Tga::DX11::LogDrawCall();
 	}
 	void Dx12CommandContext::DrawInstanced(uint32_t vertexCountPerInstance, uint32_t instanceCount, uint32_t startVertex, uint32_t startInstance)
 	{
 		ResolveGraphicsPipeline();
 		FlushGraphicsTables();
 		List()->DrawInstanced(vertexCountPerInstance, instanceCount, startVertex, startInstance);
+		Tga::DX11::LogDrawCall();
 	}
 	void Dx12CommandContext::DrawIndexed(uint32_t indexCount, uint32_t startIndex, int32_t baseVertex)
 	{
 		ResolveGraphicsPipeline();
 		FlushGraphicsTables();
 		List()->DrawIndexedInstanced(indexCount, 1, startIndex, baseVertex, 0);
+		Tga::DX11::LogDrawCall();
 	}
 	void Dx12CommandContext::DrawIndexedInstanced(uint32_t indexCount, uint32_t instanceCount, uint32_t startIndex, int32_t baseVertex, uint32_t startInstance)
 	{
 		ResolveGraphicsPipeline();
 		FlushGraphicsTables();
 		List()->DrawIndexedInstanced(indexCount, instanceCount, startIndex, baseVertex, startInstance);
+		Tga::DX11::LogDrawCall();
 	}
 	void Dx12CommandContext::Dispatch(uint32_t x, uint32_t y, uint32_t z)
 	{

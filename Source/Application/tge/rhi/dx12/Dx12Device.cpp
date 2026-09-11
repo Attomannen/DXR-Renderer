@@ -1346,17 +1346,37 @@ namespace Tga::rhi::dx12
 	void* Dx12Device::GetNativeTexture(TextureHandle) { assert(false && "Dx12: GetNativeTexture is a DX11-only legacy-interop bridge"); return nullptr; }
 	void* Dx12Device::ImGuiTextureId(SrvHandle h)
 	{
-		// imgui_impl_dx12 expects a GPU descriptor handle (as a UINT64), not a
-		// raw view pointer. NOTE (milestone 3): this predates the milestone-2
-		// dual-heap redesign and is very likely broken now -- myCbvSrvUavHeap
-		// is the PERMANENT, non-shader-visible storage heap; Gpu() on a
-		// non-shader-visible heap has no valid GPU handle to return at all.
-		// Unused so far (Viewport.cpp's ImGui::Image call is still raw DX11,
-		// a separately-documented gap) -- fix this alongside migrating that
-		// call site, not speculatively here. See Dx12Device.h's class comment.
-		uint32_t* slot = GetSrvSlot(h);
-		assert(slot && "Dx12: ImGuiTextureId milestone 2");
-		return slot ? reinterpret_cast<void*>(myCbvSrvUavHeap.Gpu(*slot).ptr) : nullptr;
+		// imgui_impl_dx12 expects a GPU descriptor handle (as a UINT64) that is
+		// resident in the heap ImGuiInterface::Render() actually binds before
+		// calling ImGui_ImplDX12_RenderDrawData -- myImGuiSrvHeap, NOT
+		// myCbvSrvUavHeap (the permanent, non-shader-visible storage heap;
+		// .Gpu() on that one isn't even a valid handle, let alone one in the
+		// currently-bound heap). Implemented 2026-09-12 alongside fixing
+		// Viewport.cpp's ImGui::Image call site to use this instead of the
+		// DX11-only TextureResource::GetShaderResourceView() raw pointer path
+		// (see SceneUtil.cpp's DrawOutlines for an identical DX12-unsafe call
+		// this session also fixed) -- this is the "fix alongside migrating
+		// that call site" the old comment here deferred to.
+		uint32_t* srcSlot = GetSrvSlot(h);
+		if (!srcSlot) return nullptr;
+
+		const uint64_t key = ((uint64_t)h.index << 32) | h.generation;
+		auto it = myImGuiTextureSlots.find(key);
+		uint32_t destSlot;
+		if (it != myImGuiTextureSlots.end())
+			destSlot = it->second;
+		else
+		{
+			destSlot = myImGuiSrvHeap.Allocate();
+			myImGuiTextureSlots.emplace(key, destSlot);
+		}
+
+		// Re-copy every call (cheap: one descriptor) rather than only on first
+		// insert -- a texture handle can survive a resize with a brand-new
+		// underlying resource/SRV at the same permanent slot index reused by
+		// the pool, so the cached ImGui-visible copy must be kept in sync.
+		myDevice->CopyDescriptorsSimple(1, myImGuiSrvHeap.Cpu(destSlot), myCbvSrvUavHeap.Cpu(*srcSlot), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		return reinterpret_cast<void*>(myImGuiSrvHeap.Gpu(destSlot).ptr);
 	}
 	void* Dx12Device::GetNativeCommandQueue() { return myQueue.Get(); }
 	void* Dx12Device::GetNativeCommandList()  { return myCmdList.Get(); }
@@ -1479,6 +1499,87 @@ namespace Tga::rhi::dx12
 		if (werr != 0 || !f) { ERROR_PRINT("Dx12Device::CaptureBackBufferPng: fopen failed errno=%d", (int)werr); return false; }
 		fwrite(bmp.data(), 1, bmp.size(), f);
 		fclose(f);
+		return true;
+	}
+
+	bool Dx12Device::ReadBackUintPixel4(TextureHandle texture, uint32_t x, uint32_t y, uint32_t outValues[4])
+	{
+		// Moved here from Viewport.cpp's MouseOver() (2026-09-12), which called
+		// straight into raw D3D11 (GetShaderResourceView()->GetResource(...),
+		// a null pointer on DX12 -- this was the actual, 100%-reproducible
+		// cause of GameEditor terminating with no error/dump the moment the
+		// mouse moved over the viewport under DX12). Same one-off synchronous
+		// readback pattern as CaptureBackBufferPng above (its own comment
+		// explains why: a dedicated upload command list + WaitForGpuIdle,
+		// rather than the main per-frame list).
+		TextureRec* t = myTextures.Get(texture);
+		if (!t || !t->res) return false;
+
+		D3D12_RESOURCE_DESC desc = t->res->GetDesc();
+		if (x >= desc.Width || y >= desc.Height) return false;
+
+		// D3D12_TEXTURE_DATA_PITCH_ALIGNMENT (256) -- the mandatory row-pitch
+		// alignment for a buffer used as a texture-copy destination. One pixel
+		// (16 bytes: 4x uint32) fits trivially inside a single aligned row.
+		const UINT rowPitch = 256;
+		D3D12_HEAP_PROPERTIES heapProps = { D3D12_HEAP_TYPE_READBACK };
+		D3D12_RESOURCE_DESC bufDesc = {};
+		bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		bufDesc.Width = rowPitch;
+		bufDesc.Height = 1; bufDesc.DepthOrArraySize = 1; bufDesc.MipLevels = 1;
+		bufDesc.SampleDesc.Count = 1;
+		bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+		ComPtr<ID3D12Resource> readback;
+		HRESULT hr = myDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
+			D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(readback.GetAddressOf()));
+		if (FAILED(hr)) { ERROR_PRINT("Dx12Device::ReadBackUintPixel4: readback CreateCommittedResource failed 0x%08X", (unsigned)hr); return false; }
+
+		myUploadAllocator->Reset();
+		myUploadCmdList->Reset(myUploadAllocator.Get(), nullptr);
+
+		const D3D12_RESOURCE_STATES before = t->state;
+		D3D12_RESOURCE_BARRIER toSrc = {};
+		toSrc.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		toSrc.Transition.pResource = t->res.Get();
+		toSrc.Transition.StateBefore = before;
+		toSrc.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+		if (before != D3D12_RESOURCE_STATE_COPY_SOURCE)
+			myUploadCmdList->ResourceBarrier(1, &toSrc);
+
+		D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
+		footprint.Footprint.Format = desc.Format;
+		footprint.Footprint.Width = 1;
+		footprint.Footprint.Height = 1;
+		footprint.Footprint.Depth = 1;
+		footprint.Footprint.RowPitch = rowPitch;
+
+		D3D12_TEXTURE_COPY_LOCATION dstLoc = { readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {} };
+		dstLoc.PlacedFootprint = footprint;
+		D3D12_TEXTURE_COPY_LOCATION srcLoc = { t->res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {} };
+		srcLoc.SubresourceIndex = 0;
+
+		D3D12_BOX box = { x, y, 0, x + 1, y + 1, 1 };
+		myUploadCmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, &box);
+
+		if (before != D3D12_RESOURCE_STATE_COPY_SOURCE)
+		{
+			D3D12_RESOURCE_BARRIER toOrig = toSrc;
+			std::swap(toOrig.Transition.StateBefore, toOrig.Transition.StateAfter);
+			myUploadCmdList->ResourceBarrier(1, &toOrig);
+		}
+
+		myUploadCmdList->Close();
+		ID3D12CommandList* lists[] = { myUploadCmdList.Get() };
+		myQueue->ExecuteCommandLists(1, lists);
+		WaitForGpuIdle();
+
+		D3D12_RANGE readRange = { 0, sizeof(uint32_t) * 4 };
+		void* mapped = nullptr;
+		if (FAILED(readback->Map(0, &readRange, &mapped))) return false;
+		memcpy(outValues, mapped, sizeof(uint32_t) * 4);
+		D3D12_RANGE writtenRange = { 0, 0 };
+		readback->Unmap(0, &writtenRange);
 		return true;
 	}
 }

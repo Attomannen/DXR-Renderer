@@ -118,6 +118,18 @@ namespace Tga::rhi
 		virtual bool CaptureBackBufferPng(const wchar_t* utf16Path) = 0;
 		virtual void* ImGuiFontSrvGpuHandle() = 0;
 
+		// ---- Synchronously reads back ONE pixel of `texture`, which must be
+		// R32G32B32A32_UINT (16 bytes: 4x uint32) -- built for the editor
+		// viewport's mouse-picking ID render target (Viewport.cpp's
+		// MouseOver()), its only caller; not a general-purpose readback API.
+		// Blocks the CPU until the GPU catches up (DX11: a blocking Map, its
+		// existing behavior before this moved into the RHI; DX12: a full
+		// WaitForGpuIdle -- both backends' already-established synchronous-
+		// readback idiom, e.g. CaptureBackBufferPng above, not a new perf
+		// class). Returns false (leaving outValues untouched) if `texture` is
+		// invalid or (x,y) is out of bounds.
+		virtual bool ReadBackUintPixel4(TextureHandle texture, uint32_t x, uint32_t y, uint32_t outValues[4]) = 0;
+
 		// ---- Stage-1 migration bridge: adopt a view created by legacy raw-D3D11
 		// code so the wrapper can hand out an rhi handle. Removed in Stage 2 when
 		// the wrappers create their resources through the RHI directly.

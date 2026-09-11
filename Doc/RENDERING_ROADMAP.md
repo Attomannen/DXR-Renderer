@@ -829,6 +829,99 @@ subfolder. Four stages:
   usable diagnostic tool going forward — opt in via `TGE_DX12_DEBUG_LAYER=1`
   (`TGE_DX12_GPU_VALIDATION=1` for GPU-based validation on top; both `_DEBUG`-only, off by default
   since GPU-based validation alone roughly halves frame rate).
+- **"Fix Stage 2" cleanup pass (2026-09-12) — closed every remaining known DX12 gap, including a
+  real GameEditor-crashing bug found live with the user.**
+  - **DX12 draw-call counter** — `Dx12CommandContext::Draw`/`DrawInstanced`/`DrawIndexed`/
+    `DrawIndexedInstanced` never called `DX11::LogDrawCall()` (a plain, backend-agnostic static
+    counter — the DX11 command context's 4 equivalent call sites already did). Every DX12 bench
+    report and perf-overlay reading showed 0 draw calls regardless of real scene complexity. Fixed
+    by adding the same call to all 4; verified DX12 now reports the same draw-call count as DX11
+    for the same scene at steady state (206 = 206) — an earlier apparent 1502-vs-1310 discrepancy
+    turned out to be the GI-probe-priming batch landing inside the averaging window differently
+    between runs, not a real per-frame difference.
+  - **DX12 cubemap/volume DDS loading** — `TextureManager::LoadTextureDx12` rejected every
+    cubemap DDS outright ("not supported through this loader"), silently falling back to a flat
+    solid-color cube for the engine's default/horizon ambient maps (and would reject any real
+    authored skybox asset too). The rest of the loader already handled arrays generically; only
+    cubemap-specific dimension bookkeeping was missing. Fixed: `TextureDimension::TexCube` (with
+    `depthOrArraySize` = `metadata.arraySize / 6`, since DirectXTex's `arraySize` for a cubemap is
+    already the total face count while the RHI's convention is "number of cubes") — `CreateSrv`
+    already auto-selects a `TEXTURECUBE` view for that dimension. Volume (3D) textures remain
+    unsupported (genuinely out of scope, matches `GenerateMips`'s stance). Verified: the
+    `whiteCubeMap.dds`/`horizonCubeMap.dds` rejection messages are gone, debug layer clean,
+    DX11-vs-DX12 screenshot comparison visually consistent.
+  - **`ClearUnorderedAccessFloat` implemented** — a milestone-2-era `assert(false)` stub whose
+    documented blocker ("`UavHandle` doesn't remember which texture/buffer owns that view") had
+    already been closed by the `DEVICE_HUNG` fix pass's `UavRec` owner fields, leaving nothing
+    to actually defer. Implemented properly: copies the UAV's permanent (non-shader-visible)
+    descriptor into a fresh slot of the current frame's own shader-visible CBV/SRV/UAV scratch
+    heap (already bound every frame), then calls `ClearUnorderedAccessViewFloat` with that GPU
+    handle + the permanent CPU handle, per the API's unusual dual-handle requirement. Feeds
+    `DeferredRenderer::ClearGi()`, which the automated bench never exercises (GI priming starts
+    active by default; `ClearGi()` only runs on an explicit re-prime, e.g. the editor's "Re-prime
+    GI" button, or a lighting-parameter change) — implemented and code-reviewed against the
+    already-proven `FlushGraphicsTables`/`FlushComputeTables` pattern in the same file, but not
+    exercised live this session.
+  - **Three real GameEditor-under-DX12 crashes found and fixed live with the user** (interactive
+    testing — the automated GameMain bench never touches editor-only code, so none of these were
+    visible before now). All three are the exact same bug class as the `DEVICE_HUNG` root cause's
+    sibling fixes: editor-only code calling straight into a DX11-only raw pointer/ComPtr that
+    `DX11::ForceLoad*Shader`/`TextureResource`/etc. never populate on DX12, missed by every earlier
+    migration pass since none of it is exercised by `GameMain`'s bench flow:
+    1. `SceneUtil.cpp::DrawOutlines` bound the viewport's ID/selection-outline render target via
+       `TextureResource::SetAsResourceOnSlot` (a raw `PSSetShaderResources` off a DX11-only
+       ComPtr) — `assert(mySRV.Get())` fired the instant a scene's viewport needed that pass (i.e.
+       as soon as a scene was open). Fixed: routed through `ctx.SetShaderResource`, matching every
+       other bind in the file.
+    2. `Viewport.cpp`'s main 3D viewport display (`ImGui::Image(...)`) cast
+       `TextureResource::GetShaderResourceView()` (null on DX12) straight to an `ImTextureID` —
+       worse than a null-texture no-op, since DX12's `ImTextureID` convention is a
+       `D3D12_GPU_DESCRIPTOR_HANDLE` value, not a view pointer at all, so this fed ImGui's DX12
+       backend a bogus GPU address for the main viewport image every frame. Same underlying issue
+       in `DefaultEditorGraphics::GetTextureID` (asset-browser thumbnails / material previews).
+       Both fixed via `IDevice::ImGuiTextureId(SrvHandle)` — a bridge that existed since milestone
+       3's ImGui port but was itself still broken (its own comment: "this predates the milestone-2
+       dual-heap redesign... very likely broken now", returning a GPU handle from the PERMANENT
+       non-shader-visible heap, which has no valid GPU handle at all). Implemented properly: a
+       per-`SrvHandle` slot cache in `myImGuiSrvHeap` (the small persistent shader-visible heap
+       already reserved for ImGui's font atlas, with headroom the class comment already
+       anticipated for "any future ImGui::Image user textures") — allocates a slot once per
+       handle, re-copies the descriptor every call (cheap; keeps a resized texture's new
+       underlying resource in sync through the same cached slot).
+    3. **The actual root cause of GameEditor "vanishing" with zero error, zero crash dialog, and
+       zero Windows crash dump under DX12** (confirmed genuinely reproducible: opening any scene
+       and moving the mouse over the viewport crashed it every single time) — `Viewport.cpp`'s
+       `MouseOver()` (mouse-picking readback) called
+       `aTarget.GetShaderResourceView()->GetResource(&src)`, an unconditional null-pointer
+       dereference on DX12 (this function was previously, deliberately left raw during the port —
+       "no RHI CPU-readback texture support yet" — a real, accepted gap, but one that crashed
+       instead of gracefully doing nothing). Diagnosed with two new pieces of PERMANENT
+       infrastructure added specifically because this crash produced literally no diagnostic
+       anywhere (no stdout, no dump in `%LOCALAPPDATA%\CrashDumps`, no Windows Error Reporting
+       event — even though other crashes this session, e.g. `GameMain_Debug.exe`'s during the
+       `DEVICE_HUNG` investigation, did produce dumps): `GoEditor.cpp` now installs a top-level
+       `SetUnhandledExceptionFilter` that resolves the faulting address to a symbol + source
+       file/line via DbgHelp against the Debug build's own PDB (no external debugger needed) and
+       logs it before letting the default handler continue — immediately pinpointed
+       `MouseOver+0xDC` at `Viewport.cpp:373`. Fixed by adding a real, general
+       `IDevice::ReadBackUintPixel4(TextureHandle, x, y, uint32_t out[4])` to the RHI itself
+       (`Device.h`), moving `MouseOver`'s existing (working, unchanged) DX11 logic into
+       `Dx11Device::ReadBackUintPixel4`, and implementing a DX12 version mirroring
+       `CaptureBackBufferPng`'s established one-off-command-list + `WaitForGpuIdle` synchronous
+       readback pattern (creates a 1-texel `D3D12_HEAP_TYPE_READBACK` buffer, `CopyTextureRegion`
+       with a 1×1×1 box, maps, reads, unmaps) — `Viewport.cpp` no longer touches D3D11 at all for
+       this. **Verified live, interactively, by the user**: opened a scene and moved the mouse over
+       the viewport under DX12 repeatedly — no crash, matching the exact sequence that was
+       previously 100% reproducible across five straight attempts.
+  DX11 regression-checked throughout (process-liveness plus a full `BENCH_SCREENSHOT` Sponza run);
+  `Game.sln` + `GameEditor.sln` both build 0 errors. **The only remaining documented raw-D3D11
+  exception in editor code is `Viewport.cpp`'s per-mouse-move object-picking region-readback path
+  itself is now fixed — the one still-deliberate gap is unrelated: nothing left uses
+  `GetShaderResourceView()`/`SetAsResourceOnSlot`/a raw `ImTextureID` cast anywhere in
+  `Source/Editor`+`Source/EditorDefaultGraphics` any more** (confirmed via a full grep sweep of
+  both trees). DX12 GameEditor is, for the first time this port, genuinely usable end-to-end:
+  device/swapchain/UI bring-up, real texture/cubemap loading, opening a scene, viewing it in the
+  3D viewport, and mouse-hovering/picking objects in it all work without crashing.
 - **Stage 3** — DXR inline `RayQuery` (SM 6.5) hardware-traced GI, replacing the Phase 6
   SH-volume software path with a real DDGI (BLAS/TLAS, per-probe ray tracing into the
   existing SH probe volume). Not started.

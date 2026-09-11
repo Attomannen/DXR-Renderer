@@ -137,6 +137,7 @@ namespace Tga::rhi::dx12
 		DsvHandle WrapNativeDsv(void*) override;
 		void* CreateInputLayoutNative(const InputElement*, uint32_t, const void*, uint32_t) override;
 		bool CaptureBackBufferPng(const wchar_t* utf16Path) override;
+		bool ReadBackUintPixel4(TextureHandle texture, uint32_t x, uint32_t y, uint32_t outValues[4]) override;
 
 		// ---- backend-internal accessors used by Dx12CommandContext ----
 		ID3D12Device*        Raw() { return myDevice.Get(); }
@@ -264,6 +265,13 @@ namespace Tga::rhi::dx12
 		// bulk-reset every BeginFrame. Unused/uninitialized on DX11.
 		Dx12DescriptorHeap myImGuiSrvHeap;
 		uint32_t myImGuiFontSrvSlot = 0;
+		// ImGuiTextureId's per-SrvHandle slot cache in myImGuiSrvHeap (keyed by
+		// {index,generation} packed into a uint64_t) -- allocated once per
+		// distinct handle and reused every subsequent call (re-copying the
+		// descriptor each time, cheaply, so a resize's new underlying SRV still
+		// shows up through the same ImTextureID), rather than leaking a fresh
+		// slot out of the 64-capacity heap on every ImGui::Image() call.
+		std::unordered_map<uint64_t, uint32_t> myImGuiTextureSlots;
 
 		ComPtr<ID3D12RootSignature> myGraphicsRootSig;
 		ComPtr<ID3D12RootSignature> myComputeRootSig;

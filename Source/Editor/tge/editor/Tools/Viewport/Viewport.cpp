@@ -11,6 +11,7 @@
 #include <tge/Editor/CommandManager/CommandManager.h>
 #include <tge/graphics/Camera.h>
 #include <tge/graphics/DX11.h>
+#include <tge/rhi/Device.h>
 #include <tge/Graphics/RenderTarget.h>
 #include <tge/scene/Scene.h>
 #include <tge/scene/SceneSerialize.h>
@@ -184,7 +185,15 @@ void EditorViewport::Resize(const Vector2i& aSize)
 void EditorViewport::DrawAndUpdateViewportWindow(float aDeltaTime, ViewportInterface& aViewportInterface)
 {
 	{
-		ImGui::Image((ImTextureID)myRenderTarget.GetShaderResourceView(), ImGui::GetContentRegionAvail());
+		// NOT GetShaderResourceView(): that's the DX11-only raw ID3D11ShaderResourceView*
+		// (never populated on DX12 -- only the RHI SrvHandle is). Goes through
+		// IDevice::ImGuiTextureId, the backend-agnostic bridge built for exactly
+		// this (see its DX12 implementation for why a plain SRV pointer/handle
+		// isn't enough there -- it needs a descriptor resident in ImGui's own
+		// shader-visible heap). Found 2026-09-12: this was the one remaining
+		// raw-DX11 call standing between DX12 GameEditor and actually showing
+		// the 3D viewport at all.
+		ImGui::Image((ImTextureID)DX11::Rhi()->ImGuiTextureId(myRenderTarget.GetSrv()), ImGui::GetContentRegionAvail());
 		ImVec2 viewportSize = ImGui::GetItemRectSize();
 		ImVec2 viewportPos = ImGui::GetItemRectMin();
 
@@ -359,56 +368,20 @@ static IDPixelValues MouseOver(Tga::Vector2ui aPos, const RenderTarget &aTarget)
 	if (aPos.x < 0 || aPos.x >= (int)DX11::GetResolution().X  || aPos.y < 0 || aPos.y >= (int)DX11::GetResolution().Y)
 		return {};
 
-	ID3D11Resource* src;
-	const auto& context = DX11::Context;
-	aTarget.GetShaderResourceView()->GetResource(&src);
+	// NOT raw D3D11 (GetShaderResourceView()->GetResource(...) etc): that
+	// pointer is never populated on DX12 -- dereferencing it there was a
+	// 100%-reproducible access violation the instant the mouse moved over
+	// the viewport (found 2026-09-12, the actual cause of GameEditor
+	// "vanishing" under DX12 with no error/dump at all). Goes through
+	// IDevice::ReadBackUintPixel4, which moved this exact logic (unchanged
+	// on DX11) into the RHI and added a DX12 implementation.
+	uint32_t data[4] = {};
+	if (!DX11::Rhi()->ReadBackUintPixel4(aTarget.GetTextureHandle(), (uint32_t)aPos.x, (uint32_t)aPos.y, data))
+		return {};
 
-	D3D11_TEXTURE2D_DESC textureDesc;
-	textureDesc.Width = 1;
-	textureDesc.Height = 1;
-	textureDesc.MipLevels = 1;
-	textureDesc.ArraySize = 1;
-	textureDesc.Format = (DXGI_FORMAT_R32G32B32A32_UINT);
-	textureDesc.SampleDesc.Count = 1;
-	textureDesc.SampleDesc.Quality = 0;
-	textureDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-	textureDesc.Usage = D3D11_USAGE_STAGING;
-	textureDesc.BindFlags = 0;
-	textureDesc.MiscFlags = 0;
-
-	ComPtr<ID3D11Texture2D> tmp;
-	HRESULT hr = DX11::Device->CreateTexture2D(&textureDesc, nullptr, tmp.GetAddressOf());
-	assert(SUCCEEDED(hr));
-
-	D3D11_BOX srcBox;
-	srcBox.left = aPos.x;
-	srcBox.right = aPos.x + 1;
-	srcBox.bottom = aPos.y + 1;
-	srcBox.top = aPos.y;
-	srcBox.front = 0;
-	srcBox.back = 1;
-
-	DX11::Context->CopySubresourceRegion(
-		tmp.Get(),
-		0, 0, 0, 0,
-		src, 0,
-		&srcBox
-	);
-	D3D11_MAPPED_SUBRESOURCE msr = {};
-	hr = context->Map(tmp.Get(), 0, D3D11_MAP::D3D11_MAP_READ, 0, &msr);
-	assert(SUCCEEDED(hr));
-
-	uint32_t* data = reinterpret_cast<uint32_t*>(msr.pData);
-
-	context->Unmap(tmp.Get(), 0);
 	IDPixelValues val{};
-
-	if (data != nullptr)
-	{
-		val.id = (uint32_t)data[0];
-		val.selectionID = (uint32_t)data[1];
-		val.p4info = (uint32_t)data[2];
-	}
-
+	val.id = data[0];
+	val.selectionID = data[1];
+	val.p4info = data[2];
 	return val;
 }

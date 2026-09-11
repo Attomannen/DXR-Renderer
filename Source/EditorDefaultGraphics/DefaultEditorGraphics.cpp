@@ -30,6 +30,7 @@
 #include <tge/editor/Editor.h>
 #include <tge/editor/Material/MaterialAsset.h>
 #include <tge/graphics/DX11.h>
+#include <tge/rhi/Device.h>
 #include <tge/model/ModelInstance.h>
 #include <tge/rhi/ConstantBuffer.h>
 
@@ -784,7 +785,17 @@ ImTextureID DefaultEditorGraphics::GetTextureID(std::string_view aTexturePath) c
 	if (!img)
 		return 0;
 
-	return reinterpret_cast<ImTextureID>(img->GetShaderResourceView());
+	// NOT GetShaderResourceView(): the DX11-only raw pointer, always null on
+	// DX12 -- and worse than a null-texture no-op there, since DX12's
+	// ImTextureID convention is a GPU_DESCRIPTOR_HANDLE value, not a view
+	// pointer at all; reinterpret-casting a null/dangling ID3D11 pointer as
+	// one feeds ImGui's DX12 backend a bogus GPU address for every asset-
+	// browser thumbnail/material-preview icon (found 2026-09-12: this is very
+	// likely what actually crashed GameEditor a frame after opening any scene
+	// with visible thumbnails -- same class of bug as Viewport.cpp's main
+	// viewport image and SceneUtil.cpp's selection-outline bind, both also
+	// fixed this session). Goes through the same backend-agnostic bridge.
+	return reinterpret_cast<ImTextureID>(DX11::Rhi()->ImGuiTextureId(img->GetSrv()));
 }
 
 void DefaultEditorGraphics::DrawLines(const Color* someColors, const Vector3f* someFromPositions, const Vector3f* someToPositions, unsigned int aCount) const

@@ -723,6 +723,50 @@ namespace Tga::rhi::dx11
 	void* Dx11Device::GetNativeTexture(TextureHandle h) { auto* t = myTextures.Get(h); return t ? t->res.Get() : nullptr; }
 	void* Dx11Device::ImGuiTextureId(SrvHandle h) { return GetSrvPtr(h); }
 
+	bool Dx11Device::ReadBackUintPixel4(TextureHandle texture, uint32_t x, uint32_t y, uint32_t outValues[4])
+	{
+		// Moved here from Viewport.cpp's MouseOver() (2026-09-12) so a DX12
+		// implementation could exist behind the same call -- logic unchanged
+		// from what was already there and working.
+		TextureRec* t = myTextures.Get(texture);
+		if (!t || !t->res) return false;
+
+		D3D11_TEXTURE2D_DESC textureDesc = {};
+		textureDesc.Width = 1;
+		textureDesc.Height = 1;
+		textureDesc.MipLevels = 1;
+		textureDesc.ArraySize = 1;
+		textureDesc.Format = DXGI_FORMAT_R32G32B32A32_UINT;
+		textureDesc.SampleDesc.Count = 1;
+		textureDesc.SampleDesc.Quality = 0;
+		textureDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+		textureDesc.Usage = D3D11_USAGE_STAGING;
+		textureDesc.BindFlags = 0;
+		textureDesc.MiscFlags = 0;
+
+		ComPtr<ID3D11Texture2D> tmp;
+		HRESULT hr = myDevice->CreateTexture2D(&textureDesc, nullptr, tmp.GetAddressOf());
+		if (FAILED(hr)) return false;
+
+		D3D11_BOX srcBox;
+		srcBox.left = x;
+		srcBox.right = x + 1;
+		srcBox.top = y;
+		srcBox.bottom = y + 1;
+		srcBox.front = 0;
+		srcBox.back = 1;
+
+		myCtx->CopySubresourceRegion(tmp.Get(), 0, 0, 0, 0, t->res.Get(), 0, &srcBox);
+
+		D3D11_MAPPED_SUBRESOURCE msr = {};
+		hr = myCtx->Map(tmp.Get(), 0, D3D11_MAP_READ, 0, &msr);
+		if (FAILED(hr)) return false;
+
+		memcpy(outValues, msr.pData, sizeof(uint32_t) * 4);
+		myCtx->Unmap(tmp.Get(), 0);
+		return true;
+	}
+
 	SrvHandle Dx11Device::WrapNativeSrv(void* p)
 	{
 		if (!p) return {};

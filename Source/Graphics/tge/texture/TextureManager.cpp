@@ -435,11 +435,20 @@ Texture* TextureManager::LoadTextureDx12(rhi::IDevice& aDevice, const char* aRes
 		}
 	}
 
-	if (metadata.IsCubemap() || metadata.dimension == DirectX::TEX_DIMENSION_TEXTURE3D)
+	// Volume (3D) textures stay unsupported here -- genuinely out of scope,
+	// no DX12 call site needs one yet (matches Dx12CommandContext::GenerateMips's
+	// identical "no 3D yet" stance). Cubemaps ARE supported below (fixed
+	// 2026-09-12): DirectXTex already decoded the 6 (or 6*N, for a cubemap
+	// array) faces as ordinary array slices in `metadata`/`image` -- the only
+	// DX12-specific step is telling CreateTexture/CreateSrv this is a cube so
+	// they build a 6x-sized resource + a TEXTURECUBE view instead of a flat
+	// Tex2DArray one (see below).
+	if (metadata.dimension == DirectX::TEX_DIMENSION_TEXTURE3D)
 	{
-		ERROR_PRINT("%s %s", "TextureManager (DX12): cubemap/volume textures are not supported through this loader -- ", aResolvedPathUtf8);
+		ERROR_PRINT("%s %s", "TextureManager (DX12): volume (3D) textures are not supported through this loader -- ", aResolvedPathUtf8);
 		return nullptr;
 	}
+	const bool isCubemap = metadata.IsCubemap();
 
 	const int x = static_cast<int>(metadata.width);
 	const int y = static_cast<int>(metadata.height);
@@ -497,9 +506,16 @@ Texture* TextureManager::LoadTextureDx12(rhi::IDevice& aDevice, const char* aRes
 	rhi::TextureDesc tdesc = {};
 	tdesc.width = static_cast<uint32_t>(metadata.width);
 	tdesc.height = static_cast<uint32_t>(metadata.height);
-	tdesc.depthOrArraySize = static_cast<uint32_t>(metadata.arraySize);
+	// TextureDimension::TexCube's depthOrArraySize is "number of CUBES" (each
+	// one implicitly 6 faces -- CreateTexture multiplies by 6 itself), whereas
+	// DirectXTex's own metadata.arraySize for a cubemap is already the total
+	// face count (6 per cube) -- divide back down here, once, so every other
+	// call site (CreateTexture, CreateSrv) can keep using the one shared
+	// "depthOrArraySize means cube count for TexCube" convention.
+	tdesc.depthOrArraySize = isCubemap ? static_cast<uint32_t>(metadata.arraySize / 6) : static_cast<uint32_t>(metadata.arraySize);
 	tdesc.mipLevels = static_cast<uint32_t>(metadata.mipLevels);
-	tdesc.dimension = (metadata.arraySize > 1) ? rhi::TextureDimension::Tex2DArray : rhi::TextureDimension::Tex2D;
+	tdesc.dimension = isCubemap ? rhi::TextureDimension::TexCube
+		: (metadata.arraySize > 1) ? rhi::TextureDimension::Tex2DArray : rhi::TextureDimension::Tex2D;
 	tdesc.format = rhiFormat;
 	tdesc.bind = rhi::TextureBind::ShaderResource;
 	tdesc.debugName = "Texture";

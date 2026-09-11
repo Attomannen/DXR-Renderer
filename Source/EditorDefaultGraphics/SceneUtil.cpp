@@ -113,7 +113,15 @@ void Tga::DrawOutlines(const EditorViewport& viewport)
 	locRenderdata.selectionOutlineConstantBuffer.Update(ctx, data);
 	locRenderdata.selectionOutlineConstantBuffer.Bind(ctx);
 
-	viewport.GetIdRenderTarget().SetAsResourceOnSlot(1);
+	// NOT SetAsResourceOnSlot(): that's a DX11-only legacy path (raw
+	// PSSetShaderResources off TextureResource's raw ComPtr, which is never
+	// populated on DX12 -- only myRhiSrv is), missed by this port's earlier
+	// migration passes since it's editor-only code, not exercised by
+	// GameMain's bench flow (found 2026-09-12: DX12 GameEditor asserted on
+	// this the moment a scene's viewport actually needed its ID/selection-
+	// outline pass -- i.e. as soon as a scene was open). Goes through the
+	// RHI like every other texture bind in this file.
+	ctx.SetShaderResource(rhi::ShaderStage::Pixel, 1, viewport.GetIdRenderTarget().GetSrv());
 	locRenderdata.selectionOutlineEffect.Render();
 }
 void Tga::SetObjectAndSelectionId(uint32_t anObjectId, uint32_t aSelectionId, const P4::FileInfo& someInfo)
