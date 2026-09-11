@@ -4,10 +4,12 @@
 #include "tge/rhi/Format.h"
 #include <tge/log/Log.h>
 #include <d3dcompiler.h>
+#include <dxgidebug.h>
 #include <cassert>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "dxguid.lib")
 
 namespace Tga::rhi::dx12
 {
@@ -222,6 +224,52 @@ namespace Tga::rhi::dx12
 			}
 		}
 		assert(myDevice && "Dx12Device: no D3D12-capable adapter found");
+
+#if defined(_DEBUG)
+		if (enableDebugLayer)
+		{
+			// The debug layer's ID3D12InfoQueue defaults to calling DebugBreak()
+			// on CORRUPTION/ERROR-severity messages. With no debugger attached
+			// (the normal case for this engine outside an IDE), DebugBreak()
+			// raises an exception nothing catches -- the whole process dies,
+			// often several frames after whatever actually triggered the
+			// message, with no visible error (found 2026-09-11: the DX12
+			// backend rendered one real frame of the Sponza scene correctly,
+			// then silently crashed with exit code 0x87D, a `DebugBreak`-raised
+			// exception code, immediately after). Disable break-on-severity so
+			// these messages only ever reach the log (via DrainDebugMessages or
+			// the OutputDebugString the layer always also emits) instead of
+			// killing the app.
+			ComPtr<ID3D12InfoQueue> infoQueue;
+			if (SUCCEEDED(myDevice.As(&infoQueue)))
+			{
+				infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, FALSE);
+				infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, FALSE);
+				infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, FALSE);
+				infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_INFO, FALSE);
+				infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_MESSAGE, FALSE);
+			}
+
+			// DXGI_CREATE_FACTORY_DEBUG (set above) turns on DXGI's OWN separate
+			// debug layer (dxgidebug.dll) with its OWN independent break-on-
+			// severity settings -- untouched by anything above, which only
+			// covers D3D12's ID3D12InfoQueue. Disable there too.
+			HMODULE dxgiDebugModule = GetModuleHandleW(L"dxgidebug.dll");
+			if (dxgiDebugModule)
+			{
+				using PFN_DXGIGetDebugInterface1 = HRESULT(WINAPI*)(UINT, REFIID, void**);
+				auto pGetDebugInterface1 = reinterpret_cast<PFN_DXGIGetDebugInterface1>(
+					GetProcAddress(dxgiDebugModule, "DXGIGetDebugInterface1"));
+				ComPtr<IDXGIInfoQueue> dxgiInfoQueue;
+				if (pGetDebugInterface1 && SUCCEEDED(pGetDebugInterface1(0, IID_PPV_ARGS(dxgiInfoQueue.GetAddressOf()))))
+				{
+					dxgiInfoQueue->SetBreakOnSeverity(DXGI_DEBUG_ALL, DXGI_INFO_QUEUE_MESSAGE_SEVERITY_CORRUPTION, FALSE);
+					dxgiInfoQueue->SetBreakOnSeverity(DXGI_DEBUG_ALL, DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR, FALSE);
+					dxgiInfoQueue->SetBreakOnSeverity(DXGI_DEBUG_ALL, DXGI_INFO_QUEUE_MESSAGE_SEVERITY_WARNING, FALSE);
+				}
+			}
+		}
+#endif
 
 		D3D12_COMMAND_QUEUE_DESC qd = {};
 		qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;

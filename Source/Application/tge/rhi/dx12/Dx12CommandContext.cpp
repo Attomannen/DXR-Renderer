@@ -34,35 +34,45 @@ namespace Tga::rhi::dx12
 	}
 
 	// ---- targets / viewport / clears ----
-	// SEH-isolated: found debugging DeferredRenderer::GiProjectProbe (2026-09-11)
-	// -- the FIRST OMSetRenderTargets call after ANY compute-pipeline Dispatch
-	// (e.g. a GI probe's SH-projection pass) reliably access-violates deep
-	// inside the D3D12 runtime/driver on this hardware, then works completely
-	// normally on every subsequent identical call using the exact same RTV/DSV
-	// handles -- i.e. it is not a resource lifetime bug (the handles, heap
-	// slots, and underlying resources are all confirmed valid before and after
-	// via bisection) and not debug-layer-specific (reproduces identically with
-	// the D3D12 debug layer OFF, and the layer logs nothing unusual around the
-	// fault). It looks like a real, narrow driver/runtime quirk in this
-	// specific compute-to-graphics transition. SEH-isolating it here is a
-	// pragmatic containment, not a real fix: the one dropped frame's targets
-	// don't get (re)bound, but the crash no longer takes down the whole
-	// process, and every GI-probe/graphics-after-compute frame after the first
-	// one recovers normally. Revisit if this GPU/driver combo changes, or if a
-	// real root cause surfaces (candidates not yet ruled out: a PIX/NSight
-	// capture of the exact faulting frame; an NVIDIA driver update).
+	// SEH-isolated + retried: found debugging DeferredRenderer::GiProjectProbe
+	// (2026-09-11) -- the FIRST OMSetRenderTargets call after ANY compute-
+	// pipeline Dispatch (e.g. a GI probe's SH-projection pass) reliably
+	// access-violates deep inside the D3D12 runtime/driver on this hardware,
+	// then works completely normally on every subsequent identical call using
+	// the exact same RTV/DSV handles -- i.e. it is not a resource lifetime bug
+	// (the handles, heap slots, and underlying resources are all confirmed
+	// valid before and after via bisection) and not debug-layer-specific
+	// (reproduces identically with the D3D12 debug layer OFF, and the layer
+	// logs nothing unusual around the fault). It looks like a real, narrow
+	// driver/runtime quirk in this specific compute-to-graphics transition --
+	// something about the FIRST such call specifically doesn't take, but a
+	// second, identical one right after always does. Retrying in place (not
+	// just swallowing the fault) turns this from "that frame's geometry pass
+	// silently never gets its render targets bound, so it draws over
+	// whatever was bound before -- visibly, the model disappears and only the
+	// skybox/ambient shows" into a transparent, fully-recovered no-op: this is
+	// the actual fix for that visible symptom, found immediately after the
+	// crash-containment version above shipped. Revisit if this GPU/driver
+	// combo changes, or if a real root cause surfaces (candidates not yet
+	// ruled out: a PIX/NSight capture of the exact faulting frame; an NVIDIA
+	// driver update) -- then this retry (and the SEH itself) can go.
 	static void SEH_OMSetRenderTargets(ID3D12GraphicsCommandList* list, UINT n,
 	                                    const D3D12_CPU_DESCRIPTOR_HANDLE* rtvHandles,
 	                                    const D3D12_CPU_DESCRIPTOR_HANDLE* pDsv)
 	{
-		__try
+		for (int attempt = 0; attempt < 3; ++attempt)
 		{
-			list->OMSetRenderTargets(n, n ? rtvHandles : nullptr, FALSE, pDsv);
+			__try
+			{
+				list->OMSetRenderTargets(n, n ? rtvHandles : nullptr, FALSE, pDsv);
+				return;
+			}
+			__except (EXCEPTION_EXECUTE_HANDLER)
+			{
+				ERROR_PRINT("Dx12: OMSetRenderTargets faulted (0x%08X) on attempt %d, retrying -- see SetRenderTargets's class comment", (unsigned)GetExceptionCode(), attempt);
+			}
 		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			ERROR_PRINT("Dx12: OMSetRenderTargets faulted (0x%08X), frame dropped -- see SetRenderTargets's class comment", (unsigned)GetExceptionCode());
-		}
+		ERROR_PRINT("%s", "Dx12: OMSetRenderTargets faulted on every retry -- frame dropped");
 	}
 
 	void Dx12CommandContext::SetRenderTargets(uint32_t count, const RtvHandle* rtvs, DsvHandle dsv)
