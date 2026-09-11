@@ -242,8 +242,9 @@ Bench + baselines: `Source/Game/BENCH.md`. Per-phase numbers are captured there.
 ## Phase 6 — Emissive global illumination  `[~]`
 
 - [x] Real emissive **intensity** — see **Phase 3.4**
-- [x] **Method decided: lazy SH irradiance volume** (DX11, no hardware RT — a DX12 port is a full
-      backend rewrite, not worth it mid-project; Stage 2 upgrade path = SDF software rays in compute).
+- [x] **Method decided: lazy SH irradiance volume** (DX11, no hardware RT — at the time, a DX12 port
+      was judged a full backend rewrite not worth it mid-project; **superseded 2026-09 — see Phase 7**,
+      the DX12 port is now underway specifically to unlock hardware RT for a real DDGI rewrite).
 - [x] **Stage 1 — SH9 irradiance volume.** Grid of L2-SH probes (auto from bounds ~360u spacing,
       or `bench_gi_<scene>.json`). Each probe: tiny 16² forward cube capture (frustum-culled) →
       `GiProjectSHCS` folds it to SH with temporal hysteresis. Volume is **primed** over ~1 s at load
@@ -258,6 +259,75 @@ Bench + baselines: `Source/Game/BENCH.md`. Per-phase numbers are captured there.
 - [ ] GI method decision — DDGI-style irradiance probes (leading candidate) vs RSM/LPV vs voxel CT
 - [ ] Probe placement / update budget, leak reduction
 - [ ] Combine with SSR for specular GI
+
+## Phase 7 — DX11 → DX12 → DXR backend port  `[~]`
+
+Started 2026-09-10. Goal: replace the raw-DX11 rendering backend with a thin RHI seam,
+implement a DX12 backend behind it, then add DXR hardware ray tracing — mainly to give
+Phase 6 GI a real hardware-traced DDGI rewrite instead of the SH-volume software path,
+and to unlock RT reflections/shadows/AO for Phase 5/3.5 later. Full plan:
+`~/.claude/plans/distributed-wishing-candle.md` (not in-repo — Claude Code plan file).
+Progress log: memory `p5g3-dx12-port`.
+
+**Decision:** hand-written minimal RHI (~48 methods) covering exactly what this engine
+does, *not* adopting NVIDIA NVRHI — NVRHI's `BindingLayout`/`BindingSet` model doesn't
+match the engine's free `register(b#/t#/s#/u#)` convention, and adopting it would touch
+every shader + every bind site (more churn than writing the seam by hand). New code
+lives in `Source/Application/tge/rhi/` (`Tga::rhi` namespace; in Application rather
+than a separate lib, to avoid a link cycle with `Tga::DX11`), with a `dx11/` backend
+subfolder. Four stages:
+
+- **Stage 1** — RHI seam + DX11 backend at parity (12 steps, zero visible change).
+  Currently here — steps 0–6 done, step 7 in progress:
+  - [x] Step 0 — RHI interface (`Handles.h`/`Descs.h`/`Device.h`/`CommandContext.h`) +
+    DX11 backend (`Dx11Device`, `Dx11CommandContext`, gen-checked handle pools) wrapping
+    the pre-existing `Tga::DX11` statics.
+  - [x] Step 1 — `DX11.{h,cpp}` becomes a thin facade over `rhi::IDevice`; shader cache
+    (`PixelShader`/`VertexShader`/`ComputeShader`) moved to `rhi/ShaderCache.h`.
+  - [x] Step 2 — `TextureResource`/`RenderTarget`/`DepthBuffer` gain lazy `GetSrv()`/
+    `GetRtv()`/`GetDsv()` via a `MigrationView<Handle>` bridge (`WrapNative*`).
+  - [x] Step 3 — input layouts become data (`rhi::InputElement` lists), built + cached
+    by the backend (`CreateInputLayoutNative`) instead of ad hoc `D3D11_INPUT_ELEMENT_DESC`
+    arrays scattered per shader.
+  - [x] Step 4 — `GraphicsStateStack` split onto the RHI: blend/depth/raster/sampler
+    state and all b0–b13 engine cbuffers now go through `ICommandContext`/
+    `IDevice::AllocateDynamicConstants` (a proper bump-allocated upload ring, not
+    one-buffer-per-alloc) instead of raw D3D11 state objects + `Map`/`Unmap`.
+  - [x] Step 5 — `GpuProfiler` timestamps + `GpuMarker` debug events moved onto the RHI
+    (`TimestampQueryHandle`, `ctx.PushMarker/PopMarker`); perf overlay API unchanged.
+  - [x] Step 6 — 2D drawers (`CustomShapeDrawer`/`LineDrawer`/`SpriteDrawer`),
+    `FullscreenEffect`, `SpriteShader` off raw `DX11::Context->`.
+  - [~] Step 7 — `DeferredRenderer.cpp` (~1600 lines, the largest single file), migrated
+    pass-by-pass since the passes share one large SRV/sampler/cbuffer bind function:
+    - [x] sub-pass 1 — all 11 constant buffers → new `rhi::ConstantBuffer` helper
+      (owns buffer + stage + slot; `Update`/`Bind` replace the `CreateBuffer`+
+      `Map`/`Unmap`+`XSSetConstantBuffers(slot)` boilerplate — one place to touch for DX12).
+    - [ ] sub-pass 2 — render targets / viewports / clears (in progress)
+    - [ ] sub-pass 3 — samplers · sub-pass 4 — textures/SRVs/UAVs/structured buffers ·
+      sub-pass 5 — compute dispatch · sub-pass 6 — remaining fullscreen-draw plumbing
+  - [ ] Steps 8–12 — `CubemapPrefilter`, `GameWorld` GI capture, video player, ImGui /
+    editor viewport + font atlas, then delete the `DX11::Device/Context/...` statics.
+  - **Found + fixed a real bug along the way** (not port-scope, a genuine engine
+    correctness bug the port's extra scrutiny surfaced): `Pool<ComPtr<T>>::Get()` in the
+    new RHI backend was itself broken (`&s.value` invoked `ComPtr`'s overloaded out-param
+    `operator&` instead of taking a real address), so once the sampler-object migration
+    (step 4) actually started *binding* wrapped samplers, all 9 engine texture samplers
+    silently resolved to a null D3D11 sampler state — every textured surface in every
+    scene rendered with heavy directional streaking (every sample, every mip, garbage
+    filtering). Caught by eye (a Sponza screenshot compared against a known-good
+    reference), root-caused via targeted instrumentation, one-line fix (`std::addressof`
+    instead of `&`). Verified against the reference image. Repo now under git
+    (`github.com/Attomannen/TGE-DX12-Port`, private) specifically so this kind of
+    regression is bisectable going forward.
+- **Stage 2** — DX12 backend behind the same seam (D3D12MA, `d3dx12.h`/Agility SDK, DXC,
+  one root signature mirroring the existing register layout, automatic barrier tracker).
+  Not started.
+- **Stage 3** — DXR inline `RayQuery` (SM 6.5) hardware-traced GI, replacing the Phase 6
+  SH-volume software path with a real DDGI (BLAS/TLAS, per-probe ray tracing into the
+  existing SH probe volume). Not started.
+- **Stage 4** — RT reflections (replaces Phase 5 SSR) / RT shadows (replaces Phase 3.5
+  shadow maps) / RT AO (replaces Phase 3.2 SSAO), each behind its own toggle against the
+  existing screen-space technique. Not started.
 
 ---
 
