@@ -16,6 +16,7 @@
 
 #include <tge/drawers/SpriteDrawer.h>
 #include <tge/graphics/DX11.h>
+#include <tge/rhi/Device.h>
 #include <tge/graphics/GraphicsEngine.h>
 #include <tge/graphics/GraphicsStateStack.h>
 #include <tge/text/TextService.h>
@@ -68,7 +69,8 @@ namespace Tga
 		std::vector<int> myAtlas;
 		std::string myName;
 		std::unique_ptr<TextureResource> myTexture;
-		ComPtr<ID3D11ShaderResourceView> myAtlasView;
+		rhi::TextureHandle myAtlasTex;
+		rhi::SrvHandle myAtlasSrv;
 	};
 }
 
@@ -427,7 +429,18 @@ TextToRender processNextCharacter(const InternalTextAndFontData& fontData, char 
 }
 
 InternalTextAndFontData::~InternalTextAndFontData()
-{}
+{
+	// Drop TextureResource's own SRV ref first, then release the RHI-owned
+	// handles (font atlases are cached by weak_ptr in myFontData and can be
+	// created/destroyed repeatedly over the app's life -- same leak-avoidance
+	// reasoning as Video's ~Video(), not a once-per-process resource).
+	myTexture.reset();
+	if (rhi::IDevice* dev = DX11::Rhi())
+	{
+		if (myAtlasSrv.IsValid()) dev->Destroy(myAtlasSrv);
+		if (myAtlasTex.IsValid()) dev->Destroy(myAtlasTex);
+	}
+}
 
 TextService::TextService()
 {
@@ -553,44 +566,49 @@ Font TextService::GetOrLoad(std::string aFontPathAndName, FontSize aFontSize, un
 		glyphLoader.LoadGlyph(i, atlasX, atlasY, currentMaxY, atlasWidth, atlasHeight, fontData.get(), face, aBorderSize);
 	}
 
-	D3D11_SUBRESOURCE_DATA data;
-	data.pSysMem = fontData->myAtlas.data();
-	data.SysMemPitch = atlasSize * 4;
+	rhi::IDevice& rhiDevice = *DX11::Rhi();
 
-	D3D11_TEXTURE2D_DESC info;
-	info.Width = atlasSize;
-	info.Height = atlasSize;
-	info.MipLevels = 0;
-	info.ArraySize = 1;
-	info.SampleDesc.Count = 1;
-	info.SampleDesc.Quality = 0;
-	info.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
-	info.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-	info.Usage = D3D11_USAGE_DEFAULT;
-	info.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-	info.CPUAccessFlags = 0;
+	rhi::TextureDesc textureDesc = {};
+	textureDesc.width = atlasSize;
+	textureDesc.height = atlasSize;
+	textureDesc.mipLevels = 0;   // auto full mip chain, matches the old D3D11_RESOURCE_MISC_GENERATE_MIPS + MipLevels=0
+	textureDesc.format = rhi::Format::R8G8B8A8_UNorm;
+	textureDesc.bind = rhi::TextureBind::ShaderResource | rhi::TextureBind::RenderTarget;
+	textureDesc.debugName = "FontAtlas";
 
-	ID3D11Texture2D* texture;
-	HRESULT hr = DX11::Device->CreateTexture2D(&info, nullptr, &texture);
-	if (FAILED(hr))
+	fontData->myAtlasTex = rhiDevice.CreateTexture(textureDesc);
+	if (!fontData->myAtlasTex.IsValid())
 	{
 		ERROR_PRINT("%s", "Failed to load texture for text!");
 		return { nullptr };
 	}
 
-	DX11::Context->UpdateSubresource(texture, 0, NULL, fontData->myAtlas.data(), atlasSize * 4, 0);
+	// Full mip chain for a power-of-two atlasSize is log2(atlasSize)+1 levels;
+	// computed explicitly rather than via the SrvDesc default (kAllMips), since
+	// the backend's auto-mip-count tracking only knows the *requested* (0 = auto)
+	// mip count, not the actual chain length D3D11 computed.
+	uint32_t fullMipCount = 1;
+	for (uint32_t sz = atlasSize; sz > 1; sz >>= 1) fullMipCount++;
 
-	DX11::Device->CreateShaderResourceView(texture, nullptr, fontData->myAtlasView.ReleaseAndGetAddressOf());
-	DX11::Context->GenerateMips(fontData->myAtlasView.Get());
-	texture->Release();
+	rhi::SrvDesc atlasSrvDesc = {};
+	atlasSrvDesc.mipLevels = fullMipCount;
+	fontData->myAtlasSrv = rhiDevice.CreateSrv(fontData->myAtlasTex, atlasSrvDesc);
+
+	rhi::ICommandContext& ctx = rhiDevice.GetContext();
+	ctx.UpdateTexture(fontData->myAtlasTex, fontData->myAtlas.data(), atlasSize * 4);
+	ctx.GenerateMips(fontData->myAtlasSrv);
 
 	fontData->myAtlasHeight = atlasSize;
 	fontData->myAtlasWidth = atlasSize;
 	fontData->myLineSpacing = static_cast<float>((face->ascender - face->descender) >> 6);
 	FT_Done_Face(face);
-	
-	fontData->myTexture = std::make_unique<TextureResource>(fontData->myAtlasView.Get());
-	
+
+	// TextureResource's legacy ctor takes a raw SRV pointer (AddRefs its own
+	// ComPtr); the RHI handles above are what myAtlasSrv/myAtlasTex actually own
+	// and are what ~InternalTextAndFontData() destroys.
+	ID3D11ShaderResourceView* rawAtlasSrv = static_cast<ID3D11ShaderResourceView*>(rhiDevice.GetNativeSrv(fontData->myAtlasSrv));
+	fontData->myTexture = std::make_unique<TextureResource>(rawAtlasSrv);
+
 	return { fontData };
 }
 

@@ -31,6 +31,7 @@
 #include <tge/editor/Material/MaterialAsset.h>
 #include <tge/graphics/DX11.h>
 #include <tge/model/ModelInstance.h>
+#include <tge/rhi/ConstantBuffer.h>
 
 using namespace Tga;
 
@@ -123,12 +124,7 @@ namespace Tga
 
 			myConstShader.Init("shaders/PbrModelShaderVs", "shaders/PbrConstModelShaderPS");
 
-			D3D11_BUFFER_DESC bd = {};
-			bd.ByteWidth = 48;                       // 3 * float4
-			bd.Usage = D3D11_USAGE_DYNAMIC;
-			bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-			bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-			DX11::Device->CreateBuffer(&bd, nullptr, myMatCb.GetAddressOf());
+			myMatCb.Create(*DX11::Rhi(), 48, rhi::ShaderStage::Pixel, 11, "MaterialEditorMatCb");   // 3 x float4
 		}
 
 		void Draw(const MaterialEditorDrawParameters& parameters) override;
@@ -136,7 +132,7 @@ namespace Tga
 
 	private:
 		ModelShader myConstShader;
-		ComPtr<ID3D11Buffer> myMatCb;
+		rhi::ConstantBuffer myMatCb;
 		std::string myPreviewMeshLoaded;
 		ModelInstance myInstance;
 
@@ -662,17 +658,16 @@ void DefaultMaterialEditorGraphics::Draw(const MaterialEditorDrawParameters& par
 		else
 		{
 			// Pack the 48-byte b11 material cbuffer and bind it for the const shader.
-			D3D11_MAPPED_SUBRESOURCE map = {};
-			if (myMatCb && SUCCEEDED(DX11::Context->Map(myMatCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map)))
+			if (myMatCb.IsValid())
 			{
-				float* d = (float*)map.pData;
+				float d[12];
 				d[0] = mat.baseColor[0]; d[1] = mat.baseColor[1]; d[2] = mat.baseColor[2]; d[3] = 1.f;
 				d[4] = mat.roughness;    d[5] = mat.metalness;    d[6] = mat.ao;           d[7] = mat.emissiveStrength;
 				d[8] = mat.emissiveColor[0]; d[9] = mat.emissiveColor[1]; d[10] = mat.emissiveColor[2]; d[11] = 1.f;
-				DX11::Context->Unmap(myMatCb.Get(), 0);
+				rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
+				myMatCb.Update(ctx, d, sizeof(d));
+				myMatCb.Bind(ctx);
 			}
-			ID3D11Buffer* cb = myMatCb.Get();
-			DX11::Context->PSSetConstantBuffers(11, 1, &cb);
 			md.Draw(myInstance, myConstShader);
 		}
 	}

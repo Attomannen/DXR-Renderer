@@ -1,8 +1,8 @@
 #pragma once
 #include "FullscreenEffect.h"
 #include <tge/graphics/RenderTarget.h>
-
-struct ID3D11Buffer;
+#include <tge/rhi/ConstantBuffer.h>
+#include <tge/rhi/Handles.h>
 
 class FullscreenPixelateEffect : public Tga::FullscreenEffect
 {
@@ -15,14 +15,14 @@ class FullscreenPixelateEffect : public Tga::FullscreenEffect
 		float garbage;
 	} myEffectBufferData;
 
-	ComPtr<ID3D11Texture2D> myEffectTexture;
-	ComPtr<ID3D11ShaderResourceView> myEffectSRV;
-	ComPtr<ID3D11RenderTargetView> myEffectRTV;
-	ComPtr<ID3D11Buffer> myEffectBuffer;
-	D3D11_VIEWPORT* myViewport;
+	Tga::rhi::TextureHandle myEffectTexture;
+	Tga::rhi::SrvHandle myEffectSrv;
+	Tga::rhi::RtvHandle myEffectRtv;
+	Tga::rhi::ConstantBuffer myEffectBuffer;
+	float myViewportWidth = 0.f;
+	float myViewportHeight = 0.f;
 
 public:
-	~FullscreenPixelateEffect();
 	void SetPixelSize(float aPixelSize);
 	virtual bool Init(const char* aPixelShaderPath) override;
 	virtual void Render() override;

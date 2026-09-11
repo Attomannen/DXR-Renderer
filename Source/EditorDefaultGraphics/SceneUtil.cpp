@@ -13,6 +13,7 @@
 #include <tge/script/BaseProperties.h>
 
 #include <tge/graphics/DX11.h>
+#include <tge/rhi/ConstantBuffer.h>
 
 #include <tge/graphics/GraphicsEngine.h>
 #include <tge/texture/TextureManager.h>
@@ -46,8 +47,8 @@ struct RenderData
 	ModelShader idModelShader;
 	SpriteShader idSpriteShader;
 
-	ComPtr<ID3D11Buffer> idConstantBuffer;
-	ComPtr<ID3D11Buffer> selectionOutlineConstantBuffer;
+	rhi::ConstantBuffer idConstantBuffer;
+	rhi::ConstantBuffer selectionOutlineConstantBuffer;
 	FullscreenEffect selectionOutlineEffect;
 };
 static RenderData locRenderdata;
@@ -76,40 +77,12 @@ static void EnsureInitialized()
 
 		locRenderdata.selectionOutlineEffect.Init("Shaders/PostProcessSelectionOutline_PS");
 
-		{
-			HRESULT result = S_OK;
-
-			D3D11_BUFFER_DESC bufferDesc;
-			bufferDesc.Usage = D3D11_USAGE_DYNAMIC;
-			bufferDesc.ByteWidth = sizeof(SelectionOutlineConstantBuffer);
-			bufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-			bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-			bufferDesc.MiscFlags = 0;
-			bufferDesc.StructureByteStride = 0;
-
-			result = DX11::Device->CreateBuffer(&bufferDesc, NULL, locRenderdata.selectionOutlineConstantBuffer.ReleaseAndGetAddressOf());
-			if (FAILED(result))
-			{
-				return;
-	}
-		}
-	{
-			HRESULT result = S_OK;
-
-			D3D11_BUFFER_DESC bufferDesc;
-			bufferDesc.Usage = D3D11_USAGE_DYNAMIC;
-			bufferDesc.ByteWidth = sizeof(IdConstantBuffer);
-			bufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-			bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-			bufferDesc.MiscFlags = 0;
-			bufferDesc.StructureByteStride = 0;
-
-			result = DX11::Device->CreateBuffer(&bufferDesc, NULL, locRenderdata.idConstantBuffer.ReleaseAndGetAddressOf());
-			if (FAILED(result))
-			{
-				return;
-	}
-		}
+		// use last slot to not interfere if slots are added to TGE/in game project;
+		// bound to both VS and PS (SetupIdPass/DrawOutlines bind it at both stages).
+		locRenderdata.selectionOutlineConstantBuffer.Create(*DX11::Rhi(), sizeof(SelectionOutlineConstantBuffer),
+			rhi::ShaderStage::AllGraphics, 13, "SelectionOutlineCb");
+		locRenderdata.idConstantBuffer.Create(*DX11::Rhi(), sizeof(IdConstantBuffer),
+			rhi::ShaderStage::AllGraphics, 13, "IdCb");
 
 		locRenderdata.isInitialized = true;
 	}
@@ -122,33 +95,23 @@ void Tga::SetupIdPass()
 	{
 	EnsureInitialized();
 	// use last slot to not interfere if slots are added to TGE/in game project
-	DX11::Context->VSSetConstantBuffers((int)13, 1, locRenderdata.idConstantBuffer.GetAddressOf());
-	DX11::Context->PSSetConstantBuffers((int)13, 1, locRenderdata.idConstantBuffer.GetAddressOf());
+	locRenderdata.idConstantBuffer.Bind(DX11::Rhi()->GetContext());
 	}
 void Tga::DrawOutlines(const EditorViewport& viewport)
 	{
 	EnsureInitialized();
 
+	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
 
-	DX11::Context->VSSetConstantBuffers((int)13, 1, locRenderdata.selectionOutlineConstantBuffer.GetAddressOf());
-	DX11::Context->PSSetConstantBuffers((int)13, 1, locRenderdata.selectionOutlineConstantBuffer.GetAddressOf());
-
-	D3D11_MAPPED_SUBRESOURCE mappedResource;
-	HRESULT result = DX11::Context->Map(locRenderdata.selectionOutlineConstantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
-	if (FAILED(result))
-	{
-		INFO_PRINT("Error in rendering!");
-		return;
-	}
-	SelectionOutlineConstantBuffer* dataPtr = (SelectionOutlineConstantBuffer*)mappedResource.pData;
+	SelectionOutlineConstantBuffer data{};
 	// TODO, color outline depending on p4 file status for it
 	//P4::FileInfo fileinfo = P4::QueryFileInfo(UUIDManager::GetUUIDStringFromID(p->));
-
-	dataPtr->r = 0;
-	dataPtr->g = 0;
-	dataPtr->b = 255;
-	dataPtr->a = 1;
-	DX11::Context->Unmap(locRenderdata.selectionOutlineConstantBuffer.Get(), 0);
+	data.r = 0;
+	data.g = 0;
+	data.b = 255;
+	data.a = 1;
+	locRenderdata.selectionOutlineConstantBuffer.Update(ctx, data);
+	locRenderdata.selectionOutlineConstantBuffer.Bind(ctx);
 
 	viewport.GetIdRenderTarget().SetAsResourceOnSlot(1);
 	locRenderdata.selectionOutlineEffect.Render();
@@ -157,39 +120,33 @@ void Tga::SetObjectAndSelectionId(uint32_t anObjectId, uint32_t aSelectionId, co
 	{
 	EnsureInitialized();
 
-	D3D11_MAPPED_SUBRESOURCE mappedResource;
-	HRESULT result = DX11::Context->Map(locRenderdata.idConstantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
-	if (FAILED(result))
-	{
-		INFO_PRINT("Error in rendering!");
-		return;
-	}
-
-	IdConstantBuffer* dataPtr = (IdConstantBuffer*)mappedResource.pData;
-	dataPtr->objectId = anObjectId;
-	dataPtr->selectionId = aSelectionId;
-	dataPtr->p4status = 0;
+	IdConstantBuffer data{};
+	data.objectId = anObjectId;
+	data.selectionId = aSelectionId;
+	data.p4status = 0;
 
 	if (someInfo.action != P4::FileAction::None)
 	{
 		if (strcmp(someInfo.user, P4::MyUser()) == 0 && strcmp(someInfo.client, P4::MyClient()) == 0)
 		{
 			// my user and workspace
-			dataPtr->p4status = 1;
+			data.p4status = 1;
 		}
 		else if (strcmp(someInfo.user, P4::MyUser()) == 0)
 		{
 			// my user, but different workspace
-			dataPtr->p4status = 2;
+			data.p4status = 2;
 	}
 		else
 		{
 			// checked out by someone else
-			dataPtr->p4status = 3;
+			data.p4status = 3;
 		}
 	}
 
-	DX11::Context->Unmap(locRenderdata.idConstantBuffer.Get(), 0);
+	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
+	locRenderdata.idConstantBuffer.Update(ctx, data);
+	locRenderdata.idConstantBuffer.Bind(ctx);
 }
 
 void Tga::SceneCache::ClearCache()
