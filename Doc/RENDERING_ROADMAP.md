@@ -278,7 +278,7 @@ than a separate lib, to avoid a link cycle with `Tga::DX11`), with a `dx11/` bac
 subfolder. Four stages:
 
 - **Stage 1** — RHI seam + DX11 backend at parity (12 steps, zero visible change).
-  Currently here — steps 0–6 done, step 7 in progress:
+  Currently here — steps 0–7 done, step 8 next (~58% of Stage 1's 12 steps):
   - [x] Step 0 — RHI interface (`Handles.h`/`Descs.h`/`Device.h`/`CommandContext.h`) +
     DX11 backend (`Dx11Device`, `Dx11CommandContext`, gen-checked handle pools) wrapping
     the pre-existing `Tga::DX11` statics.
@@ -297,7 +297,7 @@ subfolder. Four stages:
     (`TimestampQueryHandle`, `ctx.PushMarker/PopMarker`); perf overlay API unchanged.
   - [x] Step 6 — 2D drawers (`CustomShapeDrawer`/`LineDrawer`/`SpriteDrawer`),
     `FullscreenEffect`, `SpriteShader` off raw `DX11::Context->`.
-  - [~] Step 7 — `DeferredRenderer.cpp` (~1600 lines, the largest single file), migrated
+  - [x] Step 7 — `DeferredRenderer.cpp` (~1600 lines, the largest single file), migrated
     pass-by-pass since the passes share one large SRV/sampler/cbuffer bind function:
     - [x] sub-pass 1 — all 11 constant buffers → new `rhi::ConstantBuffer` helper
       (owns buffer + stage + slot; `Update`/`Bind` replace the `CreateBuffer`+
@@ -316,9 +316,16 @@ subfolder. Four stages:
     - [x] sub-pass 5 — compute dispatch: `ctx.SetComputePipeline` (hash-cached
       `CreateComputePipeline` off the shader module) + `ctx.Dispatch` for cluster
       culling and GI SH projection.
-    - [ ] sub-pass 6 — remaining fullscreen-draw plumbing (next, closes out step 7)
-  - [ ] Steps 8–12 — `CubemapPrefilter`, `GameWorld` GI capture, video player, ImGui /
-    editor viewport + font atlas, then delete the `DX11::Device/Context/...` statics.
+    - [x] sub-pass 6 — remaining fullscreen-draw plumbing: `BindFullscreen`, `RenderSSAO`/
+      `RenderSSR` SRV binds, `BindGBufferSrvs`/`UnbindGBufferSrvs`, `ResolveLighting`/
+      `Composite`/`DebugBlit` draws, and the bloom/auto-exposure chain in `RenderPostFx`
+      (`PostFxFullscreen` signature `ID3D11ShaderResourceView* const*` → `const rhi::SrvHandle*`,
+      6 call sites updated). Raw D3D11 refs in the file: 48 → **2** (both `GiProjectProbe`'s
+      `aCubeSrv` param, deliberately deferred to step 9 — public API signature change).
+      **Step 7 is now fully complete** — `DeferredRenderer.cpp` is ~100% RHI-native.
+  - [ ] Steps 8–12 — `CubemapPrefilter`, `GameWorld` GI capture (incl. finally converting
+    `GiProjectProbe`'s `aCubeSrv` param), video player, ImGui / editor viewport + font
+    atlas, then delete the `DX11::Device/Context/...` statics.
   - **Found + fixed a real bug along the way** (not port-scope, a genuine engine
     correctness bug the port's extra scrutiny surfaced): `Pool<ComPtr<T>>::Get()` in the
     new RHI backend was itself broken (`&s.value` invoked `ComPtr`'s overloaded out-param
