@@ -10,6 +10,8 @@
 #include <tge/application.h>
 
 #include "tge/graphics/GraphicsEngine.h"
+#include <tge/windows/BackendChooser.h>
+#include <tge/windows/CrashHandler.h>
 
 #include <cstdlib>
 
@@ -48,6 +50,17 @@ namespace Tga
 
 void Go()
 {
+	Tga::InstallCrashHandler();
+
+	// Only for a plain interactive launch -- every scripted/bench run already
+	// sets TGE_RHI itself (BENCH_* env vars, CI, etc.) and must keep running
+	// headless with no popup, so this is skipped whenever that's already set.
+	if (!std::getenv("TGE_RHI"))
+	{
+		if (Tga::ShowBackendChooser(L"TGE - Choose Backend") == Tga::RhiBackendChoice::Cancelled)
+			return;
+	}
+
 	Tga::EnsureStaticInitializedTypesAreLoaded();
 
 	Tga::LoadSettings(TGE_PROJECT_SETTINGS_FILE);

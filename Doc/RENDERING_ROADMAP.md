@@ -922,6 +922,28 @@ subfolder. Four stages:
   both trees). DX12 GameEditor is, for the first time this port, genuinely usable end-to-end:
   device/swapchain/UI bring-up, real texture/cubemap loading, opening a scene, viewing it in the
   3D viewport, and mouse-hovering/picking objects in it all work without crashing.
+- **Backend chooser launcher (2026-09-12)** — with `TGE_RHI=dx12` no longer needed just to keep
+  the engine from immediately hanging/crashing, added a small native Win32 window (no ImGui/D3D
+  device exists yet at this point, so it can't be one) with two buttons, "Legacy" and "DX12",
+  shown before either `GameMain` or `GameEditor` boots (`Source/Application/tge/windows/
+  BackendChooser.{h,cpp}`) — picking one just sets the `TGE_RHI` env var the existing
+  `DX11::Init()` check already reads, so it's a friendlier front end for that switch, not a new
+  selection mechanism. Skipped entirely (no popup) whenever `TGE_RHI` is already set, so every
+  scripted/bench/CI invocation from this whole port is unaffected. Also added a permanent,
+  shared top-level crash handler (`Source/Application/tge/windows/CrashHandler.{h,cpp}`,
+  factored out of the GameEditor-specific one from the `DEVICE_HUNG`/editor-crash work) to both
+  `Go.cpp` and `GoEditor.cpp`.
+  **Found and fixed a real bug via live testing with the user**: the chooser's `WM_DESTROY`
+  handler called `PostQuitMessage(0)` after a normal button click (to stop its own local message
+  loop) — but `PostQuitMessage` posts `WM_QUIT` to the whole THREAD's message queue, not "close
+  this one dialog", so that stale `WM_QUIT` sat queued until the main application's own game-loop
+  message pump started moments later and immediately consumed it, exiting the whole app right
+  after a successful backend pick — with everything else (device, scene, GI) having initialized
+  completely correctly, no error anywhere, making it look exactly like a random silent crash
+  (and with no crash-handler output, since it genuinely wasn't a crash). Fixed: the chooser's own
+  local loop only needs its `gDone` flag to stop; removed the errant `PostQuitMessage` entirely.
+  **Verified live, interactively, by the user**: picked DX12 in the chooser, the Sponza scene
+  loaded and ran continuously in free-fly mode as expected, no unexpected exit.
 - **Stage 3** — DXR inline `RayQuery` (SM 6.5) hardware-traced GI, replacing the Phase 6
   SH-volume software path with a real DDGI (BLAS/TLAS, per-probe ray tracing into the
   existing SH probe volume). Not started.
