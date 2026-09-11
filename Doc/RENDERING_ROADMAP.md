@@ -392,14 +392,28 @@ subfolder. Four stages:
     instead of `&`). Verified against the reference image. Repo now under git
     (`github.com/Attomannen/TGE-DX12-Port`, private) specifically so this kind of
     regression is bisectable going forward.
-- **Stage 2** `[~]` — DX12 backend behind the same seam (D3D12MA, `d3dx12.h`/Agility SDK, DXC,
-  one root signature mirroring the existing register layout, automatic barrier tracker).
-  **Starting now.** Goal: implement `Source/Application/tge/rhi/dx12/` against the exact same
-  `IDevice`/`ICommandContext` interface Stage 1 built — every converted call site should work
-  unmodified, selected via `-rhi=dx12` at startup. See memory `p5g3-dx12-port` for the detailed
-  plan (descriptor heaps, upload ring, PSO cache, root signature, barrier tracker, DXC compile
-  path, `imgui_impl_dx12`, DirectXTex `*12` loaders). Checkpoint: `-rhi=dx12` visually identical
-  to `-rhi=dx11` on every scene + editor + Tutorials, PIX-clean, perf parity or better.
+- **Stage 2** `[~]` — DX12 backend behind the same seam. **Milestone 1 done** (2026-09-11):
+  `Source/Application/tge/rhi/dx12/` (`Dx12Device`/`Dx12CommandContext`/`Dx12DescriptorHeap`)
+  implements real device/adapter/queue creation, a flip-model swapchain + `Resize()`, 4
+  descriptor heaps (RTV/DSV/CBV-SRV-UAV/Sampler) with free-list slot allocation, per-frame
+  command-allocator + fence pacing, `CreateBuffer`/`CreateTexture`/`CreateSrv`/`CreateUav`/
+  `CreateRtv`/`CreateDsv`/`CreateSampler`/`Destroy`, and `AllocateDynamicConstants` (an
+  UPLOAD-heap ring, same design as DX11's). Verified against the real RTX 5060 Ti via a
+  standalone smoke test (not part of the engine build): 180 frames presented with an
+  animated clear color, plus a mid-run `Resize()` exercising full backbuffer/depth
+  teardown-recreate — all clean, no crashes, no validation errors. DX11 regression-checked
+  throughout (this is purely additive code; `DX11::Init()` untouched).
+  **Not yet implemented** (asserts clearly if reached): root signature, PSO cache, the
+  bind/draw/dispatch surface, `GenerateMips` (no DX12 equivalent, needs a compute shader),
+  timestamp queries, ImGui interop, the Stage-1-only migration bridges (not needed by DX12
+  at all). **Not yet wired into the live game** — found while scoping this that `RenderTarget`/
+  `DepthBuffer`/`TextureResource`'s internal storage (`ComPtr<ID3D11RenderTargetView>` etc)
+  cannot represent a DX12 descriptor-heap-based view at all, so no engine rendering code can
+  run against this backend until those three classes' storage is migrated to `rhi::Handle`
+  types — a substantial, separate task (milestone 3), bigger than the format-parameter-only
+  rewrite done earlier. See memory `p5g3-dx12-port` for the full milestone 2/3 plan.
+  Checkpoint (unchanged): `-rhi=dx12` visually identical to `-rhi=dx11` on every scene +
+  editor + Tutorials, PIX-clean, perf parity or better.
 - **Stage 3** — DXR inline `RayQuery` (SM 6.5) hardware-traced GI, replacing the Phase 6
   SH-volume software path with a real DDGI (BLAS/TLAS, per-probe ray tracing into the
   existing SH probe volume). Not started.
