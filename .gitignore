@@ -1,0 +1,30 @@
+# Build output / generated
+Bin/
+Lib/
+Local/
+Temp/
+*.pdb
+*.obj
+*.ilk
+*.exp
+*.log
+*.tlog
+*.idb
+*.ipdb
+*.iobj
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+*.suo
+.vs/
+
+# Large game/tutorial/example content - not engine source, don't need history
+Source/Game/data/
+Source/Tutorials/
+Source/Examples/
+
+# Bench/debug scratch produced while iterating
+Bin/*.png
+*_bench.json
+bench_report.json

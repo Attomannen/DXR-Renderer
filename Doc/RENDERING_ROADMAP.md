@@ -1,0 +1,322 @@
+# TGE rendering backend roadmap
+
+Living plan for the graphics-backend remake. Status legend:
+`[x]` done · `[~]` in progress · `[ ]` not started · `[>]` deferred / parked
+
+Goal (user): faster & better PBR, deferred shading, accurate + fast lighting,
+emissive global illumination, reflections, fewer draw calls — plus editor tooling,
+debug/profiling, content pipeline, and standalone utilities.
+
+Bench + baselines: `Source/Game/BENCH.md`. Per-phase numbers are captured there.
+
+---
+
+## Phase 0 — Baseline & build  `[x]`
+
+- [x] CLI build of all configs (VS 18 / MSVC v145) — `p5g3-build-env`
+- [x] Sponza bench harness (`GameMain`), scripted fly-through, JSON reports
+- [x] Perf baseline captured (forward PBR, 1×/4×/9× Sponza)
+- [x] FBX static-mesh import cache — first load ~16 s → ~0.7 s (23×)
+
+## Phase 1 — Draw-call reduction  `[x]`
+
+- [x] `ModelShader` split `RenderSetup()` (per-instance binds) / `RenderMesh()` (per-sub-mesh)
+- [x] Skip the per-sub-mesh 8 KB bone-buffer map for static meshes
+- [x] Merge same-material sub-meshes at import (Sponza 120 → 28), baked into mesh cache v3
+- [x] Whole-model frustum cull (`Model::GetBounds()`, `ModelDrawer::SetCullFrustum()`)
+- Result: 4× −24 %, 9× −49 %, CPU submit −90 %
+
+## Phase 2 — Deferred shading  `[~]`
+
+- [x] 4-MRT G-buffer (albedo / world-normal / ORM+emissiveMask / emissive) + shared depth
+- [x] Geometry pass (`GBufferPS.hlsl`, reuses `PbrModelShaderVS` + ModelShader path + cull)
+- [x] Fullscreen PBR lighting resolve (`DeferredLightingPS.hlsl`, depth → world-pos)
+- [x] HDR light target + engine tonemap composite
+- [x] G-buffer debug visualiser (`BENCH_GBUF=1..7`, `DeferredDebugPS.hlsl`)
+- [x] Screenshot capture in the bench (`BENCH_SCREENSHOT`)
+- [x] Verified visually equal to forward
+- Result: 1× −17 %, 9× −20 %, frame pacing much tighter
+- Still in the bench only — see Phase 2.5
+
+## Phase 2.5 — Productionize deferred + instrument  `[~]`
+
+- [x] GPU timestamp profiler — `Source/Graphics/tge/render/GpuProfiler.{h,cpp}` (disjoint + per-scope begin/end, 5-frame ring-buffered non-blocking readback, `TGA_GPU_SCOPE` macro)
+- [x] Per-pass timing in the bench report (`gpu_ms: { frame, geometry, lighting, composite }`)
+  - Finding: **lighting is flat ~0.2 ms regardless of scene / overdraw**; all cost is the G-buffer geometry pass. Confirms Phase 3 (many lights) will be cheap.
+- [x] On-screen pass-timing overlay — `GameWorld::Impl::DrawPerfOverlayImpl()`: always-on HUD in free-fly,
+      CPU/GPU frame ms + per-`RenderGraph`-pass GPU scopes from `GpuProfiler::GetResults()`. "Perf overlay" toggle.
+- [x] Shader hot-reload **verified present** — `DX11::CompileShaderIfChanged` registers a `FileWatcher`
+      callback per top-level `.hlsl`, `Application::Update` calls `FlushChanges()` each frame. Works for
+      direct `.hlsl` edits; editing a shared `.hlsli` include needs a relaunch (watcher only tracks the entry files).
+- [x] **GPU debug markers** — `Tga::GpuMarkerScope` / `TGA_GPU_MARKER` (`Source/Graphics/tge/render/GpuMarker.{h,cpp}`),
+  lazily QIs `DX11::Context` for `ID3DUserDefinedAnnotation`. The render graph wraps every pass automatically.
+- [ ] Verify shader hot-reload covers the deferred set — `FileWatcher` + runtime `D3DCompileFromFile` already exist
+  behind `DebugFeature::Filewatcher`; confirm it picks up `GBufferPS` / `DeferredLightingPS` / `DeferredDebugPS` (free Phase 3 iteration speed if so)
+- [x] Bench free-flight camera + saved viewpoint: fly with `BENCH_FRAMES=0` (WASD / RMB-look / E-Q / Shift),
+  **F5** saves `bench_camera.json`, **F9** reloads, **F6** prints. Timed runs: `BENCH_CAM=` `spin` (default —
+  hold position, yaw-sweep in place, still shot matches the save), `fixed` (dead still), `orbit` (circle the
+  saved point), `room` (orbit scene centre). Also: `BENCH_SPIN`, `BENCH_EXPOSURE`, `BENCH_ORBIT`, `BENCH_ROT_X`,
+  `BENCH_CAMFILE`. Scripts: `Bin/frame.bat <model>` (curated per-model framing, one command → hero shot + bench),
+  `Bin/view.bat <model>` (free-fly + F5 save), `Bin/shot.bat <model> [out] [spin|fixed|room|orbit|forward]`.
+- [x] Promote `DeferredRenderer` into `GraphicsEngine` (engine owns the G-buffer + passes) — moved to
+  `Source/Graphics/tge/render/DeferredRenderer.{h,cpp}` in `namespace Tga`; `GraphicsEngine` constructs one in
+  `Init()` sized to `Application::GetRenderSize()`, exposes `GetDeferredRenderer()` + `IsReady()` / `OnResize()`.
+  The bench now drives the engine-owned instance instead of owning its own. Forward path unaffected.
+- [x] Forward pass for transparency — `DeferredRenderer::BuildFrame` now takes a `drawTransparent` fn and
+  inserts a `transparent` pass between `lighting` and `composite`: alpha-blend into the lit HDR target,
+  depth `ReadOnlyLessOrEqual` (test, no write). Bench classifies sub-meshes by material name
+  (`glass`, `lamp_glass` default; `BENCH_TRANSPARENT_MATS` override, empty disables) — those go forward-PBR,
+  the rest stay in the G-buffer. New `ModelInstance::Render(shader, meshIndices)` (hoisted setup). glass /
+  lamp_glass cook.json baseColor alpha dropped to ~0.2–0.3. No back-to-front sort yet (fine for a few panes).
+- [ ] Editor viewport renders through the deferred path  ← **Phase 3 gate**
+- [ ] Editor debug views: G-buffer inspector, pass-timing panel, light-count / overdraw viz
+
+> **Gate before Phase 3:** ~~render-graph skeleton~~ ✓ · ~~transparency forward pass~~ ✓ · editor viewport
+> through the deferred path is the only gate item left (parallel — not blocking Phase 3 bench work).
+- [x] Sky: `DeferredLightingPS` samples the environment cubemap along the view ray where depth == far
+
+### New Sponza (Intel/EA Main) — DONE
+
+- [x] Cooker `aliases` (cook.json) — texture-pack prefixes had drifted from the FBX material names (11 mappings)
+- [x] Cooker `inputs` (cook.json) — explicit file→role per material, for oddly-named assets (DamagedHelmet's `gltf_embedded_*@channels=X.jpeg`)
+- [x] `CacheCreateBuffers` hardened: null buffers + skip on failure, 4 GB guard, per-mesh diagnostics
+- [x] Force `Vertex.position.w = 1` on FBX import (some exporters leave it 0 → mesh collapses)
+- [x] User re-exported from Blender → mesh imports **clean** (the raw glTF→FBX machine conversion was the problem)
+- [x] All 28 materials resolve: 24 fully textured (C/N/M), 4 constant-shaded (glass/lamp_glass_01/light_bulb/dirt_decal)
+- [x] **DamagedHelmet** (Khronos) added — single mesh, C/N/M/**FX emissive**, loads + renders
+- [x] `.tgo` + `.tgm` written for both (cooker `--tgo` probes cooked DDS on disk per FBX material →
+  handles aliases + constants). `NewSponza.tgo` = 28/28 materials with textures assigned; `DamagedHelmet.tgo` = 1/1.
+- [x] `Bin/view.bat <model>` (free-fly, F5 saves per-model viewpoint) and `Bin/shot.bat <model>` (screenshot+bench from saved view)
+
+### Test assets available
+
+- `sponza/Sponza.fbx` — the reliable draw-call / perf bench (120→28 merged, works perfectly)
+- `main_sponza/NewSponza_Main_Yup_003.fbx` — bigger open scene, fully textured
+- `damaged-helmet/source/DamagedHelmet.fbx` — small PBR prop with emissive + AO (for HDR/reflection/GI iteration)
+- `main_sponza/textures/kloppenheim_05_4k.hdr` — a real sky HDR (needs equirect→cubemap; future IBL upgrade)
+- Still no scene with strong in-context emissive light sources — Intel "Sponza Emissive/Curtains" pack would fill that
+
+## Phase 3 — Clustered / tiled lighting  `[x]`
+
+- [x] Move light data from the fixed `NUMBER_OF_LIGHTS_ALLOWED` array to a structured buffer — deferred path
+  only: `DeferredRenderer` owns `StructuredBuffer<GpuLight>` (t15, 1024 cap) + count cbuffer (b6),
+  `UploadLights()` per frame. Engine's forward/transparent path still uses the b2 8-light cbuffer (unchanged).
+- [x] Lift the 8-light cap (deferred) — `BENCH_LIGHTS` up to 1024; authored `bench_lights_*.json` uncapped.
+- [x] Compute cluster/tile assignment — `EngineAssets/Shaders/ClusterCullCS.hlsl`: froxel grid
+  **32px tiles × 24 exponential depth slices** (50×29×24 = 34,800 clusters @ 1600×900), one thread/cluster,
+  builds the view-space AABB, sphere-tests every light, writes a compact per-cluster index list
+  (`kMaxPerCluster` = 256; excess silently dropped in pathologically dense clusters → dimming + faint
+  tile-banding). `DeferredRenderer::CullClusters()` runs it as a `clusters` render-graph pass.
+  Engine is **left-handed (+Z forward)** — cluster Z math must use positive view Z (cost a debug cycle).
+- [x] Deferred lighting pass consumes the cluster grid — `DeferredLightingPS` maps pixel → cluster, loops
+  only that cluster's lights. `BENCH_CLUSTERED=0` forces brute-force for A/B.
+- [x] Re-sweep (TEST scene, 3D-lattice stress rig): `lighting` GPU pass **brute → clustered** —
+  64 lights: 1.20 → **0.74 ms**; 1024 (all overlapping one courtyard): 18.5 → **4.9 ms** (3.8×, dense
+  clusters genuinely hold 200+ lights — real work). Realistic loads stay sub-ms (authored 6-light rig
+  = 0.17 ms). Frame 64: 2.4 → 1.9 ms. `clusters` CS pass 0.06 ms @64, 0.63 ms @1024.
+- [~] Follow-up: a two-phase light-list prepass (atomic global list, no per-cluster cap) would remove the
+  drop-at-cap dimming and flatten the CS cost — parked; current cap is fine for realistic scenes.
+- [ ] Physical light units — replace the bench's magic-constant inverse-square rig with lumens/candela +
+  explicit radius; pairs naturally with the structured light buffer
+
+## Phase 3.2 — SSAO  `[x]`
+
+- [x] Screen-space AO deferred pass — `EngineAssets/Shaders/SSAOPS.hlsl`: fullscreen, reads G-buffer
+  world normal (t11) + depth (t14), 16-sample view-space hemisphere kernel rotated per-pixel by a hash,
+  range-checked occlusion. `EngineAssets/Shaders/SSAOBlurPS.hlsl`: depth-aware 7×7 box blur (t18 raw → `myAo`).
+  `DeferredRenderer::RenderSSAO()` runs both as an `ssao` render-graph pass after geometry.
+- [x] Feed into the ambient term — `DeferredLightingPS` multiplies the blurred AO into `orm.r` before
+  `EvaluateAmbiance` (ambient-only, not direct light). `gSsaoEnabled` flag in the b6 cbuffer.
+- [x] Debug view (`BENCH_GBUF=8`) + `BENCH_SSAO` toggle (default 1).
+- Cost ~0.33 ms full-res @1600×900. **Deferred (`SetCamera`) also now stashes `viewToProj`.**
+- [ ] Follow-up: half-res + bilateral upsample; temporal accumulation (or lean on Phase 4.5 TAA) —
+  parked, current full-res + blur is clean enough. Offline AO bake tool stays the high-quality path.
+
+## Phase 3.4 — Emissive intensity (material-pipeline slice of Phase 6)  `[x]`
+
+- [x] New `_FX` encoding — **r = emissive mask** (`max` of source RGB, so saturated hues survive; colour
+  comes from albedo in the shader), **g = `emissiveStrength / MAX_EMISSIVE_STRENGTH`** (16, in `common.hlsli`),
+  constant per material. Height dropped (unused).
+- [x] `GBufferPS` + `PbrModelShaderPS`: `emissive = albedo.rgb * fx.r * (fx.g * MAX_EMISSIVE_STRENGTH)` →
+  HDR into the `R11G11B10F` emissive G-buffer / forward radiance. `DeferredLightingPS` unchanged (adds the
+  G-buffer emissive as-is).
+- [x] Spaceship `cook.json` (`emissiveStrength: 9`) — the BLUE marker dot now self-illuminates as an HDR
+  source (white-hot core + blue halo; **Phase 4 bloom** will make it read properly). `light_bulb` (New
+  Sponza) `emissiveStrength: 4` re-cooked.
+- Backwards compatible: assets with an emissive map but no explicit strength → `fx.g` = 1/16 → ×1 (current look).
+- **Cooker bugs fixed along the way:** (1) `MatOverride::mergeFrom` clobbered `emissiveStrength` from the
+  `*` defaults whenever the `emissive` colour was unset → now a `-1` sentinel merges independently; (2) the
+  cooker re-ingested its own `*_C/_N/_M/_FX.dds` outputs as sources when `--in` == `--out` (Spaceship/) — a
+  stale `_FX.dds` took the `PackedFx` passthrough → now skips its own output names.
+
+## Phase 3.5 — Shadows  `[~]`
+
+- [x] **Cascaded shadow maps for the directional light** — 4 cascades, 2048² `R32_TYPELESS` Texture2DArray
+  (per-slice DSV, array SRV t19). Practical split (λ=0.75) between near and `min(farPlane, sceneRadius·4)`.
+  Per cascade: view-frustum slice → world corners → bounding sphere → ortho light `Camera` (radius-ceil
+  snapped). `DeferredRenderer::RenderShadows()` renders each cascade depth-only (`ShadowPS.hlsl` = empty,
+  `PbrModelShaderVS`) by swapping `gss.SetCamera` + `UpdateGpuStates(true)`, restores the view camera after.
+  `shadows` render-graph pass runs first. `BENCH_SHADOWS` toggle.
+- [x] **PCF 3×3** — `SamplerComparisonState` (LESS_EQUAL, border=1), `SampleCmpLevelZero`, blended by
+  `gShadowStrength`. Applied to the directional term only in `DeferredLightingPS`.
+- [x] **Bias & filtering pass** (fixed the "shadows only look right up close" report — a fixed **NDC** depth
+  bias becomes ~16 world units in a far cascade's huge depth range → peter-pan gap that closes as you
+  approach a nearer, tighter cascade):
+  - depth bias is now **world units ÷ per-cascade `orthoDepth`** (`gCascadeDepthRange[]`), slope-scaled by N·L
+  - normal-offset bias in **shadow-texel units** × `gCascadeTexelWorld[]` (consistent across cascades)
+  - **cascade blend** — lerp into cascade c+1 over the last 20% of c's split range (kills the seam banding)
+  - **PCF 5×5**, shadow map **3072²**, `shadowFar = sceneRadius·1.3`, **λ=0.5** (near cascades cover a useful range, not crammed at the camera)
+  - texel snapping (cascade centre → texel grid, no edge crawl on camera move)
+  - `BENCH_SUN_PITCH` / `BENCH_SUN_YAW`; `BENCH_SHADOW_VIZ=1` / panel "Show cascades" tints by cascade.
+- [x] **Sign bug fixed** — `dirLight.transform.GetForward()` is **L** (surface→sun, points up); the shadow
+  camera was placed along +L (below the scene, looking up) → the floor self-shadowed everything. Now placed
+  at the sun looking down (−L).
+- Cost ~2.6 ms (4× full-scene re-render of New Sponza @2048²). Frame 1.8→4.2 ms with shadows.
+- [ ] Follow-ups: **per-cascade frustum cull + res falloff for far cascades** (the 2.6 ms); alpha-tested
+  casters; cascade-blend at splits.
+- [x] Point / spot light shadows — shared 4096² depth atlas, 8×8 tiles of 512px, nearest
+      <=8 casters by `lum/dist` per frame, re-rendered every frame. Spot = 1 tile (perspective,
+      `near=far*0.05`, slope-scaled bias, 3x3 PCF). Point = 6 cube-face tiles (`CubeFace()`
+      picks the face; uv inset stops PCF crossing face boundaries). `SetLocalShadows` /
+      "Point/spot shadows" panel / `BENCH_LOCAL_SHADOWS`; `BENCH_GBUF=9` shows the atlas.
+      Spot light type also landed: `DeferredLight` + cluster CS + `EvaluateSpotLight` +
+      `"spot"` JSON block. Cost ~0.35 ms/spot, ~0.7 ms/point (full re-render per tile).
+  - [x] Per-tile caster cull — `drawShadowCasters(const Camera&)` + `ModelInstance::Render(shader,
+        Frustum)` sub-mesh cull to each shadow view (also gives directional per-cascade cull free).
+        Budget tunables `localShadowMaxCasters` (4) / `localShadowMaxPoints` (2) + a brightness
+        cutoff keep dim fill lights out of the atlas. Note: sub-mesh cull only bites when the
+        scene is many discrete objects; a scene made of a few huge meshes still pays per tile.
+- [x] In-game light editor — "Lights" panel: per-light translation / direction / cone / range
+      drags, plus projected screen markers. (No 3D manipulator — `DebugDrawer` is 2D only.)
+- [x] Screen-space / contact shadows — `ContactShadow()` in `DeferredLightingPS`: 16-step view-space
+      ray-march toward the sun, re-projects each step to sample `GBufferDepth`, occluded when the ray
+      passes behind a surface within `gContactThickness`. Directional light only, multiplied onto
+      `sunShadow` alongside the CSM; skipped where CSM already shadows (`sunShadow <= 0.05`) or the
+      surface faces away. Params in `ShadowParams` b9 (`gContactLength` / `gContactThickness`, took the
+      `_shadowPad` slot); `Tunables.contactShadows/contactLength(45)/contactThickness(30)`; panel
+      checkbox + 2 sliders under Shadows; `BENCH_CONTACT` env. Cost ~0.12 ms @1600x900. No artifacts
+      on TEST / PillarTest; it's a fill for CSM gaps (floating props) — subtle when the CSM is tight.
+
+## Phase 4 — HDR / exposure / bloom  `[~]`
+
+- [x] Bloom: soft-knee prefilter (half-res) -> 13-tap COD downsample chain (6 mips,
+      R11G11B10F) -> additive 9-tap tent upsample -> added in the composite. Shaders
+      `BloomPrefilterPS` / `BloomDownPS` / `BloomUpPS`, shared `PostFxCommon.hlsli`.
+- [x] Auto-exposure: HDR -> 64x64 log-luma -> box downsample to 1x1 -> temporal
+      adapt in a persistent 1x1 ping-pong (`ExposureLumaPS` / `ExposureDownPS` /
+      `ExposureAdaptPS`, framerate-independent). Manual-exposure + EV-comp override.
+      Default is manual 1.0 (keeps the tuned tonemap look); auto is an opt-in toggle.
+- [x] `DeferredCompositePS`: `hdr*exposure + bloom*intensity` then ACES tonemap ->
+      backbuffer, replacing the plain engine tonemap in `DeferredRenderer::Composite`
+      (falls back to the engine tonemap when post-fx is off). New `postfx` render-graph
+      pass; cbuffer `PostFxParams` b10, `LinearClamp` s3, post-fx SRVs t0..t2.
+- [x] ImGui "Post FX" panel section (bloom threshold/knee/intensity, auto/manual
+      exposure, key/min/max/adapt-speed, EV comp). `BENCH_POSTFX` env toggle.
+- [ ] Full HDR pipeline for the forward path too (not just deferred)
+- [ ] Editor-side exposure/curve controls + per-camera exposure
+- [ ] Lens dirt / chromatic-aberration options on the composite
+
+## Phase 4.5 — TAA + motion vectors  `[ ]`
+
+- [ ] Per-object motion-vector G-buffer channel (needs prev-frame transforms)
+- [ ] Jittered projection + temporal resolve with neighbourhood clamp
+- [ ] History buffer management, disocclusion handling
+- Prereq for reflection / GI denoising; also unlocks motion blur later
+
+## Phase 5 — Reflections  `[x]` (multi-probe blend is the only follow-up)
+
+- [x] Screen-space reflections — `SSRPS` view-space linear march (48 steps) + binary refine
+      at **half res**, `SSRApplyPS` resolves + bilinearly upsamples into HDR. Roughness-cutoff /
+      distance / edge / fresnel fades. `SsrCb` b8, `mySsrTex` RGBA16F, `SetSSR` / "SSR" panel /
+      `BENCH_SSR`. ~0.4 ms full-res. Verified (floor mirrors geometry with fades off); needs a
+      glossy surface to read. TODO: half-res + roughness blur, temporal accumulate, hi-Z trace.
+- [~] Reflection probes — Stage A done: `CubemapPrefilter` (from Tutorial-22) pulled into the game,
+      one probe re-captured every N frames (skybox + `DrawPbr` per face -> GGX prefilter -> IBL cube).
+      Panel toggle / interval / "Recapture now"; `BENCH_PROBE*` env. Metals now reflect the real scene.
+- [~] Stage B: **box parallax correction** (`BoxParallaxCorrect` in `EvaluateAmbiance`, b12 probe box,
+      roughness-gated + edge-faded to kill swirl on near-mirror flats) + **artist placement** via
+      `bench_probes_<scene>.json` + panel pos/box drags. TODO: multiple probes + nearest/blend selection.
+- [x] Stage C: SSR-over-probe compositing — lighting pass emits probe IBL specular to MRT1
+      (`myIblSpecTex`); SSR resolve does `hdr += conf·(ssrRadiance − iblSpec)` == `lerp(probe, ssr, conf)`.
+
+## Phase 6 — Emissive global illumination  `[~]`
+
+- [x] Real emissive **intensity** — see **Phase 3.4**
+- [x] **Method decided: lazy SH irradiance volume** (DX11, no hardware RT — a DX12 port is a full
+      backend rewrite, not worth it mid-project; Stage 2 upgrade path = SDF software rays in compute).
+- [x] **Stage 1 — SH9 irradiance volume.** Grid of L2-SH probes (auto from bounds ~360u spacing,
+      or `bench_gi_<scene>.json`). Each probe: tiny 16² forward cube capture (frustum-culled) →
+      `GiProjectSHCS` folds it to SH with temporal hysteresis. Volume is **primed** over ~1 s at load
+      then costs nothing (optional slow trickle for dynamic lights). Lighting samples it via
+      `EvaluateGI()` (trilinear + backface weight), added to the ambient diffuse. Emissive geo is
+      captured lit so it bounces; multi-bounce via the capture re-sampling the volume.
+      `SetGiVolume` (b13), SH buffer (t22), panel section, `BENCH_GI*` / `BENCH_GI_VIZ`.
+      **Steady-state cost ~+0.2 ms** (sampling only).
+- [ ] Stage 1b: Chebyshev visibility (per-probe distance moments) to kill thin-wall leak; probe
+      relocation for probes stuck inside geometry; capture with SSAO/local shadows.
+- [ ] Stage 2: per-frame dynamic — SDF built in compute, probe rays marched in a CS (real DDGI).
+- [ ] GI method decision — DDGI-style irradiance probes (leading candidate) vs RSM/LPV vs voxel CT
+- [ ] Probe placement / update budget, leak reduction
+- [ ] Combine with SSR for specular GI
+
+---
+
+## Cross-cutting track (parallel, not sequential)
+
+- [x] **Render-graph / pass-list abstraction** — `RenderGraph` (thin linear pass list, auto GPU marker +
+  `GpuProfiler` scope per pass), `RenderResourcePool` (frame-transient `RenderTarget` pool, keyed by
+  w/h/format, `ReleaseAll()` after Execute), `GpuMarker`. All in `Source/Graphics/tge/render/`. Engine owns
+  the pool (`GraphicsEngine::GetRenderResourcePool()`); `DeferredRenderer::BuildFrame(graph, drawOpaque, dbg)`
+  registers geometry/lighting/composite (or gbufDebug). No auto-reordering/aliasing yet — passes run in add
+  order. Next passes (SSAO, bloom, shadows, SSR) `AddPass` + `pool.Acquire` instead of hard-wiring.
+- [ ] GPU instancing for repeated props (`DrawIndexedInstanced`, per-instance transform stream) — lower
+  priority now that Sponza is 28 draws
+- [ ] AO bake tool (mesh-space / bent-normal) — offline high-quality path; SSAO (Phase 3.2) is the realtime one
+- [ ] Normal-map TBN cleanup — the model PS negates the bitangent, so the cooker green-flips by default
+  (`--src-normals`). Fragile convention coupling; fix properly and drop the flip.
+- [ ] Cooker `--audit` mode — no-cook report: FBX material count vs cooked DDS vs `cook.json` aliases,
+  list unmatched. Would have made every New Sponza re-export (`.003` suffixes, silent texture drops) a one-liner.
+- [ ] Shader system cleanup: runtime-HLSL → cooked, shared constant buffers, reflection, deduplicated input layouts
+- [ ] FBX-SDK import robustness (`ModelFactory`): the glTF→FBX New Sponza exposes gaps our path mishandles (position.w, some sub-meshes). Harden or move to a better importer.
+- [x] **Cooker BC backend = NVIDIA Texture Tools** — shells out to `nvcompress.exe` (auto-detected at the
+  default install dir / `NVTT_DIR` / PATH / `--nvtt`), DirectXTex fallback. `--nvtt-quality fast|production|highest`,
+  `--no-nvtt`. **This fixed the DamagedHelmet**: DirectXTex `Compress` to `BC7_UNORM_SRGB` was emitting an
+  all-zero texture for the `inputs`/JPEG-sourced path — packed data was verified correct, the compressor was the bug.
+  Serialised via mutex (CUDA). ~8 s for the helmet's 4 maps.
+- [x] **Bench loads `.tgo` / `.tgs`** — `BENCH_MODEL=x.tgo` (uses the object def's explicit per-mesh textures);
+  `BENCH_SCENE=x` loads `x.tgs` + `x.leveldata/` (GUID-named object files). Each object resolves a model via
+  (a) inline Model property, (b) `"path"` to a `.tgo`, or (c) **`"object-definition": "<name>"`** → first
+  `<name>.tgo` found under the game data root (the real editor format). `.tgo` "Model" property `"name"` is the
+  descriptive object-def name, not the literal "Model". `TEST.tgs` = Spaceship + seated Sponza.
+- [x] **Cooker: Unreal standard-material suffixes** — `_BaseColor`/`_Normal`/`_Emissive` plus
+  `_OcclusionRoughnessMetallic` / `_ORM` / `_ARM` → mapped straight to the `_M` output (already R:AO G:Rough
+  B:Metal). `--tgo-name <name>` sets the object-def name, `--tgo-pad N` pads the textures array to N rows.
+  Spaceship cooked: `Spaceship_Material.001_{C,N,M,FX}.dds` (NVTT BC7/BC5), `--src-normals dx` (Unreal exports
+  DirectX-convention normals). C map verified correct (white body + 3 marker dots), no black-texture bug.
+- [ ] TODO: DDS must sit next to the `.fbx` for raw `BENCH_MODEL=*.fbx` auto-resolution (helmet's are in `source/` now); `.tgo`/scene paths are absolute-from-game-root so unaffected.
+- [ ] Decal pass — `dirt_decal` and friends need blended projected decals; flat constant until then (alpha-test in the opaque G-buffer pass gives ugly black borders).
+- [ ] `TextureCooker` → `AssetCooker`: glTF import (cgltf) so the Khronos / Intel test-asset ecosystem is usable *(parked — assets being FBX-converted by hand for now; conversion quality is the current blocker)*
+- [ ] LOD story for large scenes
+
+## Tools deliverables (from the original ask)
+
+- [x] TextureCooker (TGA-standard DDS packing, manifest, threading) — `p5g3-texturecooker`
+- [ ] GPU profiler / frame inspector (Phase 2.5) — + GPU debug markers for PIX/RenderDoc
+- [ ] Editor G-buffer + lighting debug views (Phase 2.5)
+- [x] **Material Editor (GameEditor tab)** — `File ▸ New material…` / double-click a `.tgmat`. Dockable
+  document: 3D PBR preview viewport (`EditorViewport`, Alt/MMB orbit) of a switchable primitive
+  (Sphere/Cube/Cylinder/Cone/Torus/Plane), Unreal-style properties panel (base colour, metallic, roughness,
+  AO, normal strength, emissive colour+strength, 4 texture-map slots w/ drag-drop `.dds` + AssetBrowser
+  "Set"), and a Preview-Lighting panel (key-light dir/colour/intensity, ambient, cubemap). `.tgmat` = flat
+  JSON (`MaterialAsset`), read back at runtime by the game (`GameWorld::LoadTgmat`) for the built-in room
+  surfaces and the debug sphere. New forward shader `PbrConstModelShaderPS.hlsl` (b11 `ConstMaterial`
+  cbuffer) drives the no-textures preview; textured `.tgmat` fall back to the stock PBR shader.
+- [x] **Primitive pack** — engine built-ins grew from Cube/Plane to
+  **Cube / Plane / Sphere / Cylinder / Cone / Torus** (procedural in `ModelFactory::InitPrimitives`,
+  `GetModelInstance("Sphere")` …). Draggable `.fbx` + `.tgo` copies with a checker map in
+  `Source/Game/data/Primitives/` (`PrimCube` … — stem-prefixed to dodge the editor's unique-`.tgo` rule).
+- [x] **Built-in procedural room** — `Scene ▸ <BuiltinRoom>` in the tune panel (and `BENCH_SCENE=<BuiltinRoom>`):
+  6 primitive-plane surfaces, per-surface fixed-param material via `GBufferDebugMatPS`, 4 neutral ceiling
+  lamps, no-face-cull. Size + per-surface PBR + Load-.tgmat in the *Built-in room* panel.
+- [ ] TextureCooker `--audit` mode (Cross-cutting) — FBX vs cooked coverage report, no cook
+- [ ] Standalone: AO baker, (later) asset cooker CLI
