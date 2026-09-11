@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 #include <vector>
 
 #include <tge/application.h>
@@ -117,6 +118,20 @@ namespace
 	Tga::Vector3f Lerp(const Tga::Vector3f& a, const Tga::Vector3f& b, float t)
 	{
 		return { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t };
+	}
+
+	// Bind up to 8 render targets (+ optional depth) and a 0,0-origin viewport in
+	// one call -- collapses the repeated OMSetRenderTargets + D3D11_VIEWPORT +
+	// RSSetViewports triple.
+	void SetTargets(Tga::rhi::ICommandContext& aCtx,
+	                std::initializer_list<Tga::rhi::RtvHandle> aRtvs,
+	                Tga::rhi::DsvHandle aDsv, Tga::Vector2ui aSize)
+	{
+		Tga::rhi::RtvHandle arr[8] = {};
+		uint32_t n = 0;
+		for (Tga::rhi::RtvHandle h : aRtvs) if (n < 8) arr[n++] = h;
+		aCtx.SetRenderTargets(n, arr, aDsv);
+		aCtx.SetViewport(0.f, 0.f, (float)aSize.x, (float)aSize.y);
 	}
 }
 
@@ -402,7 +417,7 @@ void DeferredRenderer::RenderSSAO()
 {
 	if (!IsSSAO()) return;
 
-	D3D11_VIEWPORT vp{ 0.f, 0.f, (float)myResolution.x, (float)myResolution.y, 0.f, 1.f };
+	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
 	ID3D11ShaderResourceView* nulls[3] = {};
 
 	// --- pass 1: occlusion -> myAoRaw ---
@@ -418,9 +433,7 @@ void DeferredRenderer::RenderSSAO()
 			mySsaoCb.Update(DX11::Rhi()->GetContext(), c);
 		}
 
-		ID3D11RenderTargetView* rtv = myAoRaw.GetRenderTargetView();
-		DX11::Context->OMSetRenderTargets(1, &rtv, nullptr);
-		DX11::Context->RSSetViewports(1, &vp);
+		SetTargets(ctx, { myAoRaw.GetRtv() }, {}, myResolution);
 
 		ID3D11ShaderResourceView* srvs[2] = { myNormal.GetShaderResourceView(),
 		                                      DX11::DepthBuffer->GetShaderResourceView() };
@@ -446,9 +459,7 @@ void DeferredRenderer::RenderSSAO()
 			mySsaoBlurCb.Update(DX11::Rhi()->GetContext(), c);
 		}
 
-		ID3D11RenderTargetView* rtv = myAo.GetRenderTargetView();
-		DX11::Context->OMSetRenderTargets(1, &rtv, nullptr);
-		DX11::Context->RSSetViewports(1, &vp);
+		SetTargets(ctx, { myAo.GetRtv() }, {}, myResolution);
 
 		ID3D11ShaderResourceView* rawSrv = myAoRaw.GetShaderResourceView();
 		ID3D11ShaderResourceView* depSrv = DX11::DepthBuffer->GetShaderResourceView();
@@ -551,18 +562,15 @@ void DeferredRenderer::RenderSSR()
 		mySsrCb.Update(DX11::Rhi()->GetContext(), c);
 	}
 
-	D3D11_VIEWPORT vpFull{ 0.f, 0.f, (float)myResolution.x, (float)myResolution.y, 0.f, 1.f };
-	D3D11_VIEWPORT vpHalf{ 0.f, 0.f, (float)mySsrRes.x, (float)mySsrRes.y, 0.f, 1.f };
+	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
 	ID3D11ShaderResourceView* nulls[6] = {};
 	ID3D11SamplerState* lin = myLinearSampler ? myLinearSampler.Get() : myPointSampler.Get();
 
 	// --- pass 1: half-res ray-march -> mySsrTex ---
 	{
-		ID3D11RenderTargetView* rtv = mySsrTex.GetRenderTargetView();
 		const float clr[4] = { 0.f, 0.f, 0.f, 0.f };
-		DX11::Context->ClearRenderTargetView(rtv, clr);
-		DX11::Context->OMSetRenderTargets(1, &rtv, nullptr);
-		DX11::Context->RSSetViewports(1, &vpHalf);
+		ctx.ClearRenderTarget(mySsrTex.GetRtv(), clr);
+		SetTargets(ctx, { mySsrTex.GetRtv() }, {}, mySsrRes);
 
 		ID3D11ShaderResourceView* scene = myHdr.GetShaderResourceView();
 		ID3D11ShaderResourceView* gb[3] = { myAlbedo.GetShaderResourceView(),
@@ -592,9 +600,7 @@ void DeferredRenderer::RenderSSR()
 		auto& gss = GraphicsEngine::GetInstance()->GetGraphicsStateStack();
 		gss.SetBlendState(BlendState::AdditiveBlend);
 
-		ID3D11RenderTargetView* rtv = myHdr.GetRenderTargetView();
-		DX11::Context->OMSetRenderTargets(1, &rtv, nullptr);
-		DX11::Context->RSSetViewports(1, &vpFull);
+		SetTargets(ctx, { myHdr.GetRtv() }, {}, myResolution);
 
 		ID3D11ShaderResourceView* srvs2[2] = { mySsrTex.GetShaderResourceView(),
 		                                       myIblSpecTex.GetShaderResourceView() };
@@ -1180,11 +1186,8 @@ void DeferredRenderer::BuildFrame(RenderGraph& aGraph,
 			// Forward pass: alpha-blend into the lit HDR target, testing (but not
 			// writing) the opaque depth so glass sorts behind walls / in front of
 			// the floor. No back-to-front sort yet -- fine for the few glass panes.
-			ID3D11RenderTargetView* rtv = myHdr.GetRenderTargetView();
-			DX11::Context->OMSetRenderTargets(1, &rtv, DX11::DepthBuffer->GetDepthStencilView());
-
-			D3D11_VIEWPORT vp{ 0.f, 0.f, (float)myResolution.x, (float)myResolution.y, 0.f, 1.f };
-			DX11::Context->RSSetViewports(1, &vp);
+			SetTargets(DX11::Rhi()->GetContext(), { myHdr.GetRtv() },
+			           DX11::DepthBuffer->GetDsv(), myResolution);
 
 			auto& gss = GraphicsEngine::GetInstance()->GetGraphicsStateStack();
 			gss.SetBlendState(BlendState::AlphaBlend);
@@ -1211,22 +1214,17 @@ void DeferredRenderer::BuildFrame(RenderGraph& aGraph,
 
 void DeferredRenderer::BeginGeometryPass()
 {
-	ID3D11RenderTargetView* rtvs[4] = {
-		myAlbedo.GetRenderTargetView(),
-		myNormal.GetRenderTargetView(),
-		myMaterial.GetRenderTargetView(),
-		myEmissive.GetRenderTargetView(),
+	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
+	const rhi::RtvHandle rtvs[4] = {
+		myAlbedo.GetRtv(), myNormal.GetRtv(), myMaterial.GetRtv(), myEmissive.GetRtv(),
 	};
 
 	const float clear[4] = { 0.f, 0.f, 0.f, 0.f };
-	for (ID3D11RenderTargetView* rtv : rtvs)
-		DX11::Context->ClearRenderTargetView(rtv, clear);
+	for (rhi::RtvHandle rtv : rtvs)
+		ctx.ClearRenderTarget(rtv, clear);
 	DX11::DepthBuffer->Clear();
 
-	DX11::Context->OMSetRenderTargets(4, rtvs, DX11::DepthBuffer->GetDepthStencilView());
-
-	D3D11_VIEWPORT vp{ 0.f, 0.f, (float)myResolution.x, (float)myResolution.y, 0.f, 1.f };
-	DX11::Context->RSSetViewports(1, &vp);
+	SetTargets(ctx, { rtvs[0], rtvs[1], rtvs[2], rtvs[3] }, DX11::DepthBuffer->GetDsv(), myResolution);
 }
 
 void DeferredRenderer::BindGBufferSrvs()
@@ -1310,13 +1308,10 @@ void DeferredRenderer::BindFullscreen(const PixelShader* aPixelShader)
 void DeferredRenderer::ResolveLighting()
 {
 	// MRT0 = HDR radiance, MRT1 = probe IBL specular (SSR resolve subtracts it).
-	ID3D11RenderTargetView* rtvs[2] = { myHdr.GetRenderTargetView(), myIblSpecTex.GetRenderTargetView() };
+	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
 	const float zero[4] = { 0.f, 0.f, 0.f, 0.f };
-	DX11::Context->ClearRenderTargetView(rtvs[1], zero);
-	DX11::Context->OMSetRenderTargets(2, rtvs, nullptr);
-
-	D3D11_VIEWPORT vp{ 0.f, 0.f, (float)myResolution.x, (float)myResolution.y, 0.f, 1.f };
-	DX11::Context->RSSetViewports(1, &vp);
+	ctx.ClearRenderTarget(myIblSpecTex.GetRtv(), zero);
+	SetTargets(ctx, { myHdr.GetRtv(), myIblSpecTex.GetRtv() }, {}, myResolution);
 
 	BindGBufferSrvs();
 	BindFullscreen(myLightingPs);
@@ -1324,8 +1319,7 @@ void DeferredRenderer::ResolveLighting()
 	DX11::Context->Draw(3, 0);
 	UnbindGBufferSrvs();
 
-	ID3D11RenderTargetView* off[2] = { nullptr, nullptr };
-	DX11::Context->OMSetRenderTargets(2, off, nullptr);
+	ctx.SetRenderTargets(0, nullptr, {});
 }
 
 void DeferredRenderer::PostFxFullscreen(const PixelShader* aPs, RenderTarget& aDst, Vector2ui aDstSize,
@@ -1352,10 +1346,7 @@ void DeferredRenderer::PostFxFullscreen(const PixelShader* aPs, RenderTarget& aD
 	auto& gss = GraphicsEngine::GetInstance()->GetGraphicsStateStack();
 	gss.SetBlendState(aAdditive ? BlendState::AdditiveBlend : BlendState::Disabled);
 
-	ID3D11RenderTargetView* rtv = aDst.GetRenderTargetView();
-	DX11::Context->OMSetRenderTargets(1, &rtv, nullptr);
-	D3D11_VIEWPORT vp{ 0.f, 0.f, (float)aDstSize.x, (float)aDstSize.y, 0.f, 1.f };
-	DX11::Context->RSSetViewports(1, &vp);
+	SetTargets(DX11::Rhi()->GetContext(), { aDst.GetRtv() }, {}, aDstSize);
 
 	DX11::Context->PSSetShaderResources(0, aSrvCount, aSrvs);
 	DX11::Context->PSSetSamplers(3, 1, myLinearSampler.GetAddressOf());
