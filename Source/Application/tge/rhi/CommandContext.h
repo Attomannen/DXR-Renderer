@@ -72,7 +72,13 @@ namespace Tga::rhi
 		virtual void CopyTexture(TextureHandle dst, TextureHandle src) = 0;
 		virtual void CopyTextureRegion(TextureHandle dst, uint32_t dstMip, uint32_t dstArray,
 		                               TextureHandle src, uint32_t srcMip, uint32_t srcArray) = 0;
-		virtual void GenerateMips(SrvHandle) = 0;
+		// `owner` is the texture the srv views -- DX11's driver-magic
+		// GenerateMips only needs the srv itself, but DX12 has no native
+		// equivalent and must build per-mip RTVs/SRVs on the underlying
+		// texture directly, which an SrvHandle alone can't recover (the SRV
+		// pool doesn't track its owning texture). The caller already has
+		// both handles at every real call site, so this is a free widening.
+		virtual void GenerateMips(SrvHandle, TextureHandle owner) = 0;
 
 		// ---- explicit state (no-ops on DX11) ----
 		virtual void TransitionResource(TextureHandle, ResourceState after) = 0;

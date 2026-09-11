@@ -141,6 +141,10 @@ namespace Tga::rhi::dx12
 		ComputePipelineRec* GetComputePipeline(ComputePipelineHandle h) { return myComputePipelines.Get(h); }
 		D3D12_CPU_DESCRIPTOR_HANDLE RtvCpuHandle(uint32_t slot) { return myRtvHeap.Cpu(slot); }
 		D3D12_CPU_DESCRIPTOR_HANDLE DsvCpuHandle(uint32_t slot) { return myDsvHeap.Cpu(slot); }
+		// See myPendingUploadReleases' comment -- for a one-off UPLOAD resource
+		// recorded into THIS frame's command list (not the synchronous
+		// CreateBuffer/CreateTexture initial-data path, which already waits).
+		void KeepAliveUntilFrameRetires(ComPtr<ID3D12Resource> res) { myPendingUploadReleases[myFrameIndex].push_back(std::move(res)); }
 		D3D12_CPU_DESCRIPTOR_HANDLE CbvSrvUavCpuHandle(uint32_t slot) { return myCbvSrvUavHeap.Cpu(slot); }
 		D3D12_CPU_DESCRIPTOR_HANDLE SamplerCpuHandle(uint32_t slot)   { return mySamplerHeap.Cpu(slot); }
 		uint32_t* GetSrvSlot(SrvHandle h)         { return mySrvSlots.Get(h); }
@@ -289,6 +293,16 @@ namespace Tga::rhi::dx12
 		BufferHandle myDynRing[kFramesInFlight];
 		uint8_t*     myDynRingCpu[kFramesInFlight] = {};
 		uint32_t     myDynCursor = 0;
+
+		// Deferred release for one-off UPLOAD-heap resources recorded into the
+		// CURRENT frame's own command list (e.g. UpdateTexture's staging
+		// buffer) -- unlike the synchronous CreateBuffer/CreateTexture initial-
+		// data path (its own command list + WaitForGpuIdle), these must
+		// outlive the async frame that reads them. Freed at that same
+		// frame-in-flight's next BeginFrame, after its fence wait already
+		// guarantees the GPU is done with them (same lifetime rule as the
+		// dynamic-constant ring above).
+		std::vector<ComPtr<ID3D12Resource>> myPendingUploadReleases[kFramesInFlight];
 
 		ComPtr<ID3D12QueryHeap> myTimestampHeap;
 		ComPtr<ID3D12Resource>  myTimestampReadback;

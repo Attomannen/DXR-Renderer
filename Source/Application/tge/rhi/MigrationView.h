@@ -18,22 +18,41 @@ namespace Tga
 	struct MigrationView
 	{
 		H handle{};
+		// True (default) for the normal owning case -- Reset()/destruction
+		// destroys the handle. False for a non-owning alias of a handle some
+		// OTHER owner (with its own, longer lifetime) will destroy itself --
+		// e.g. TextService's font-atlas TextureResource, which must expose
+		// the same SrvHandle/TextureHandle its owning InternalTextAndFontData
+		// already destroys in its own destructor; wrapping it as a second
+		// owner here would double-destroy it. See MakeAlias() below.
+		bool owns = true;
 
 		MigrationView() = default;
 		MigrationView(const MigrationView&) noexcept {}                       // do not propagate
 		MigrationView& operator=(const MigrationView&) noexcept { Reset(); return *this; }
-		MigrationView(MigrationView&& o) noexcept : handle(o.handle) { o.handle = {}; }
+		MigrationView(MigrationView&& o) noexcept : handle(o.handle), owns(o.owns) { o.handle = {}; o.owns = true; }
 		MigrationView& operator=(MigrationView&& o) noexcept
 		{
-			if (this != &o) { Reset(); handle = o.handle; o.handle = {}; }
+			if (this != &o) { Reset(); handle = o.handle; owns = o.owns; o.handle = {}; o.owns = true; }
 			return *this;
 		}
 		~MigrationView() { Reset(); }
 
 		void Reset()
 		{
-			if (handle.IsValid()) MigrationView_Destroy(handle.index, handle.generation, Kind());
+			if (owns && handle.IsValid()) MigrationView_Destroy(handle.index, handle.generation, Kind());
 			handle = {};
+			owns = true;
+		}
+
+		// Wrap a handle this instance does NOT own -- the real owner outlives
+		// it and is responsible for destroying it. Resets any previously-held
+		// (owning or not) handle first.
+		void MakeAlias(H h)
+		{
+			Reset();
+			handle = h;
+			owns = false;
 		}
 
 		explicit operator bool() const { return handle.IsValid(); }

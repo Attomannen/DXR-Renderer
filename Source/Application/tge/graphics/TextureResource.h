@@ -34,7 +34,11 @@ public:
 	// takes ownership of RHI-native handles directly instead of a raw D3D11
 	// pointer, since a DX12 view can't be extracted as one. Mirrors
 	// RenderTarget/DepthBuffer's identical storage-migration pattern.
-	void SetRhiTexture(rhi::TextureHandle aTexture, rhi::SrvHandle aSrv);
+	// aTakesOwnership=false makes this instance a non-owning alias instead --
+	// for a caller (e.g. TextService's font atlas) whose handles are already
+	// owned/destroyed elsewhere with a longer lifetime; wrapping them as a
+	// second owner here would double-destroy them.
+	void SetRhiTexture(rhi::TextureHandle aTexture, rhi::SrvHandle aSrv, bool aTakesOwnership = true);
 	// rhi handle onto the same view (created on first use). Preferred by migrated code.
 	rhi::SrvHandle GetSrv() const;
 	Vector2ui CalculateTextureSize() const;

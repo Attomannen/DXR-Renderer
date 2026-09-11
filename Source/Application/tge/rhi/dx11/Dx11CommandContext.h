@@ -55,7 +55,7 @@ namespace Tga::rhi::dx11
 		void CopyTexture(TextureHandle dst, TextureHandle src) override;
 		void CopyTextureRegion(TextureHandle dst, uint32_t dstMip, uint32_t dstArray,
 		                       TextureHandle src, uint32_t srcMip, uint32_t srcArray) override;
-		void GenerateMips(SrvHandle) override;
+		void GenerateMips(SrvHandle, TextureHandle) override;
 
 		void TransitionResource(TextureHandle, ResourceState) override {}
 		void TransitionResource(BufferHandle, ResourceState) override {}

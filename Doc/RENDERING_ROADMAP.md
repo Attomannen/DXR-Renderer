@@ -545,12 +545,42 @@ subfolder. Four stages:
   engine) — pixel-identical to the reference, before and after removing debug instrumentation.
   **Frontier moved from "can't load a texture asset at all" to "can't re-upload a texture
   after creation."**
-  **Still to do**: `UpdateTexture`'s mid-lifetime upload-heap copy path (unblocks `TextService`
-  and real text rendering under DX12) is the immediate next wall. Beyond that:
-  `CubemapPrefilter.cpp`'s own raw-D3D11 resource creation and `video.cpp`/`TextService.cpp`'s
-  remaining `GetNativeSrv` uses (still out of scope, per Stage 1's original accounting) —
-  only after those does the actual RenderDoc/PIX-clean, visually-identical-to-DX11 checkpoint
-  become pursuable.
+  **`UpdateTexture` + `GenerateMips` — DONE, same day.** `UpdateTexture` (mid-lifetime full-
+  subresource-0 overwrite): records into the current frame's own command list via a fresh
+  UPLOAD-heap staging resource (can't use the synchronous initial-data path, which needs its
+  own command list + a blocking wait). Added genuinely new, reusable infra for this:
+  `Dx12Device::KeepAliveUntilFrameRetires`, a per-frame-in-flight deferred-release list freed
+  at that slot's next `BeginFrame` (safe because the fence wait right above it already proves
+  the GPU is done 2 frames back). `GenerateMips` has no DX12 native equivalent — implemented as
+  a chain of fullscreen-copy blits (one mip at a time, bilinear-sampled — an adequate box-filter
+  approximation for a font atlas), reusing the engine's existing `PostprocessVS`/
+  `PostprocessCopyPS` shader pair via `DX11::Load{Vertex,Pixel}Shader` (already DX12-safe from
+  this session's earlier shader-loading fix) rather than compiling anything new. Widened the
+  interface to `GenerateMips(SrvHandle, TextureHandle)` since DX12 needs the owning texture (to
+  build per-mip RTVs/SRVs) and the SRV pool doesn't track that back-reference — the one real
+  call site already had both handles at hand. Handles the real complication that a mip chain
+  needs several subresources in different states at once, which `TextureRec`'s single
+  whole-resource state can't express, via a local per-call per-subresource state tracker.
+  Also fixed a second real bug found immediately after, in the same `TextService.cpp` function:
+  its font-atlas `TextureResource` wrapper would have DOUBLE-OWNED (and double-destroyed) the
+  same handles `InternalTextAndFontData` already owns and destroys itself — DX11 "just worked"
+  there only because a COM SRV can have two independent reference-counted owners; DX12
+  descriptors can't. Fixed generally, not with a one-off workaround: `MigrationView` gained
+  real non-owning-alias support (`owns` flag + `MakeAlias()`), and
+  `TextureResource::SetRhiTexture` gained an `aTakesOwnership` parameter defaulting to the
+  existing (owning) behavior everywhere else.
+  **Verified**: DX11 regression via `BENCH_SCREENSHOT`, pixel-identical. DX12: `GameMain_Debug.exe`
+  now runs `GraphicsEngine::Init()` to completion — reaching its own "All done, starting..."
+  banner for the first time ever in this port — and enters the real per-frame game loop (scene/
+  light/camera loading, GI probe setup, Sponza model load). **Furthest any DX12 run has reached.**
+  **Still to do**: `CubemapPrefilter.cpp`'s cubemap-capture path is the next wall — a much
+  bigger, already-deliberately-deferred piece from Stage 1 (step 8): the whole file is raw
+  D3D11, creating scratch UAV/SRV/texture resources potentially thousands of times per GI bake,
+  with a real per-call leak-avoidance design constraint that made it out of scope even for the
+  DX11-side RHI migration. Porting it to DX12 needs real design work, not just null-guards.
+  `video.cpp`/`TextService.cpp`'s remaining `GetNativeSrv` uses share a related but smaller
+  gap. Only after those does the actual RenderDoc/PIX-clean, visually-identical-to-DX11
+  checkpoint become pursuable.
   Checkpoint (unchanged): `-rhi=dx12` visually identical to `-rhi=dx11` on every scene +
   editor + Tutorials, PIX-clean, perf parity or better.
 - **Stage 3** — DXR inline `RayQuery` (SM 6.5) hardware-traced GI, replacing the Phase 6

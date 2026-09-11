@@ -511,6 +511,11 @@ namespace Tga::rhi::dx12
 			WaitForSingleObject(myFenceEvent, INFINITE);
 		}
 
+		// The fence wait above guarantees this frame-in-flight's LAST
+		// submission (2 frames ago) has fully retired -- safe to release any
+		// one-off UPLOAD resources UpdateTexture etc. queued for that frame.
+		myPendingUploadReleases[myFrameIndex].clear();
+
 		myDynCursor = 0;   // reset this frame's dynamic-constant ring
 		myCbvSrvUavScratch[myFrameIndex].ResetRange();
 		mySamplerScratch[myFrameIndex].ResetRange();

@@ -596,18 +596,30 @@ Font TextService::GetOrLoad(std::string aFontPathAndName, FontSize aFontSize, un
 
 	rhi::ICommandContext& ctx = rhiDevice.GetContext();
 	ctx.UpdateTexture(fontData->myAtlasTex, fontData->myAtlas.data(), atlasSize * 4);
-	ctx.GenerateMips(fontData->myAtlasSrv);
+	ctx.GenerateMips(fontData->myAtlasSrv, fontData->myAtlasTex);
 
 	fontData->myAtlasHeight = atlasSize;
 	fontData->myAtlasWidth = atlasSize;
 	fontData->myLineSpacing = static_cast<float>((face->ascender - face->descender) >> 6);
 	FT_Done_Face(face);
 
-	// TextureResource's legacy ctor takes a raw SRV pointer (AddRefs its own
-	// ComPtr); the RHI handles above are what myAtlasSrv/myAtlasTex actually own
-	// and are what ~InternalTextAndFontData() destroys.
-	ID3D11ShaderResourceView* rawAtlasSrv = static_cast<ID3D11ShaderResourceView*>(rhiDevice.GetNativeSrv(fontData->myAtlasSrv));
-	fontData->myTexture = std::make_unique<TextureResource>(rawAtlasSrv);
+	// myAtlasSrv/myAtlasTex are what ~InternalTextAndFontData() destroys --
+	// myTexture must NOT also own them (DX12 has no COM ref-counting to make
+	// that safe the way the DX11 ComPtr path below does).
+	if (rhiDevice.GetBackend() == rhi::Backend::DX12)
+	{
+		fontData->myTexture = std::make_unique<TextureResource>();
+		fontData->myTexture->SetRhiTexture(fontData->myAtlasTex, fontData->myAtlasSrv, /*aTakesOwnership=*/false);
+	}
+	else
+	{
+		// TextureResource's legacy ctor takes a raw SRV pointer and AddRefs
+		// its own ComPtr -- safe to independently release alongside the RHI
+		// pool's own reference (behind myAtlasSrv) since ID3D11ShaderResourceView
+		// is a properly ref-counted COM object.
+		ID3D11ShaderResourceView* rawAtlasSrv = static_cast<ID3D11ShaderResourceView*>(rhiDevice.GetNativeSrv(fontData->myAtlasSrv));
+		fontData->myTexture = std::make_unique<TextureResource>(rawAtlasSrv);
+	}
 
 	return { fontData };
 }

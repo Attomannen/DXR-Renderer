@@ -24,15 +24,24 @@ void TextureResource::SetShaderResourceView(ID3D11ShaderResourceView* aSRV)
 	mySRV = ComPtr<ID3D11ShaderResourceView>(aSRV);
 }
 
-void TextureResource::SetRhiTexture(rhi::TextureHandle aTexture, rhi::SrvHandle aSrv)
+void TextureResource::SetRhiTexture(rhi::TextureHandle aTexture, rhi::SrvHandle aSrv, bool aTakesOwnership)
 {
 	mySRV.Reset();
-	// Reset() first -- overwriting .handle directly would leak whatever this
-	// instance previously owned (e.g. reloading an existing Texture in place).
-	myRhiTexture.Reset();
-	myRhiSrv.Reset();
-	myRhiTexture.handle = aTexture;
-	myRhiSrv.handle = aSrv;
+	if (aTakesOwnership)
+	{
+		// Reset() first -- overwriting .handle directly would leak whatever
+		// this instance previously owned (e.g. reloading an existing Texture
+		// in place).
+		myRhiTexture.Reset();
+		myRhiSrv.Reset();
+		myRhiTexture.handle = aTexture;
+		myRhiSrv.handle = aSrv;
+	}
+	else
+	{
+		myRhiTexture.MakeAlias(aTexture);
+		myRhiSrv.MakeAlias(aSrv);
+	}
 }
 
 rhi::SrvHandle TextureResource::GetSrv() const

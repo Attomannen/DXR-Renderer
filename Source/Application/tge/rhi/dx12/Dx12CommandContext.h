@@ -83,7 +83,7 @@ namespace Tga::rhi::dx12
 		void UpdateTexture(TextureHandle, const void* data, uint32_t rowPitch) override;
 		void CopyTexture(TextureHandle dst, TextureHandle src) override;
 		void CopyTextureRegion(TextureHandle dst, uint32_t dstMip, uint32_t dstArray, TextureHandle src, uint32_t srcMip, uint32_t srcArray) override;
-		void GenerateMips(SrvHandle) override;
+		void GenerateMips(SrvHandle, TextureHandle owner) override;
 
 		void TransitionResource(TextureHandle, ResourceState after) override;
 		void TransitionResource(BufferHandle, ResourceState after) override;
@@ -107,6 +107,12 @@ namespace Tga::rhi::dx12
 		void FlushComputeTables();          // copies dirty SRV/UAV/Sampler tables into scratch, binds them
 
 		Dx12Device& myDevice;
+
+		// Lazily-created, cached linear-clamp sampler for GenerateMips's
+		// fullscreen-copy downsample blit -- created once, reused across every
+		// call (font atlas reloads etc.) rather than burning a fresh
+		// permanent sampler-heap slot per call.
+		SamplerHandle myMipGenSampler;
 
 		// ---- pending graphics fixed-function / shader state (lazily -> PSO) ----
 		ShaderModuleHandle myPendingVs, myPendingPs;

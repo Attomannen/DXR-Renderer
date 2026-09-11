@@ -290,7 +290,7 @@ namespace Tga::rhi::dx11
 		Ctx()->CopySubresourceRegion(d->res.Get(), dSub, 0, 0, 0, s->res.Get(), sSub, nullptr);
 	}
 
-	void Dx11CommandContext::GenerateMips(SrvHandle h)
+	void Dx11CommandContext::GenerateMips(SrvHandle h, TextureHandle)
 	{
 		if (ID3D11ShaderResourceView* v = myDevice.GetSrvPtr(h)) Ctx()->GenerateMips(v);
 	}

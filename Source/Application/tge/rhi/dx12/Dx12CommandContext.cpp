@@ -2,6 +2,7 @@
 #include "tge/rhi/dx12/Dx12CommandContext.h"
 #include "tge/rhi/dx12/Dx12Device.h"
 #include "tge/rhi/Format.h"
+#include "tge/graphics/DX11.h"   // GenerateMips: reuses DX11::Load{Vertex,Pixel}Shader (backend-agnostic since this session's shader-loading fix) for its fullscreen-copy blit shaders, rather than compiling anything new
 #include <cassert>
 
 namespace Tga::rhi::dx12
@@ -380,9 +381,84 @@ namespace Tga::rhi::dx12
 		}
 	}
 
-	void Dx12CommandContext::UpdateTexture(TextureHandle, const void*, uint32_t)
+	void Dx12CommandContext::UpdateTexture(TextureHandle h, const void* data, uint32_t rowPitch)
 	{
-		assert(false && "Dx12: UpdateTexture (mid-lifetime, e.g. video/font-atlas frame updates) needs the upload-heap copy path -- milestone 3");
+		// Mid-lifetime full-subresource-0 overwrite (video decode frames,
+		// TextService's font atlas) -- unlike CreateTexture's initial-data
+		// path (its own one-off command list + synchronous WaitForGpuIdle,
+		// fine at load time), this records into the CURRENT frame's own
+		// command list, so it can't block on the GPU here. The staging
+		// UPLOAD resource is kept alive via Dx12Device::KeepAliveUntilFrameRetires
+		// until this frame-in-flight's next BeginFrame confirms the GPU is done.
+		TextureRec* t = myDevice.GetTexture(h);
+		if (!t || !t->res || !data) return;
+
+		ID3D12Device* device = myDevice.Raw();
+		D3D12_RESOURCE_DESC desc = t->res->GetDesc();
+
+		D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
+		UINT numRows = 0;
+		UINT64 rowSizeInBytes = 0;
+		UINT64 totalBytes = 0;
+		device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, &numRows, &rowSizeInBytes, &totalBytes);
+
+		D3D12_HEAP_PROPERTIES uploadHeap = { D3D12_HEAP_TYPE_UPLOAD };
+		D3D12_RESOURCE_DESC ud = {};
+		ud.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		ud.Width = totalBytes; ud.Height = 1; ud.DepthOrArraySize = 1; ud.MipLevels = 1;
+		ud.SampleDesc.Count = 1;
+		ud.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+		ComPtr<ID3D12Resource> upload;
+		if (FAILED(device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &ud, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(upload.GetAddressOf()))))
+			return;
+
+		uint8_t* mapped = nullptr;
+		D3D12_RANGE noRead{ 0, 0 };
+		if (SUCCEEDED(upload->Map(0, &noRead, reinterpret_cast<void**>(&mapped))))
+		{
+			const uint8_t* src = static_cast<const uint8_t*>(data);
+			for (UINT row = 0; row < numRows; ++row)
+			{
+				memcpy(mapped + row * footprint.Footprint.RowPitch,
+				       src + row * rowPitch,
+				       (size_t)rowSizeInBytes);
+			}
+			upload->Unmap(0, nullptr);
+		}
+
+		const D3D12_RESOURCE_STATES before = t->state;
+		if (before != D3D12_RESOURCE_STATE_COPY_DEST)
+		{
+			D3D12_RESOURCE_BARRIER toCopyDest = {};
+			toCopyDest.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			toCopyDest.Transition.pResource = t->res.Get();
+			toCopyDest.Transition.StateBefore = before;
+			toCopyDest.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+			toCopyDest.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			List()->ResourceBarrier(1, &toCopyDest);
+		}
+
+		D3D12_TEXTURE_COPY_LOCATION dstLoc = { t->res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {} };
+		dstLoc.SubresourceIndex = 0;
+		D3D12_TEXTURE_COPY_LOCATION srcLoc = { upload.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {} };
+		srcLoc.PlacedFootprint = footprint;
+		List()->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+
+		if (before != D3D12_RESOURCE_STATE_COPY_DEST)
+		{
+			D3D12_RESOURCE_BARRIER back = {};
+			back.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			back.Transition.pResource = t->res.Get();
+			back.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+			back.Transition.StateAfter = before;
+			back.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			List()->ResourceBarrier(1, &back);
+		}
+		// t->state is unchanged overall (restored to `before` above), so no
+		// update to the tracked state needed.
+
+		myDevice.KeepAliveUntilFrameRetires(std::move(upload));
 	}
 	void Dx12CommandContext::CopyTexture(TextureHandle dstH, TextureHandle srcH)
 	{
@@ -408,7 +484,108 @@ namespace Tga::rhi::dx12
 		srcLoc.SubresourceIndex = srcSub;
 		List()->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
 	}
-	void Dx12CommandContext::GenerateMips(SrvHandle) { assert(false && "Dx12: no native equivalent -- needs a compute-shader mip generator, deferred"); }
+	void Dx12CommandContext::GenerateMips(SrvHandle, TextureHandle owner)
+	{
+		// DX12 has no driver-magic GenerateMips like D3D11's -- built explicitly
+		// here as a chain of fullscreen-copy blits (bilinear-sampled, so each
+		// pass is a cheap box-filter-like downsample), one mip level at a time:
+		// bind mip N as a render target, mip N-1 as its source SRV, draw a
+		// fullscreen triangle. Reuses the engine's existing PostprocessVS/
+		// PostprocessCopyPS shader pair via DX11::Load*Shader (both backends
+		// produce a valid RHI ShaderModuleHandle since this session's
+		// DX11::Device-null-guard fix) rather than compiling anything new.
+		// Only ever called on a plain (non-array) 2D texture today (the font
+		// atlas) -- arrays/cubes/3D are out of scope until a real call site
+		// needs them.
+		TextureRec* t = myDevice.GetTexture(owner);
+		if (!t || !t->res)
+		{
+			assert(false && "Dx12: GenerateMips -- invalid owner texture handle");
+			return;
+		}
+
+		const D3D12_RESOURCE_DESC desc = t->res->GetDesc();
+		const uint32_t mipCount = desc.MipLevels;
+		const uint32_t baseW = static_cast<uint32_t>(desc.Width);
+		const uint32_t baseH = desc.Height;
+		if (mipCount <= 1 || baseW == 0 || baseH == 0)
+			return;
+		if (desc.DepthOrArraySize != 1)
+		{
+			assert(false && "Dx12: GenerateMips -- array/cube/3D textures not supported yet, no call site needs it");
+			return;
+		}
+
+		const VertexShader* vs = DX11::LoadVertexShader("Shaders/PostprocessVS");
+		const PixelShader* ps = DX11::LoadPixelShader("Shaders/PostprocessCopyPS");
+		if (!vs || !ps || !vs->module.IsValid() || !ps->module.IsValid())
+		{
+			assert(false && "Dx12: GenerateMips -- fullscreen-copy shader failed to load");
+			return;
+		}
+
+		if (!myMipGenSampler.IsValid())
+			myMipGenSampler = myDevice.CreateSampler({});   // default: Bilinear + Clamp
+
+		const D3D12_RESOURCE_STATES before = t->state;
+
+		// Per-subresource state tracking, local to this call -- TextureRec::state
+		// only tracks one state for the WHOLE resource, but a mip chain
+		// inherently needs different subresources in different states at once
+		// (destination = RENDER_TARGET while source = PIXEL_SHADER_RESOURCE).
+		std::vector<D3D12_RESOURCE_STATES> subState(mipCount, before);
+
+		auto barrierOne = [&](uint32_t mip, D3D12_RESOURCE_STATES to)
+		{
+			if (subState[mip] == to) return;
+			D3D12_RESOURCE_BARRIER b = {};
+			b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			b.Transition.pResource = t->res.Get();
+			b.Transition.StateBefore = subState[mip];
+			b.Transition.StateAfter = to;
+			b.Transition.Subresource = mip;
+			List()->ResourceBarrier(1, &b);
+			subState[mip] = to;
+		};
+
+		// Destinations (mip 1..N-1) must be RENDER_TARGET to be written.
+		for (uint32_t mip = 1; mip < mipCount; ++mip)
+			barrierOne(mip, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+		for (uint32_t mip = 1; mip < mipCount; ++mip)
+		{
+			const uint32_t srcMip = mip - 1;
+			const uint32_t w = std::max<uint32_t>(1u, baseW >> mip);
+			const uint32_t h = std::max<uint32_t>(1u, baseH >> mip);
+
+			barrierOne(srcMip, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+			RtvDesc rtvDesc = {}; rtvDesc.mipSlice = mip;
+			RtvHandle rtv = myDevice.CreateRtv(owner, rtvDesc);
+			SrvDesc srvDesc = {}; srvDesc.mostDetailedMip = srcMip; srvDesc.mipLevels = 1;
+			SrvHandle srcSrv = myDevice.CreateSrv(owner, srvDesc);
+
+			SetRenderTargets(1, &rtv, DsvHandle{});
+			SetViewport(0.f, 0.f, static_cast<float>(w), static_cast<float>(h), 0.f, 1.f);
+			SetPrimitiveTopology(Topology::TriangleList);
+			SetVertexBuffer(0, {}, 0, 0);
+			SetIndexBuffer({}, Format::R32_UInt, 0);
+			SetVertexShader(vs->module);
+			SetPixelShader(ps->module);
+			SetShaderResource(ShaderStage::Pixel, 1, srcSrv);   // PostprocessCopyPS: FullscreenTexture1, register(t1)
+			SetSampler(ShaderStage::Pixel, 0, myMipGenSampler); // DefaultSampler, register(s0)
+			Draw(3, 0);
+
+			myDevice.Destroy(rtv);
+			myDevice.Destroy(srcSrv);
+		}
+
+		// Restore every subresource to its original (whole-resource) state --
+		// t->state itself is left untouched, since it's true again once this
+		// loop finishes.
+		for (uint32_t mip = 0; mip < mipCount; ++mip)
+			barrierOne(mip, before);
+	}
 
 	// ---- barriers ----
 	static D3D12_RESOURCE_STATES ToD3D12State(ResourceState s)
