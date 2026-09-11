@@ -278,7 +278,7 @@ than a separate lib, to avoid a link cycle with `Tga::DX11`), with a `dx11/` bac
 subfolder. Four stages:
 
 - **Stage 1** — RHI seam + DX11 backend at parity (12 steps, zero visible change).
-  Currently here — steps 0–7 done, step 8 next (~58% of Stage 1's 12 steps):
+  Currently here — steps 0–8 done, step 9 next (~67% of Stage 1's 12 steps):
   - [x] Step 0 — RHI interface (`Handles.h`/`Descs.h`/`Device.h`/`CommandContext.h`) +
     DX11 backend (`Dx11Device`, `Dx11CommandContext`, gen-checked handle pools) wrapping
     the pre-existing `Tga::DX11` statics.
@@ -323,9 +323,17 @@ subfolder. Four stages:
       6 call sites updated). Raw D3D11 refs in the file: 48 → **2** (both `GiProjectProbe`'s
       `aCubeSrv` param, deliberately deferred to step 9 — public API signature change).
       **Step 7 is now fully complete** — `DeferredRenderer.cpp` is ~100% RHI-native.
-  - [ ] Steps 8–12 — `CubemapPrefilter`, `GameWorld` GI capture (incl. finally converting
-    `GiProjectProbe`'s `aCubeSrv` param), video player, ImGui / editor viewport + font
-    atlas, then delete the `DX11::Device/Context/...` statics.
+  - [x] Step 8 — `CubemapPrefilter.cpp` (`Source/Game/source/`): persistent sampler +
+    4 compute constant buffers → RHI, compute shader bind/dispatch → `ctx.SetComputePipeline`/
+    `SetSampler`/`Dispatch`. Per-call scratch textures/SRVs/UAVs (created fresh on every
+    GI/reflection-probe capture — up to thousands of times per bake) deliberately left raw:
+    wrapping them into the RHI's permanent handle pools has no matching `Destroy()` here and
+    would leak one pool slot + GPU reference per capture. DirectXTex export/DDS-load functions
+    also left raw (unused, and DirectXTex's `*11`→`*12` loader swap is a Stage 2 task). Raw
+    D3D11 refs: 54 → 22 (all documented, deliberate).
+  - [ ] Steps 9–12 — `GameWorld` GI capture (incl. finally converting `GiProjectProbe`'s
+    `aCubeSrv` param and `CubemapData::srv`'s raw-pointer boundary), video player, ImGui /
+    editor viewport + font atlas, then delete the `DX11::Device/Context/...` statics.
   - **Found + fixed a real bug along the way** (not port-scope, a genuine engine
     correctness bug the port's extra scrutiny surfaced): `Pool<ComPtr<T>>::Get()` in the
     new RHI backend was itself broken (`&s.value` invoked `ComPtr`'s overloaded out-param
