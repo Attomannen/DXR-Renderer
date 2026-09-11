@@ -278,7 +278,7 @@ than a separate lib, to avoid a link cycle with `Tga::DX11`), with a `dx11/` bac
 subfolder. Four stages:
 
 - **Stage 1** — RHI seam + DX11 backend at parity (12 steps, zero visible change).
-  Currently here — steps 0–8 done, step 9 next (~67% of Stage 1's 12 steps):
+  Currently here — steps 0–9 done, step 10 next (75% of Stage 1's 12 steps):
   - [x] Step 0 — RHI interface (`Handles.h`/`Descs.h`/`Device.h`/`CommandContext.h`) +
     DX11 backend (`Dx11Device`, `Dx11CommandContext`, gen-checked handle pools) wrapping
     the pre-existing `Tga::DX11` statics.
@@ -331,9 +331,14 @@ subfolder. Four stages:
     would leak one pool slot + GPU reference per capture. DirectXTex export/DDS-load functions
     also left raw (unused, and DirectXTex's `*11`→`*12` loader swap is a Stage 2 task). Raw
     D3D11 refs: 54 → 22 (all documented, deliberate).
-  - [ ] Steps 9–12 — `GameWorld` GI capture (incl. finally converting `GiProjectProbe`'s
-    `aCubeSrv` param and `CubemapData::srv`'s raw-pointer boundary), video player, ImGui /
-    editor viewport + font atlas, then delete the `DX11::Device/Context/...` statics.
+  - [x] Step 9 — `GameWorld.cpp` GI/reflection-probe capture: skybox fullscreen-triangle
+    draw → RHI (mirrors `BindFullscreen`). Closed out both spots deferred from steps 7-8:
+    `GiProjectProbe`'s param is now `rhi::SrvHandle` (`DeferredRenderer.h`/`.cpp` are now at
+    **zero raw D3D11 references** — down from ~390 at the start of step 7), and `CubemapData`
+    gained a leak-safe `GetSrv()` bridge (`MigrationView`, invalidated on each `Reset()`).
+    Raw D3D11 refs: `GameWorld.cpp` 17 → 1 (bench screenshot capture, step-12 territory).
+  - [ ] Steps 10–12 — video player, ImGui / editor viewport + font atlas, then delete the
+    `DX11::Device/Context/SwapChain/BackBuffer/DepthBuffer` statics + final grep-clean sweep.
   - **Found + fixed a real bug along the way** (not port-scope, a genuine engine
     correctness bug the port's extra scrutiny surfaced): `Pool<ComPtr<T>>::Get()` in the
     new RHI backend was itself broken (`&s.value` invoked `ComPtr`'s overloaded out-param
