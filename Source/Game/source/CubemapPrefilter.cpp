@@ -21,6 +21,14 @@
 
 namespace Tga
 {
+    rhi::SrvHandle CubemapData::GetSrv() const
+    {
+        if (!myRhiSrv && srv)
+            if (rhi::IDevice* r = DX11::Rhi())
+                myRhiSrv.handle = r->WrapNativeSrv(srv.Get());
+        return myRhiSrv.handle;
+    }
+
     struct PrefilterCBData
     {
         float alpha;                    // Linear roughness alpha = perceptualRoughness^2

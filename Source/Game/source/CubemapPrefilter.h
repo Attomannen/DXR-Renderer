@@ -10,6 +10,7 @@
 #include <tge/Math/Vector.h>
 #include <tge/Math/Matrix.h>
 #include <tge/rhi/ConstantBuffer.h>
+#include <tge/rhi/MigrationView.h>
 
 using Microsoft::WRL::ComPtr;
 
@@ -29,16 +30,25 @@ namespace Tga
         uint32_t size = 0;
         uint32_t mipLevels = 0;
         std::unique_ptr<TextureResource> resource;
+        // Lazily wraps `srv` into an rhi handle (Stage-1 bridge, same pattern as
+        // TextureResource::GetSrv()); Reset() destroys it before the next capture
+        // creates a new raw SRV, so this never accumulates pool entries even though
+        // CaptureSceneToCubemap can re-populate the same CubemapData thousands of
+        // times per GI bake.
+        mutable MigrationView<rhi::SrvHandle> myRhiSrv;
 
         bool IsValid() const { return texture != nullptr && srv != nullptr; }
         void Reset()
         {
+            myRhiSrv.Reset();
             texture.Reset();
             srv.Reset();
             resource.reset();
             size = 0;
             mipLevels = 0;
         }
+        // rhi handle onto the same view (created on first use after each capture).
+        rhi::SrvHandle GetSrv() const;
     };
 
     class CubemapPrefilter

@@ -463,9 +463,9 @@ void DeferredRenderer::ClearGi()
 	DX11::Rhi()->GetContext().ClearUnorderedAccessFloat(myGiShBuffer.Uav(), z);
 }
 
-void DeferredRenderer::GiProjectProbe(ID3D11ShaderResourceView* aCubeSrv, int aProbeIndex, float aHysteresis, int aFaceRes)
+void DeferredRenderer::GiProjectProbe(rhi::SrvHandle aCubeSrv, int aProbeIndex, float aHysteresis, int aFaceRes)
 {
-	if (!HasGi() || !aCubeSrv || aProbeIndex < 0 || aProbeIndex >= kMaxGiProbes) return;
+	if (!HasGi() || !aCubeSrv.IsValid() || aProbeIndex < 0 || aProbeIndex >= kMaxGiProbes) return;
 
 	{
 		struct { uint32_t idx; float hyst; uint32_t faceRes; float pad; } p{
@@ -477,18 +477,15 @@ void DeferredRenderer::GiProjectProbe(ID3D11ShaderResourceView* aCubeSrv, int aP
 	rhi::ComputePipelineDesc pd;
 	pd.cs = myGiProjectCS->module;
 	ctx.SetComputePipeline(DX11::Rhi()->CreateComputePipeline(pd));
-	// aCubeSrv is a raw per-call capture SRV from the caller (GameWorld's cube
-	// capture) -- stays raw until that call chain is on the RHI (step 9).
-	DX11::Context->CSSetShaderResources(0, 1, &aCubeSrv);
+	ctx.SetShaderResource(rhi::ShaderStage::Compute, 0, aCubeSrv);
 	ctx.SetSampler(rhi::ShaderStage::Compute, 0, myGiLinearSampler);
 	myGiProjectCb.Bind(ctx);
 	ctx.SetUnorderedAccess(0, myGiShBuffer.Uav());
 
 	ctx.Dispatch(1, 1, 1);
 
-	ID3D11ShaderResourceView* ns = nullptr;
 	ctx.SetUnorderedAccess(0, {});
-	DX11::Context->CSSetShaderResources(0, 1, &ns);
+	ctx.SetShaderResource(rhi::ShaderStage::Compute, 0, {});
 	ctx.SetComputePipeline({});
 }
 

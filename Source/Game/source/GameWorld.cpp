@@ -1102,14 +1102,15 @@ struct GameWorld::Impl
 				gss.SetRasterizerState(RasterizerState::NoFaceCulling);
 				gss.SetCustomShaderParameters({ 0.f, 1.f, 0.f, 0.f });
 				gss.UpdateGpuStates();
-				ID3D11ShaderResourceView* env = fallbackCube->GetShaderResourceView();
-				DX11::Context->PSSetShaderResources(0, 1, &env);
-				DX11::Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-				DX11::Context->IASetInputLayout(nullptr);
-				DX11::Context->VSSetShader(skyVS->shader.Get(), nullptr, 0);
-				DX11::Context->GSSetShader(nullptr, nullptr, 0);
-				DX11::Context->PSSetShader(skyPS->shader.Get(), nullptr, 0);
-				DX11::Context->Draw(3, 0);
+				rhi::ICommandContext& skyCtx = DX11::Rhi()->GetContext();
+				skyCtx.SetShaderResource(rhi::ShaderStage::Pixel, 0, fallbackCube->GetSrv());
+				skyCtx.SetPrimitiveTopology(rhi::Topology::TriangleList);
+				skyCtx.SetInputLayout({}, nullptr, 0);
+				skyCtx.SetVertexBuffer(0, {}, 0, 0);
+				skyCtx.SetIndexBuffer({}, rhi::Format::R32_UInt, 0);
+				skyCtx.SetVertexShader(skyVS->module);
+				skyCtx.SetPixelShader(skyPS->module);
+				skyCtx.Draw(3, 0);
 				gss.Pop();
 				gss.UpdateGpuStates(true);
 			}
@@ -1188,14 +1189,15 @@ struct GameWorld::Impl
 					gss.SetRasterizerState(RasterizerState::NoFaceCulling);
 					gss.SetCustomShaderParameters({ 0.f, 1.f, 0.f, 0.f });
 					gss.UpdateGpuStates();
-					ID3D11ShaderResourceView* env = fallbackCube->GetShaderResourceView();
-					DX11::Context->PSSetShaderResources(0, 1, &env);
-					DX11::Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-					DX11::Context->IASetInputLayout(nullptr);
-					DX11::Context->VSSetShader(skyVS->shader.Get(), nullptr, 0);
-					DX11::Context->GSSetShader(nullptr, nullptr, 0);
-					DX11::Context->PSSetShader(skyPS->shader.Get(), nullptr, 0);
-					DX11::Context->Draw(3, 0);
+					rhi::ICommandContext& skyCtx = DX11::Rhi()->GetContext();
+					skyCtx.SetShaderResource(rhi::ShaderStage::Pixel, 0, fallbackCube->GetSrv());
+					skyCtx.SetPrimitiveTopology(rhi::Topology::TriangleList);
+					skyCtx.SetInputLayout({}, nullptr, 0);
+					skyCtx.SetVertexBuffer(0, {}, 0, 0);
+					skyCtx.SetIndexBuffer({}, rhi::Format::R32_UInt, 0);
+					skyCtx.SetVertexShader(skyVS->module);
+					skyCtx.SetPixelShader(skyPS->module);
+					skyCtx.Draw(3, 0);
 					gss.Pop();
 					gss.UpdateGpuStates(true);
 				}
@@ -1213,7 +1215,7 @@ struct GameWorld::Impl
 			{
 				// Priming replaces (deterministic); only the live trickle blends.
 				const float hyst = primingNow ? 0.0f : giHysteresis;
-				dr->GiProjectProbe(giCube.srv.Get(), p, hyst, kGiFaceRes);
+				dr->GiProjectProbe(giCube.GetSrv(), p, hyst, kGiFaceRes);
 			}
 		}
 

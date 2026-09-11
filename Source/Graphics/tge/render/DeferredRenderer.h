@@ -13,13 +13,6 @@
 #include <tge/rhi/ConstantBuffer.h>
 #include <tge/rhi/StructuredBuffer.h>
 
-struct ID3D11SamplerState;
-struct ID3D11Buffer;
-struct ID3D11ShaderResourceView;
-struct ID3D11UnorderedAccessView;
-struct ID3D11Texture2D;
-struct ID3D11DepthStencilView;
-
 namespace Tga
 {
 	class ModelShader;
@@ -144,7 +137,7 @@ namespace Tga
 		                 int aCx, int aCy, int aCz, float aIntensity, bool aEnabled,
 		                 float aAutoSealStrength = 0.f);
 		void ClearGi();   // zero the whole SH buffer -- call before a fresh (re-)prime
-		void GiProjectProbe(ID3D11ShaderResourceView* aCubeSrv, int aProbeIndex,
+		void GiProjectProbe(rhi::SrvHandle aCubeSrv, int aProbeIndex,
 		                    float aHysteresis, int aFaceRes);
 
 		// Cascaded shadow maps for the directional light. Feed the light direction
