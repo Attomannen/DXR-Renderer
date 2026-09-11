@@ -1360,11 +1360,11 @@ void GameWorld::Init()
 	if (s.probePrefilter->Init())
 	{
 		s.probeFaceRt = std::make_unique<RenderTarget>(
-			RenderTarget::Create({ (unsigned)Impl::kProbeRes, (unsigned)Impl::kProbeRes }, DXGI_FORMAT_R16G16B16A16_FLOAT));
+			RenderTarget::Create({ (unsigned)Impl::kProbeRes, (unsigned)Impl::kProbeRes }, rhi::Format::R16G16B16A16_Float));
 		s.probeFaceDepth = std::make_unique<DepthBuffer>(
 			DepthBuffer::Create({ (unsigned)Impl::kProbeRes, (unsigned)Impl::kProbeRes }));
 		s.giFaceRt = std::make_unique<RenderTarget>(
-			RenderTarget::Create({ (unsigned)Impl::kGiFaceRes, (unsigned)Impl::kGiFaceRes }, DXGI_FORMAT_R16G16B16A16_FLOAT));
+			RenderTarget::Create({ (unsigned)Impl::kGiFaceRes, (unsigned)Impl::kGiFaceRes }, rhi::Format::R16G16B16A16_Float));
 		s.giFaceDepth = std::make_unique<DepthBuffer>(
 			DepthBuffer::Create({ (unsigned)Impl::kGiFaceRes, (unsigned)Impl::kGiFaceRes }));
 	}

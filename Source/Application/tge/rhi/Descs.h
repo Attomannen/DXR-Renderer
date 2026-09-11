@@ -33,6 +33,7 @@ namespace Tga::rhi
 		R32G32_UInt,
 		R32G32B32A32_UInt,
 		R32_Typeless,
+		R8G8B8A8_Typeless,
 		D16_UNorm,
 		D24_UNorm_S8_UInt,
 		D32_Float,

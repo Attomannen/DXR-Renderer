@@ -165,8 +165,8 @@ void EditorViewport::Resize(const Vector2i& aSize)
 
 	Tga::Vector2f center = { (float)resolution.x * 0.5f, (float)resolution.y * 0.5f };
 
-	myRenderTarget = RenderTarget::Create(resolution, DXGI_FORMAT_R8G8B8A8_TYPELESS, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_R8G8B8A8_UNORM);
-	myIdTarget = RenderTarget::Create(resolution, DXGI_FORMAT_R32G32B32A32_UINT);
+	myRenderTarget = RenderTarget::Create(resolution, rhi::Format::R8G8B8A8_Typeless, rhi::Format::R8G8B8A8_UNorm_sRGB, rhi::Format::R8G8B8A8_UNorm);
+	myIdTarget = RenderTarget::Create(resolution, rhi::Format::R32G32B32A32_UInt);
 	myDepth = DepthBuffer::Create(resolution);
 
 	myCamera.SetPerspectiveProjection(

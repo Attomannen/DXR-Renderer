@@ -70,10 +70,13 @@ namespace Tga::rhi
 		// ---- escape hatch (imgui bridge + editor only; removed in Stage 2) ----
 		virtual void* GetNativeDevice() = 0;
 		virtual void* GetNativeContext() = 0;
-		// Raw view pointer behind an rhi-created SRV, for legacy APIs that still
-		// take a raw ID3D11ShaderResourceView* (e.g. TextureResource's constructor).
-		// Caller does not own a ref; take a copy (ComPtr(ptr) AddRefs) if retaining it.
+		// Raw pointers behind rhi-created resources/views, for legacy wrapper classes
+		// (RenderTarget/DepthBuffer/TextureResource) whose own public API still hands
+		// out raw D3D11 pointers to a wide, not-yet-migrated caller base. Caller does
+		// not own a ref; take a copy (ComPtr(ptr) AddRefs) if retaining it.
 		virtual void* GetNativeSrv(SrvHandle) = 0;
+		virtual void* GetNativeRtv(RtvHandle) = 0;
+		virtual void* GetNativeTexture(TextureHandle) = 0;
 
 		// ---- ImGui interop: opaque texture id for ImGui::Image ----
 		virtual void* ImGuiTextureId(SrvHandle) = 0;

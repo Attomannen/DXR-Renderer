@@ -23,72 +23,77 @@ Vector2ui RenderTarget::GetResolution() const
 	return { (unsigned int)myViewport->Width, (unsigned int)myViewport->Height };
 }
 
-RenderTarget RenderTarget::Create(Vector2ui aSize, DXGI_FORMAT aFormat)
+RenderTarget RenderTarget::Create(Vector2ui aSize, rhi::Format aFormat)
 {
-	HRESULT result;
-	D3D11_TEXTURE2D_DESC desc = { 0 };
-	desc.Width = aSize.X;
-	desc.Height = aSize.Y;
-	desc.MipLevels = 1;
-	desc.ArraySize = 1;
-	desc.Format = aFormat;
-	desc.SampleDesc.Count = 1;
-	desc.SampleDesc.Quality = 0;
-	desc.Usage = D3D11_USAGE_DEFAULT;
-	desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-	desc.CPUAccessFlags = 0;
-	desc.MiscFlags = 0;
+	rhi::IDevice* dev = DX11::Rhi();
+	assert(dev && "RenderTarget::Create(size,format) needs the RHI device -- "
+	              "use Create(ID3D11Texture2D*) during DX11::Init bootstrap");
 
-	ID3D11Texture2D* texture;
-	result = DX11::Device->CreateTexture2D(&desc, nullptr, &texture);
-	assert(SUCCEEDED(result));
+	rhi::TextureDesc desc = {};
+	desc.width = aSize.X;
+	desc.height = aSize.Y;
+	desc.format = aFormat;
+	desc.bind = rhi::TextureBind::RenderTarget | rhi::TextureBind::ShaderResource;
+	desc.debugName = "RenderTarget";
 
-	RenderTarget textureResult = Create(texture);
+	rhi::TextureHandle texHandle = dev->CreateTexture(desc);
+	assert(texHandle.IsValid());
+	rhi::RtvHandle rtvHandle = dev->CreateRtv(texHandle, {});
+	rhi::SrvHandle srvHandle = dev->CreateSrv(texHandle, {});
 
-	ID3D11ShaderResourceView* SRV;
-	result = DX11::Device->CreateShaderResourceView(texture, nullptr, &SRV);
-	assert(SUCCEEDED(result));
-	textureResult.mySRV = SRV;
-	SRV->Release();
-	texture->Release();
+	// The RHI's own handles are freed immediately below -- the ComPtrs just
+	// populated hold their own ref (GetNative*'s pointer is AddRef'd on
+	// assignment), so nothing depends on the pool entry staying alive. This
+	// sidesteps RenderTarget's copy semantics entirely: it's a value type
+	// (returned by value, reassigned wholesale on resize), so an owned
+	// rhi::TextureHandle with no ref-counting would need its own shared-
+	// ownership wrapper to copy safely -- not worth it when the existing
+	// ComPtr-based storage already does the job.
+	RenderTarget textureResult;
+	textureResult.myRenderTarget = static_cast<ID3D11RenderTargetView*>(dev->GetNativeRtv(rtvHandle));
+	textureResult.mySRV = static_cast<ID3D11ShaderResourceView*>(dev->GetNativeSrv(srvHandle));
+	textureResult.myViewport = std::make_shared<const D3D11_VIEWPORT>(D3D11_VIEWPORT{
+		0, 0, static_cast<float>(aSize.X), static_cast<float>(aSize.Y), 0, 1 });
 
+	dev->Destroy(rtvHandle);
+	dev->Destroy(srvHandle);
+	dev->Destroy(texHandle);
 	return textureResult;
 }
 
-RenderTarget RenderTarget::Create(Vector2ui aSize, DXGI_FORMAT aFormat, DXGI_FORMAT aRenderTargetFormat, DXGI_FORMAT aShaderResourceFormat)
+RenderTarget RenderTarget::Create(Vector2ui aSize, rhi::Format aFormat, rhi::Format aRenderTargetFormat, rhi::Format aShaderResourceFormat)
 {
-	HRESULT result;
-	D3D11_TEXTURE2D_DESC desc = { 0 };
-	desc.Width = aSize.X;
-	desc.Height = aSize.Y;
-	desc.MipLevels = 1;
-	desc.ArraySize = 1;
-	desc.Format = aFormat;
-	desc.SampleDesc.Count = 1;
-	desc.SampleDesc.Quality = 0;
-	desc.Usage = D3D11_USAGE_DEFAULT;
-	desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-	desc.CPUAccessFlags = 0;
-	desc.MiscFlags = 0;
+	rhi::IDevice* dev = DX11::Rhi();
+	assert(dev && "RenderTarget::Create(size,format,format,format) needs the RHI device -- "
+	              "use Create(ID3D11Texture2D*) during DX11::Init bootstrap");
 
-	ID3D11Texture2D* texture;
-	result = DX11::Device->CreateTexture2D(&desc, nullptr, &texture);
-	assert(SUCCEEDED(result));
+	rhi::TextureDesc desc = {};
+	desc.width = aSize.X;
+	desc.height = aSize.Y;
+	desc.format = aFormat;   // typeless-friendly resource format
+	desc.bind = rhi::TextureBind::RenderTarget | rhi::TextureBind::ShaderResource;
+	desc.debugName = "RenderTarget";
 
-	RenderTarget textureResult = Create(texture, aRenderTargetFormat);
+	rhi::TextureHandle texHandle = dev->CreateTexture(desc);
+	assert(texHandle.IsValid());
 
-	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-	srvDesc.Format = aShaderResourceFormat;
-	srvDesc.ViewDimension = D3D_SRV_DIMENSION_TEXTURE2D;
-	srvDesc.Texture2D = {0, 1};
+	rhi::RtvDesc rtvDesc = {};
+	rtvDesc.formatOverride = aRenderTargetFormat;
+	rhi::SrvDesc srvDesc = {};
+	srvDesc.formatOverride = aShaderResourceFormat;
 
-	ID3D11ShaderResourceView* SRV;
-	result = DX11::Device->CreateShaderResourceView(texture, &srvDesc, &SRV);
-	assert(SUCCEEDED(result));
-	textureResult.mySRV = SRV;
-	SRV->Release();
-	texture->Release();
+	rhi::RtvHandle rtvHandle = dev->CreateRtv(texHandle, rtvDesc);
+	rhi::SrvHandle srvHandle = dev->CreateSrv(texHandle, srvDesc);
 
+	RenderTarget textureResult;
+	textureResult.myRenderTarget = static_cast<ID3D11RenderTargetView*>(dev->GetNativeRtv(rtvHandle));
+	textureResult.mySRV = static_cast<ID3D11ShaderResourceView*>(dev->GetNativeSrv(srvHandle));
+	textureResult.myViewport = std::make_shared<const D3D11_VIEWPORT>(D3D11_VIEWPORT{
+		0, 0, static_cast<float>(aSize.X), static_cast<float>(aSize.Y), 0, 1 });
+
+	dev->Destroy(rtvHandle);
+	dev->Destroy(srvHandle);
+	dev->Destroy(texHandle);
 	return textureResult;
 }
 

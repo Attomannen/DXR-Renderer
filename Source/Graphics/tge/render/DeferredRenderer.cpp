@@ -143,17 +143,17 @@ DeferredRenderer::~DeferredRenderer() = default;
 bool DeferredRenderer::CreateTargets(Vector2ui aResolution)
 {
 	myResolution = aResolution;
-	myAlbedo   = RenderTarget::Create(aResolution, DXGI_FORMAT_R8G8B8A8_UNORM);
-	myNormal   = RenderTarget::Create(aResolution, DXGI_FORMAT_R16G16B16A16_FLOAT);
-	myMaterial = RenderTarget::Create(aResolution, DXGI_FORMAT_R8G8B8A8_UNORM);
-	myEmissive = RenderTarget::Create(aResolution, DXGI_FORMAT_R11G11B10_FLOAT);
-	myHdr      = RenderTarget::Create(aResolution, DXGI_FORMAT_R16G16B16A16_FLOAT);
-	myAoRaw    = RenderTarget::Create(aResolution, DXGI_FORMAT_R8_UNORM);
-	myAo       = RenderTarget::Create(aResolution, DXGI_FORMAT_R8_UNORM);
+	myAlbedo   = RenderTarget::Create(aResolution, rhi::Format::R8G8B8A8_UNorm);
+	myNormal   = RenderTarget::Create(aResolution, rhi::Format::R16G16B16A16_Float);
+	myMaterial = RenderTarget::Create(aResolution, rhi::Format::R8G8B8A8_UNorm);
+	myEmissive = RenderTarget::Create(aResolution, rhi::Format::R11G11B10_Float);
+	myHdr      = RenderTarget::Create(aResolution, rhi::Format::R16G16B16A16_Float);
+	myAoRaw    = RenderTarget::Create(aResolution, rhi::Format::R8_UNorm);
+	myAo       = RenderTarget::Create(aResolution, rhi::Format::R8_UNorm);
 	// SSR marches + stores at half res; the resolve bilinearly upsamples it.
 	mySsrRes   = { std::max(1u, aResolution.x / 2u), std::max(1u, aResolution.y / 2u) };
-	mySsrTex    = RenderTarget::Create(mySsrRes, DXGI_FORMAT_R16G16B16A16_FLOAT);
-	myIblSpecTex = RenderTarget::Create(aResolution, DXGI_FORMAT_R16G16B16A16_FLOAT);
+	mySsrTex    = RenderTarget::Create(mySsrRes, rhi::Format::R16G16B16A16_Float);
+	myIblSpecTex = RenderTarget::Create(aResolution, rhi::Format::R16G16B16A16_Float);
 	return true;
 }
 
@@ -681,19 +681,19 @@ bool DeferredRenderer::CreatePostFxTargets(Vector2ui aResolution)
 	for (int i = 0; i < kBloomMips; ++i)
 	{
 		myBloomSize[i] = s;
-		myBloomMip[i]  = RenderTarget::Create(s, DXGI_FORMAT_R11G11B10_FLOAT);
+		myBloomMip[i]  = RenderTarget::Create(s, rhi::Format::R11G11B10_Float);
 		s = { std::max(1u, s.x / 2u), std::max(1u, s.y / 2u) };
 	}
 
 	const unsigned expSizes[7] = { 64, 32, 16, 8, 4, 2, 1 };
 	for (int i = 0; i < 7; ++i)
-		myExpMip[i] = RenderTarget::Create({ expSizes[i], expSizes[i] }, DXGI_FORMAT_R16_FLOAT);
+		myExpMip[i] = RenderTarget::Create({ expSizes[i], expSizes[i] }, rhi::Format::R16_Float);
 
 	// Persistent 1x1 exposure ping-pong -- created once, survives resize.
 	if (!myExposure[0].GetShaderResourceView())
 	{
-		myExposure[0] = RenderTarget::Create({ 1, 1 }, DXGI_FORMAT_R32_FLOAT);
-		myExposure[1] = RenderTarget::Create({ 1, 1 }, DXGI_FORMAT_R32_FLOAT);
+		myExposure[0] = RenderTarget::Create({ 1, 1 }, rhi::Format::R32_Float);
+		myExposure[1] = RenderTarget::Create({ 1, 1 }, rhi::Format::R32_Float);
 		myExposureCleared = false;
 	}
 	return true;

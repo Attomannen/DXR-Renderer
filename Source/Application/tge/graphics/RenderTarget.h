@@ -2,6 +2,7 @@
 
 #include <tge/Math/Vector.h>
 #include <tge/graphics/TextureResource.h>
+#include <tge/rhi/Descs.h>
 #include <wrl/client.h>
 #include <dxgiformat.h>
 #include <memory>
@@ -28,9 +29,13 @@ public:
 	RenderTarget();
 	~RenderTarget();
 
-	static RenderTarget Create(Vector2ui aSize, DXGI_FORMAT aFormat = DXGI_FORMAT_R8G8B8A8_UNORM);
-	static RenderTarget Create(Vector2ui aSize, DXGI_FORMAT aFormat, DXGI_FORMAT aRenderTargetFormat, DXGI_FORMAT aShaderResourceFormat);
+	static RenderTarget Create(Vector2ui aSize, rhi::Format aFormat = rhi::Format::R8G8B8A8_UNorm);
+	static RenderTarget Create(Vector2ui aSize, rhi::Format aFormat, rhi::Format aRenderTargetFormat, rhi::Format aShaderResourceFormat);
 
+	// Adopts an externally-created texture (the swapchain backbuffer) as a
+	// RenderTarget. Stays on the raw D3D11 path deliberately: both call sites
+	// (DX11::Init/ResizeToWindowSize) run *before* the RHI device exists, so
+	// there is nothing to route through yet.
 	static RenderTarget Create(ID3D11Texture2D* aTexture);
 	static RenderTarget Create(ID3D11Texture2D* aTexture, DXGI_FORMAT aFormat);
 

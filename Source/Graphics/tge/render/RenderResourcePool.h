@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
-#include <dxgiformat.h>
+#include <tge/rhi/Descs.h>
 #include <tge/math/vector2.h>
 
 namespace Tga
@@ -18,7 +18,7 @@ namespace Tga
 	{
 		uint32_t width = 0;
 		uint32_t height = 0;
-		DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM;
+		rhi::Format format = rhi::Format::R8G8B8A8_UNorm;
 
 		bool operator==(const RtDesc& o) const
 		{
@@ -33,7 +33,7 @@ namespace Tga
 		~RenderResourcePool();
 
 		RenderTarget* Acquire(const RtDesc& aDesc);
-		RenderTarget* Acquire(Vector2ui aSize, DXGI_FORMAT aFormat)
+		RenderTarget* Acquire(Vector2ui aSize, rhi::Format aFormat)
 		{
 			return Acquire(RtDesc{ aSize.x, aSize.y, aFormat });
 		}

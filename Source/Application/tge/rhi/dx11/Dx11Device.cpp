@@ -713,6 +713,8 @@ namespace Tga::rhi::dx11
 	void* Dx11Device::GetNativeDevice()  { return myDevice; }
 	void* Dx11Device::GetNativeContext() { return myCtx; }
 	void* Dx11Device::GetNativeSrv(SrvHandle h) { return GetSrvPtr(h); }
+	void* Dx11Device::GetNativeRtv(RtvHandle h) { return GetRtvPtr(h); }
+	void* Dx11Device::GetNativeTexture(TextureHandle h) { auto* t = myTextures.Get(h); return t ? t->res.Get() : nullptr; }
 	void* Dx11Device::ImGuiTextureId(SrvHandle h) { return GetSrvPtr(h); }
 
 	SrvHandle Dx11Device::WrapNativeSrv(void* p)
