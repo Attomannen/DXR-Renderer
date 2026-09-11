@@ -13,6 +13,7 @@
 #include <tge/log/Log.h>
 #include <tge/animation/animationPlayer.h>
 #include <tge/graphics/DX11.h>
+#include <tge/rhi/Device.h>
 #include <tge/graphics/GraphicsEngine.h>
 #include <tge/model/Model.h>
 #include <tge/model/ModelInstance.h>
@@ -319,34 +320,28 @@ bool ModelFactory::InitUnitCube()
 	//const Vector3f boxExtents = 0.5f * (maxExtents - minExtents);
 	//const float myBoxSphereRadius = FMath::Max(boxExtents.X, FMath::Max(boxExtents.Y, boxExtents.Z));
 
-	HRESULT result;
+	rhi::BufferDesc vertexBufferDesc{};
+	vertexBufferDesc.byteSize = static_cast<UINT>(meshData.vertices.size()) * static_cast<UINT>(sizeof(Vertex));
+	vertexBufferDesc.stride = sizeof(Vertex);
+	vertexBufferDesc.usage = rhi::BufferUsage::Vertex;
+	vertexBufferDesc.memory = rhi::MemoryType::Default;
+	vertexBufferDesc.debugName = "Cube_VB";
 
-	D3D11_BUFFER_DESC vertexBufferDesc{};
-	vertexBufferDesc.ByteWidth = static_cast<UINT>(meshData.vertices.size()) * static_cast<UINT>(sizeof(Vertex));
-	vertexBufferDesc.Usage = D3D11_USAGE_IMMUTABLE;
-	vertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-
-	D3D11_SUBRESOURCE_DATA vertexSubresourceData{};
-	vertexSubresourceData.pSysMem = &meshData.vertices[0];
-
-	ID3D11Buffer* vertexBuffer;
-	result = DX11::Device->CreateBuffer(&vertexBufferDesc, &vertexSubresourceData, &vertexBuffer);
-	if (FAILED(result))
+	rhi::BufferHandle vertexBuffer = DX11::Rhi()->CreateBuffer(vertexBufferDesc, &meshData.vertices[0]);
+	if (!vertexBuffer.IsValid())
 	{
 		return false;
 	}
 
-	D3D11_BUFFER_DESC indexBufferDesc{};
-	indexBufferDesc.ByteWidth = static_cast<UINT>(meshData.indices.size()) * static_cast<UINT>(sizeof(unsigned int));
-	indexBufferDesc.Usage = D3D11_USAGE_IMMUTABLE;
-	indexBufferDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+	rhi::BufferDesc indexBufferDesc{};
+	indexBufferDesc.byteSize = static_cast<UINT>(meshData.indices.size()) * static_cast<UINT>(sizeof(unsigned int));
+	indexBufferDesc.stride = sizeof(unsigned int);
+	indexBufferDesc.usage = rhi::BufferUsage::Index;
+	indexBufferDesc.memory = rhi::MemoryType::Default;
+	indexBufferDesc.debugName = "Cube_IB";
 
-	D3D11_SUBRESOURCE_DATA indexSubresourceData{};
-	indexSubresourceData.pSysMem = &meshData.indices[0];
-
-	ID3D11Buffer* indexBuffer;
-	result = DX11::Device->CreateBuffer(&indexBufferDesc, &indexSubresourceData, &indexBuffer);
-	if (FAILED(result))
+	rhi::BufferHandle indexBuffer = DX11::Rhi()->CreateBuffer(indexBufferDesc, &meshData.indices[0]);
+	if (!indexBuffer.IsValid())
 	{
 		return false;
 	}
@@ -416,34 +411,28 @@ bool ModelFactory::InitUnitPlane()
 	//const Vector3f boxExtents = 0.5f * (maxExtents - minExtents);
 	//const float myBoxSphereRadius = FMath::Max(boxExtents.X, FMath::Max(boxExtents.Y, boxExtents.Z));
 
-	HRESULT result;
+	rhi::BufferDesc vertexBufferDesc{};
+	vertexBufferDesc.byteSize = static_cast<UINT>(meshData.vertices.size()) * static_cast<UINT>(sizeof(Vertex));
+	vertexBufferDesc.stride = sizeof(Vertex);
+	vertexBufferDesc.usage = rhi::BufferUsage::Vertex;
+	vertexBufferDesc.memory = rhi::MemoryType::Default;
+	vertexBufferDesc.debugName = "Plane_VB";
 
-	D3D11_BUFFER_DESC vertexBufferDesc{};
-	vertexBufferDesc.ByteWidth = static_cast<UINT>(meshData.vertices.size()) * static_cast<UINT>(sizeof(Vertex));
-	vertexBufferDesc.Usage = D3D11_USAGE_IMMUTABLE;
-	vertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-
-	D3D11_SUBRESOURCE_DATA vertexSubresourceData{};
-	vertexSubresourceData.pSysMem = &meshData.vertices[0];
-
-	ID3D11Buffer* vertexBuffer;
-	result = DX11::Device->CreateBuffer(&vertexBufferDesc, &vertexSubresourceData, &vertexBuffer);
-	if (FAILED(result))
+	rhi::BufferHandle vertexBuffer = DX11::Rhi()->CreateBuffer(vertexBufferDesc, &meshData.vertices[0]);
+	if (!vertexBuffer.IsValid())
 	{
 		return false;
 	}
 
-	D3D11_BUFFER_DESC indexBufferDesc{};
-	indexBufferDesc.ByteWidth = static_cast<UINT>(meshData.indices.size()) * static_cast<UINT>(sizeof(unsigned int));
-	indexBufferDesc.Usage = D3D11_USAGE_IMMUTABLE;
-	indexBufferDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+	rhi::BufferDesc indexBufferDesc{};
+	indexBufferDesc.byteSize = static_cast<UINT>(meshData.indices.size()) * static_cast<UINT>(sizeof(unsigned int));
+	indexBufferDesc.stride = sizeof(unsigned int);
+	indexBufferDesc.usage = rhi::BufferUsage::Index;
+	indexBufferDesc.memory = rhi::MemoryType::Default;
+	indexBufferDesc.debugName = "Plane_IB";
 
-	D3D11_SUBRESOURCE_DATA indexSubresourceData{};
-	indexSubresourceData.pSysMem = &meshData.indices[0];
-
-	ID3D11Buffer* indexBuffer;
-	result = DX11::Device->CreateBuffer(&indexBufferDesc, &indexSubresourceData, &indexBuffer);
-	if (FAILED(result))
+	rhi::BufferHandle indexBuffer = DX11::Rhi()->CreateBuffer(indexBufferDesc, &meshData.indices[0]);
+	if (!indexBuffer.IsValid())
 	{
 		return false;
 	}
@@ -470,22 +459,24 @@ bool ModelFactory::InitUnitPlane()
 static bool FinalizePrimitive(Model::MeshData& meshData, const char* aName, StringId aId,
 	std::unordered_map<StringId, std::shared_ptr<Model>>& aRegistry)
 {
-	D3D11_BUFFER_DESC vbDesc{};
-	vbDesc.ByteWidth = static_cast<UINT>(meshData.vertices.size()) * static_cast<UINT>(sizeof(Vertex));
-	vbDesc.Usage = D3D11_USAGE_IMMUTABLE;
-	vbDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-	D3D11_SUBRESOURCE_DATA vbData{}; vbData.pSysMem = meshData.vertices.data();
-	ID3D11Buffer* vertexBuffer = nullptr;
-	if (FAILED(DX11::Device->CreateBuffer(&vbDesc, &vbData, &vertexBuffer)))
+	rhi::BufferDesc vbDesc{};
+	vbDesc.byteSize = static_cast<UINT>(meshData.vertices.size()) * static_cast<UINT>(sizeof(Vertex));
+	vbDesc.stride = sizeof(Vertex);
+	vbDesc.usage = rhi::BufferUsage::Vertex;
+	vbDesc.memory = rhi::MemoryType::Default;
+	vbDesc.debugName = "Primitive_VB";
+	rhi::BufferHandle vertexBuffer = DX11::Rhi()->CreateBuffer(vbDesc, meshData.vertices.data());
+	if (!vertexBuffer.IsValid())
 		return false;
 
-	D3D11_BUFFER_DESC ibDesc{};
-	ibDesc.ByteWidth = static_cast<UINT>(meshData.indices.size()) * static_cast<UINT>(sizeof(unsigned int));
-	ibDesc.Usage = D3D11_USAGE_IMMUTABLE;
-	ibDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
-	D3D11_SUBRESOURCE_DATA ibData{}; ibData.pSysMem = meshData.indices.data();
-	ID3D11Buffer* indexBuffer = nullptr;
-	if (FAILED(DX11::Device->CreateBuffer(&ibDesc, &ibData, &indexBuffer)))
+	rhi::BufferDesc ibDesc{};
+	ibDesc.byteSize = static_cast<UINT>(meshData.indices.size()) * static_cast<UINT>(sizeof(unsigned int));
+	ibDesc.stride = sizeof(unsigned int);
+	ibDesc.usage = rhi::BufferUsage::Index;
+	ibDesc.memory = rhi::MemoryType::Default;
+	ibDesc.debugName = "Primitive_IB";
+	rhi::BufferHandle indexBuffer = DX11::Rhi()->CreateBuffer(ibDesc, meshData.indices.data());
+	if (!indexBuffer.IsValid())
 		return false;
 
 	meshData.numberOfVertices = static_cast<UINT>(meshData.vertices.size());
@@ -1234,31 +1225,25 @@ std::shared_ptr<Model> ModelFactory::LoadModel(StringId someFilePath)
 		meshData.bounds = CalculateBoxSphereBounds(meshData.vertices);
 		meshData.name = mesh->name.data ? StringRegistry::RegisterOrGetString(mesh->name.data) : "Mesh"_tgaid;
 
-		HRESULT result;
+		rhi::BufferDesc vbDesc{};
+		vbDesc.byteSize = UINT(meshData.vertices.size() * sizeof(Vertex));
+		vbDesc.stride = sizeof(Vertex);
+		vbDesc.usage = rhi::BufferUsage::Vertex;
+		vbDesc.memory = rhi::MemoryType::Default;
+		vbDesc.debugName = "Mesh_VB";
 
-		D3D11_BUFFER_DESC vbDesc{};
-		vbDesc.ByteWidth = UINT(meshData.vertices.size() * sizeof(Vertex));
-		vbDesc.Usage = D3D11_USAGE_IMMUTABLE;
-		vbDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+		rhi::BufferHandle vb = DX11::Rhi()->CreateBuffer(vbDesc, meshData.vertices.data());
+		if (!vb.IsValid()) return nullptr;
 
-		D3D11_SUBRESOURCE_DATA vbData{};
-		vbData.pSysMem = meshData.vertices.data();
+		rhi::BufferDesc ibDesc{};
+		ibDesc.byteSize = UINT(meshData.indices.size() * sizeof(uint32_t));
+		ibDesc.stride = sizeof(uint32_t);
+		ibDesc.usage = rhi::BufferUsage::Index;
+		ibDesc.memory = rhi::MemoryType::Default;
+		ibDesc.debugName = "Mesh_IB";
 
-		ID3D11Buffer* vb;
-		result = DX11::Device->CreateBuffer(&vbDesc, &vbData, &vb);
-		if (FAILED(result)) return nullptr;
-
-		D3D11_BUFFER_DESC ibDesc{};
-		ibDesc.ByteWidth = UINT(meshData.indices.size() * sizeof(uint32_t));
-		ibDesc.Usage = D3D11_USAGE_IMMUTABLE;
-		ibDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
-
-		D3D11_SUBRESOURCE_DATA ibData{};
-		ibData.pSysMem = meshData.indices.data();
-
-		ID3D11Buffer* ib;
-		result = DX11::Device->CreateBuffer(&ibDesc, &ibData, &ib);
-		if (FAILED(result)) return nullptr;
+		rhi::BufferHandle ib = DX11::Rhi()->CreateBuffer(ibDesc, meshData.indices.data());
+		if (!ib.IsValid()) return nullptr;
 
 		meshData.vertexBuffer = vb;
 		meshData.indexBuffer = ib;
@@ -1458,8 +1443,8 @@ namespace
 
 	bool CacheCreateBuffers(Tga::Model::MeshData& md)
 	{
-		md.vertexBuffer = nullptr;
-		md.indexBuffer  = nullptr;
+		md.vertexBuffer = {};
+		md.indexBuffer  = {};
 		md.numberOfVertices = 0;
 		md.numberOfIndices  = 0;
 		md.stride = sizeof(Tga::Vertex);
@@ -1479,23 +1464,24 @@ namespace
 			return false;
 		}
 
-		D3D11_BUFFER_DESC vbd{};
-		vbd.ByteWidth = (UINT)vbytes;
-		vbd.Usage = D3D11_USAGE_IMMUTABLE;
-		vbd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-		D3D11_SUBRESOURCE_DATA vsd{}; vsd.pSysMem = md.vertices.data();
-		ID3D11Buffer* vb = nullptr;
-		HRESULT hr = Tga::DX11::Device->CreateBuffer(&vbd, &vsd, &vb);
-		if (FAILED(hr)) { ERROR_PRINT("mesh '%s': vertex buffer create failed 0x%08X", md.name.GetString(), (unsigned)hr); return false; }
+		Tga::rhi::BufferDesc vbd{};
+		vbd.byteSize = (UINT)vbytes;
+		vbd.stride = sizeof(Tga::Vertex);
+		vbd.usage = Tga::rhi::BufferUsage::Vertex;
+		vbd.memory = Tga::rhi::MemoryType::Default;
+		vbd.debugName = "Mesh_VB";
+		Tga::rhi::IDevice* dev = Tga::DX11::Rhi();
+		Tga::rhi::BufferHandle vb = dev->CreateBuffer(vbd, md.vertices.data());
+		if (!vb.IsValid()) { ERROR_PRINT("mesh '%s': vertex buffer create failed", md.name.GetString()); return false; }
 
-		D3D11_BUFFER_DESC ibd{};
-		ibd.ByteWidth = (UINT)(md.indices.size() * sizeof(unsigned int));
-		ibd.Usage = D3D11_USAGE_IMMUTABLE;
-		ibd.BindFlags = D3D11_BIND_INDEX_BUFFER;
-		D3D11_SUBRESOURCE_DATA isd{}; isd.pSysMem = md.indices.data();
-		ID3D11Buffer* ib = nullptr;
-		hr = Tga::DX11::Device->CreateBuffer(&ibd, &isd, &ib);
-		if (FAILED(hr)) { ERROR_PRINT("mesh '%s': index buffer create failed 0x%08X", md.name.GetString(), (unsigned)hr); vb->Release(); return false; }
+		Tga::rhi::BufferDesc ibd{};
+		ibd.byteSize = (UINT)(md.indices.size() * sizeof(unsigned int));
+		ibd.stride = sizeof(unsigned int);
+		ibd.usage = Tga::rhi::BufferUsage::Index;
+		ibd.memory = Tga::rhi::MemoryType::Default;
+		ibd.debugName = "Mesh_IB";
+		Tga::rhi::BufferHandle ib = dev->CreateBuffer(ibd, md.indices.data());
+		if (!ib.IsValid()) { ERROR_PRINT("mesh '%s': index buffer create failed", md.name.GetString()); dev->Destroy(vb); return false; }
 
 		md.numberOfVertices = (UINT)md.vertices.size();
 		md.numberOfIndices  = (UINT)md.indices.size();
@@ -1528,8 +1514,8 @@ namespace
 				Tga::Model::MeshData nm;
 				nm.name         = m.name;
 				nm.materialName  = m.materialName;
-				nm.vertexBuffer = nullptr;
-				nm.indexBuffer  = nullptr;
+				nm.vertexBuffer = {};
+				nm.indexBuffer  = {};
 				nm.vertices      = std::move(m.vertices);
 				nm.indices       = std::move(m.indices);
 				out.push_back(std::move(nm));
@@ -1543,8 +1529,9 @@ namespace
 				for (unsigned int idx : m.indices) dst.indices.push_back(base + idx);
 			}
 
-			if (m.vertexBuffer) { m.vertexBuffer->Release(); m.vertexBuffer = nullptr; }
-			if (m.indexBuffer)  { m.indexBuffer->Release();  m.indexBuffer  = nullptr; }
+			Tga::rhi::IDevice* dev = Tga::DX11::Rhi();
+			if (m.vertexBuffer.IsValid()) { dev->Destroy(m.vertexBuffer); m.vertexBuffer = {}; }
+			if (m.indexBuffer.IsValid())  { dev->Destroy(m.indexBuffer);  m.indexBuffer  = {}; }
 		}
 
 		size_t okMeshes = 0, totalTris = 0;
@@ -1803,34 +1790,28 @@ std::shared_ptr<Model> ModelFactory::LoadModel(StringId someFilePath)
 			memcpy(meshData.indices.data(), element.Indices.data(), sizeof(unsigned int) * element.Indices.size());
 			//meshData.Indices = element.Indices;
 
-			HRESULT result;
+			rhi::BufferDesc vertexBufferDesc{};
+			vertexBufferDesc.byteSize = static_cast<UINT>(meshData.vertices.size()) * static_cast<UINT>(sizeof(Vertex));
+			vertexBufferDesc.stride = sizeof(Vertex);
+			vertexBufferDesc.usage = rhi::BufferUsage::Vertex;
+			vertexBufferDesc.memory = rhi::MemoryType::Default;
+			vertexBufferDesc.debugName = "Mesh_VB";
 
-			D3D11_BUFFER_DESC vertexBufferDesc{};
-			vertexBufferDesc.ByteWidth = static_cast<UINT>(meshData.vertices.size()) * static_cast<UINT>(sizeof(Vertex));
-			vertexBufferDesc.Usage = D3D11_USAGE_IMMUTABLE;
-			vertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-
-			D3D11_SUBRESOURCE_DATA vertexSubresourceData{};
-			vertexSubresourceData.pSysMem = &meshData.vertices[0];
-
-			ID3D11Buffer* vertexBuffer;
-			result = DX11::Device->CreateBuffer(&vertexBufferDesc, &vertexSubresourceData, &vertexBuffer);
-			if (FAILED(result))
+			rhi::BufferHandle vertexBuffer = DX11::Rhi()->CreateBuffer(vertexBufferDesc, &meshData.vertices[0]);
+			if (!vertexBuffer.IsValid())
 			{
 				return nullptr;
 			}
 
-			D3D11_BUFFER_DESC indexBufferDesc{};
-			indexBufferDesc.ByteWidth = static_cast<UINT>(meshData.indices.size()) * static_cast<UINT>(sizeof(float)); // TODO: What :P Sizeof should be uint.
-			indexBufferDesc.Usage = D3D11_USAGE_IMMUTABLE;
-			indexBufferDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+			rhi::BufferDesc indexBufferDesc{};
+			indexBufferDesc.byteSize = static_cast<UINT>(meshData.indices.size()) * static_cast<UINT>(sizeof(float)); // TODO: What :P Sizeof should be uint.
+			indexBufferDesc.stride = sizeof(unsigned int);
+			indexBufferDesc.usage = rhi::BufferUsage::Index;
+			indexBufferDesc.memory = rhi::MemoryType::Default;
+			indexBufferDesc.debugName = "Mesh_IB";
 
-			D3D11_SUBRESOURCE_DATA indexSubresourceData{};
-			indexSubresourceData.pSysMem = &meshData.indices[0];
-
-			ID3D11Buffer* indexBuffer;
-			result = DX11::Device->CreateBuffer(&indexBufferDesc, &indexSubresourceData, &indexBuffer);
-			if (FAILED(result))
+			rhi::BufferHandle indexBuffer = DX11::Rhi()->CreateBuffer(indexBufferDesc, &meshData.indices[0]);
+			if (!indexBuffer.IsValid())
 			{
 				return nullptr;
 			}

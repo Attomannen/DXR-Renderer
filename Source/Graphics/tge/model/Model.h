@@ -8,10 +8,9 @@
 #include <tge/Math/Vector.h>
 #include <tge/Math/BoxSphereBounds.h>
 #include <tge/EngineDefines.h>
+#include <tge/rhi/Handles.h>
 
 #include "tge/stringRegistry/StringRegistry.h"
-
-struct ID3D11Buffer;
 
 namespace Tga
 {
@@ -32,8 +31,8 @@ public:
 		uint32_t numberOfIndices;
 		uint32_t stride;
 		uint32_t offset;
-		ID3D11Buffer* vertexBuffer;
-		ID3D11Buffer* indexBuffer;
+		rhi::BufferHandle vertexBuffer;
+		rhi::BufferHandle indexBuffer;
 		BoxSphereBounds bounds;
 		std::vector<Vertex> vertices;
 		std::vector<unsigned int> indices;

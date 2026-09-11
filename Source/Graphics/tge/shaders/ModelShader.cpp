@@ -68,7 +68,7 @@ void Tga::ModelShader::RenderSetup(const Matrix4x4f& aObToWorld, const Matrix4x4
 
 void Tga::ModelShader::RenderMesh(const TextureResource* const* someTextures, const Model::MeshData& aModelData) const
 {
-	if (!myIsReadyToRender || !aModelData.vertexBuffer || !aModelData.indexBuffer || aModelData.numberOfIndices == 0)
+	if (!myIsReadyToRender || !aModelData.vertexBuffer.IsValid() || !aModelData.indexBuffer.IsValid() || aModelData.numberOfIndices == 0)
 	{
 		return;
 	}
@@ -82,13 +82,12 @@ void Tga::ModelShader::RenderMesh(const TextureResource* const* someTextures, co
 	}
 	DX11::Context->PSSetShaderResources(1, i, resourceViews);
 
-	DX11::Context->IASetIndexBuffer(aModelData.indexBuffer, DXGI_FORMAT_R32_UINT, 0);
-	const unsigned int strides = aModelData.stride;
-	const unsigned int offsets = 0;
-	DX11::Context->IASetVertexBuffers(0, 1, &aModelData.vertexBuffer, &strides, &offsets);
+	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
+	ctx.SetIndexBuffer(aModelData.indexBuffer, rhi::Format::R32_UInt, 0);
+	ctx.SetVertexBuffer(0, aModelData.vertexBuffer, aModelData.stride, 0);
 
-	DX11::LogDrawCall();
-	DX11::Context->DrawIndexed(aModelData.numberOfIndices, 0, 0);
+	// ctx.DrawIndexed() already calls DX11::LogDrawCall() internally.
+	ctx.DrawIndexed(aModelData.numberOfIndices, 0, 0);
 }
 
 void Tga::ModelShader::Render(const TextureResource* const* someTextures, const Model::MeshData& aModelData, const Matrix4x4f& aObToWorld, const Matrix4x4f* someBones) const
