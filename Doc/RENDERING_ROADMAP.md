@@ -308,8 +308,13 @@ subfolder. Four stages:
       lighting-resolve 2-MRT, post-fx fullscreen).
     - [x] sub-pass 3 — the 4 engine samplers (point/shadow-cmp/linear/GI-linear) →
       `rhi::SamplerHandle` via `IDevice::CreateSampler` + `ctx.SetSampler`.
-    - [ ] sub-pass 4 — textures/SRVs/UAVs/structured buffers (next) · sub-pass 5 —
-      compute dispatch · sub-pass 6 — remaining fullscreen-draw plumbing
+    - [~] sub-pass 4 — structured buffers/SRVs/UAVs/textures. Part 1 done: new
+      `rhi::StructuredBuffer` helper (owns buffer+SRV+optional UAV); converted the
+      light buffer, cluster index/count buffers, GI SH-coefficient buffer, local-shadow
+      transform buffer. Part 2 (next): the shadow-cascade texture array + local-shadow-
+      atlas texture (real `ID3D11Texture2D`/DSV work).
+    - [ ] sub-pass 5 — compute dispatch (shader object bind + `Dispatch`) ·
+      sub-pass 6 — remaining fullscreen-draw plumbing
   - [ ] Steps 8–12 — `CubemapPrefilter`, `GameWorld` GI capture, video player, ImGui /
     editor viewport + font atlas, then delete the `DX11::Device/Context/...` statics.
   - **Found + fixed a real bug along the way** (not port-scope, a genuine engine

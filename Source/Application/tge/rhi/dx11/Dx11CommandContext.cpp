@@ -37,6 +37,11 @@ namespace Tga::rhi::dx11
 		if (ID3D11RenderTargetView* v = myDevice.GetRtvPtr(rtv)) Ctx()->ClearRenderTargetView(v, rgba);
 	}
 
+	void Dx11CommandContext::ClearUnorderedAccessFloat(UavHandle uav, const float rgba[4])
+	{
+		if (ID3D11UnorderedAccessView* v = myDevice.GetUavPtr(uav)) Ctx()->ClearUnorderedAccessViewFloat(v, rgba);
+	}
+
 	void Dx11CommandContext::ClearDepthStencil(DsvHandle dsv, float depth, uint8_t stencil, bool clearDepth, bool clearStencil)
 	{
 		if (ID3D11DepthStencilView* v = myDevice.GetDsvPtr(dsv))

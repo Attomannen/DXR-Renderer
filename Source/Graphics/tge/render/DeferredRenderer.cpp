@@ -220,30 +220,14 @@ bool DeferredRenderer::Init(Vector2ui aResolution)
 	}
 	else
 	{
-		D3D11_BUFFER_DESC sb{};
-		sb.ByteWidth = sizeof(float) * 4 * 9 * kMaxGiProbes;
-		sb.Usage = D3D11_USAGE_DEFAULT;
-		sb.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-		sb.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-		sb.StructureByteStride = sizeof(float) * 4;
-		if (FAILED(DX11::Device->CreateBuffer(&sb, nullptr, myGiShBuffer.GetAddressOf())))
+		myGiShBuffer.Create(*DX11::Rhi(), sizeof(float) * 4, 9 * kMaxGiProbes,
+		                   /*withUav*/ true, /*cpuUpdatable*/ false, "GiShBuffer");
+		if (!myGiShBuffer.IsValid())
 		{
 			myGiProjectCS = nullptr;
 		}
 		else
 		{
-			D3D11_SHADER_RESOURCE_VIEW_DESC sv{};
-			sv.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
-			sv.Format = DXGI_FORMAT_UNKNOWN;
-			sv.Buffer.NumElements = 9 * kMaxGiProbes;
-			DX11::Device->CreateShaderResourceView(myGiShBuffer.Get(), &sv, myGiShSrv.GetAddressOf());
-
-			D3D11_UNORDERED_ACCESS_VIEW_DESC uv{};
-			uv.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-			uv.Format = DXGI_FORMAT_UNKNOWN;
-			uv.Buffer.NumElements = 9 * kMaxGiProbes;
-			DX11::Device->CreateUnorderedAccessView(myGiShBuffer.Get(), &uv, myGiShUav.GetAddressOf());
-
 			myGiVolumeCb.Create(*DX11::Rhi(), 48, rhi::ShaderStage::Pixel, 13, "GiVolumeCb");   // 3 x float4
 			myGiProjectCb.Create(*DX11::Rhi(), 16, rhi::ShaderStage::Compute, 0, "GiProjectCb");
 
@@ -254,7 +238,7 @@ bool DeferredRenderer::Init(Vector2ui aResolution)
 				myGiLinearSampler = DX11::Rhi()->CreateSampler(sd2);
 			}
 
-			if (!myGiShSrv || !myGiShUav || !myGiVolumeCb.IsValid() || !myGiProjectCb.IsValid() || !myGiLinearSampler.IsValid())
+			if (!myGiShBuffer.IsValid() || !myGiVolumeCb.IsValid() || !myGiProjectCb.IsValid() || !myGiLinearSampler.IsValid())
 				myGiProjectCS = nullptr;
 			else
 				INFO_PRINT("DeferredRenderer: emissive-GI volume ready (max %d probes)", kMaxGiProbes);
@@ -275,26 +259,11 @@ bool DeferredRenderer::Init(Vector2ui aResolution)
 
 	// Structured light buffer (t15) + params cbuffer (b6) for the deferred resolve.
 	{
-		D3D11_BUFFER_DESC bd{};
-		bd.ByteWidth = sizeof(DeferredLight) * kMaxLights;
-		bd.Usage = D3D11_USAGE_DYNAMIC;
-		bd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-		bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-		bd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-		bd.StructureByteStride = sizeof(DeferredLight);
-		if (FAILED(DX11::Device->CreateBuffer(&bd, nullptr, myLightBuffer.GetAddressOf())))
+		myLightBuffer.Create(*DX11::Rhi(), sizeof(DeferredLight), kMaxLights,
+		                     /*withUav*/ false, /*cpuUpdatable*/ true, "LightBuffer");
+		if (!myLightBuffer.IsValid())
 		{
 			ERROR_PRINT("DeferredRenderer: failed to create light buffer");
-			return false;
-		}
-		D3D11_SHADER_RESOURCE_VIEW_DESC sv{};
-		sv.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
-		sv.Format = DXGI_FORMAT_UNKNOWN;
-		sv.Buffer.FirstElement = 0;
-		sv.Buffer.NumElements = kMaxLights;
-		if (FAILED(DX11::Device->CreateShaderResourceView(myLightBuffer.Get(), &sv, myLightSrv.GetAddressOf())))
-		{
-			ERROR_PRINT("DeferredRenderer: failed to create light SRV");
 			return false;
 		}
 		myLightParamsCb.Create(*DX11::Rhi(), 16, rhi::ShaderStage::Pixel, 6, "LightParamsCb");   // uint count + pad
@@ -399,15 +368,8 @@ void DeferredRenderer::UploadLights(const DeferredLight* aLights, int aCount)
 	// Keep a CPU copy so RenderLocalShadows can pick casters and patch shadowSlot.
 	myLights.assign(aLights, aLights + myLightCount);
 
-	if (myLightCount > 0 && myLightBuffer)
-	{
-		D3D11_MAPPED_SUBRESOURCE m{};
-		if (SUCCEEDED(DX11::Context->Map(myLightBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m)))
-		{
-			memcpy(m.pData, aLights, sizeof(DeferredLight) * myLightCount);
-			DX11::Context->Unmap(myLightBuffer.Get(), 0);
-		}
-	}
+	if (myLightCount > 0 && myLightBuffer.IsValid())
+		myLightBuffer.Update(DX11::Rhi()->GetContext(), aLights, sizeof(DeferredLight) * myLightCount);
 
 	if (myLightParamsCb.IsValid())
 	{
@@ -503,9 +465,9 @@ void DeferredRenderer::SetGiVolume(const Vector3f& o, const Vector3f& s, int cx,
 
 void DeferredRenderer::ClearGi()
 {
-	if (!myGiShUav) return;
+	if (!myGiShBuffer.Uav().IsValid()) return;
 	const float z[4] = { 0.f, 0.f, 0.f, 0.f };
-	DX11::Context->ClearUnorderedAccessViewFloat(myGiShUav.Get(), z);
+	DX11::Rhi()->GetContext().ClearUnorderedAccessFloat(myGiShBuffer.Uav(), z);
 }
 
 void DeferredRenderer::GiProjectProbe(ID3D11ShaderResourceView* aCubeSrv, int aProbeIndex, float aHysteresis, int aFaceRes)
@@ -518,18 +480,17 @@ void DeferredRenderer::GiProjectProbe(ID3D11ShaderResourceView* aCubeSrv, int aP
 		myGiProjectCb.Update(DX11::Rhi()->GetContext(), p);
 	}
 
-	ID3D11UnorderedAccessView* uav = myGiShUav.Get();
+	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
 	DX11::Context->CSSetShader(myGiProjectCS->shader.Get(), nullptr, 0);
 	DX11::Context->CSSetShaderResources(0, 1, &aCubeSrv);
-	DX11::Rhi()->GetContext().SetSampler(rhi::ShaderStage::Compute, 0, myGiLinearSampler);
-	myGiProjectCb.Bind(DX11::Rhi()->GetContext());
-	DX11::Context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+	ctx.SetSampler(rhi::ShaderStage::Compute, 0, myGiLinearSampler);
+	myGiProjectCb.Bind(ctx);
+	ctx.SetUnorderedAccess(0, myGiShBuffer.Uav());
 
 	DX11::Context->Dispatch(1, 1, 1);
 
-	ID3D11UnorderedAccessView* nu = nullptr;
 	ID3D11ShaderResourceView* ns = nullptr;
-	DX11::Context->CSSetUnorderedAccessViews(0, 1, &nu, nullptr);
+	ctx.SetUnorderedAccess(0, {});
 	DX11::Context->CSSetShaderResources(0, 1, &ns);
 	DX11::Context->CSSetShader(nullptr, nullptr, 0);
 }
@@ -636,35 +597,14 @@ bool DeferredRenderer::CreateClusterBuffers(Vector2ui aResolution)
 	                (aResolution.y + kTilePx - 1) / kTilePx };
 	myNumClusters = (int)(myTileCount.x * myTileCount.y * kZSlices);
 
-	auto makeStructured = [](UINT elements, ComPtr<ID3D11Buffer>& buf,
-	                         ComPtr<ID3D11ShaderResourceView>& srv,
-	                         ComPtr<ID3D11UnorderedAccessView>& uav) -> bool
+	auto makeStructured = [](rhi::StructuredBuffer& sb, UINT elements, const char* name) -> bool
 	{
-		buf.Reset(); srv.Reset(); uav.Reset();
-		D3D11_BUFFER_DESC bd{};
-		bd.ByteWidth = elements * sizeof(uint32_t);
-		bd.Usage = D3D11_USAGE_DEFAULT;
-		bd.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-		bd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-		bd.StructureByteStride = sizeof(uint32_t);
-		if (FAILED(DX11::Device->CreateBuffer(&bd, nullptr, buf.GetAddressOf()))) return false;
-
-		D3D11_SHADER_RESOURCE_VIEW_DESC sv{};
-		sv.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
-		sv.Format = DXGI_FORMAT_UNKNOWN;
-		sv.Buffer.NumElements = elements;
-		if (FAILED(DX11::Device->CreateShaderResourceView(buf.Get(), &sv, srv.GetAddressOf()))) return false;
-
-		D3D11_UNORDERED_ACCESS_VIEW_DESC uv{};
-		uv.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-		uv.Format = DXGI_FORMAT_UNKNOWN;
-		uv.Buffer.NumElements = elements;
-		if (FAILED(DX11::Device->CreateUnorderedAccessView(buf.Get(), &uv, uav.GetAddressOf()))) return false;
-		return true;
+		sb.Create(*DX11::Rhi(), sizeof(uint32_t), elements, /*withUav*/ true, /*cpuUpdatable*/ false, name);
+		return sb.IsValid();
 	};
 
-	if (!makeStructured((UINT)myNumClusters * kMaxPerCluster, myClusterIndexBuffer, myClusterIndexSrv, myClusterIndexUav) ||
-	    !makeStructured((UINT)myNumClusters, myClusterCountBuffer, myClusterCountSrv, myClusterCountUav))
+	if (!makeStructured(myClusterIndexBuffer, (UINT)myNumClusters * kMaxPerCluster, "ClusterIndexBuffer") ||
+	    !makeStructured(myClusterCountBuffer, (UINT)myNumClusters, "ClusterCountBuffer"))
 	{
 		ERROR_PRINT("DeferredRenderer: cluster buffer creation failed; clustering disabled");
 		myClusterCS = nullptr;
@@ -742,21 +682,9 @@ bool DeferredRenderer::CreateLocalShadowAtlas()
 	if (FAILED(DX11::Device->CreateShaderResourceView(myLocalAtlasTex.Get(), &sv, myLocalAtlasSrv.GetAddressOf())))
 		return false;
 
-	D3D11_BUFFER_DESC bd{};
-	bd.ByteWidth = sizeof(LocalShadowGpu) * kLocalTileCount;
-	bd.Usage = D3D11_USAGE_DYNAMIC;
-	bd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-	bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-	bd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-	bd.StructureByteStride = sizeof(LocalShadowGpu);
-	if (FAILED(DX11::Device->CreateBuffer(&bd, nullptr, myLocalShadowBuffer.GetAddressOf())))
-		return false;
-
-	D3D11_SHADER_RESOURCE_VIEW_DESC bv{};
-	bv.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
-	bv.Format = DXGI_FORMAT_UNKNOWN;
-	bv.Buffer.NumElements = kLocalTileCount;
-	if (FAILED(DX11::Device->CreateShaderResourceView(myLocalShadowBuffer.Get(), &bv, myLocalShadowSrv.GetAddressOf())))
+	myLocalShadowBuffer.Create(*DX11::Rhi(), sizeof(LocalShadowGpu), kLocalTileCount,
+	                          /*withUav*/ false, /*cpuUpdatable*/ true, "LocalShadowBuffer");
+	if (!myLocalShadowBuffer.IsValid())
 		return false;
 
 	INFO_PRINT("DeferredRenderer: local shadow atlas %dx%d, %d tiles of %dpx",
@@ -945,15 +873,8 @@ void DeferredRenderer::RenderLocalShadows(const std::function<void(const Camera&
 
 	auto reupload = [&]()
 	{
-		if (myLights.empty() || !myLightBuffer) return;
-		D3D11_MAPPED_SUBRESOURCE m{};
-		HRESULT hr = DX11::Context->Map(myLightBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m);
-		if (SUCCEEDED(hr))
-		{
-			memcpy(m.pData, myLights.data(), sizeof(DeferredLight) * myLights.size());
-			DX11::Context->Unmap(myLightBuffer.Get(), 0);
-		}
-		(void)hr;
+		if (myLights.empty() || !myLightBuffer.IsValid()) return;
+		myLightBuffer.Update(DX11::Rhi()->GetContext(), myLights.data(), (uint32_t)(sizeof(DeferredLight) * myLights.size()));
 	};
 
 	if (!IsLocalShadows() || !aDrawShadowCasters || myLights.empty()) { reupload(); return; }
@@ -1066,14 +987,8 @@ void DeferredRenderer::RenderLocalShadows(const std::function<void(const Camera&
 	}
 
 	// upload the per-tile transforms
-	{
-		D3D11_MAPPED_SUBRESOURCE m{};
-		if (SUCCEEDED(DX11::Context->Map(myLocalShadowBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m)))
-		{
-			memcpy(m.pData, entries.data(), entries.size() * sizeof(LocalShadowGpu));
-			DX11::Context->Unmap(myLocalShadowBuffer.Get(), 0);
-		}
-	}
+	if (myLocalShadowBuffer.IsValid())
+		myLocalShadowBuffer.Update(DX11::Rhi()->GetContext(), entries.data(), (uint32_t)(entries.size() * sizeof(LocalShadowGpu)));
 	reupload();
 
 	gss.SetCamera(savedCam);
@@ -1106,20 +1021,19 @@ void DeferredRenderer::CullClusters()
 		myClusterCb.Update(DX11::Rhi()->GetContext(), c);
 	}
 
-	ID3D11ShaderResourceView* lightSrv = myLightSrv.Get();
-	ID3D11UnorderedAccessView* uavs[2] = { myClusterIndexUav.Get(), myClusterCountUav.Get() };
+	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
 
 	DX11::Context->CSSetShader(myClusterCS->shader.Get(), nullptr, 0);
-	DX11::Context->CSSetShaderResources(0, 1, &lightSrv);
-	myClusterCb.Bind(DX11::Rhi()->GetContext());   // CS b0
-	DX11::Context->CSSetUnorderedAccessViews(0, 2, uavs, nullptr);
+	ctx.SetShaderResource(rhi::ShaderStage::Compute, 0, myLightBuffer.Srv());
+	myClusterCb.Bind(ctx);   // CS b0
+	const rhi::UavHandle uavs[2] = { myClusterIndexBuffer.Uav(), myClusterCountBuffer.Uav() };
+	ctx.SetUnorderedAccesses(0, 2, uavs);
 
 	DX11::Context->Dispatch((myNumClusters + 63) / 64, 1, 1);
 
-	ID3D11UnorderedAccessView* nullUavs[2] = { nullptr, nullptr };
-	ID3D11ShaderResourceView* nullSrv = nullptr;
-	DX11::Context->CSSetUnorderedAccessViews(0, 2, nullUavs, nullptr);
-	DX11::Context->CSSetShaderResources(0, 1, &nullSrv);
+	const rhi::UavHandle nullUavs[2] = {};
+	ctx.SetUnorderedAccesses(0, 2, nullUavs);
+	ctx.SetShaderResource(rhi::ShaderStage::Compute, 0, rhi::SrvHandle{});
 	DX11::Context->CSSetShader(nullptr, nullptr, 0);
 }
 
@@ -1245,17 +1159,13 @@ void DeferredRenderer::BindGBufferSrvs()
 	ctx.SetSampler(rhi::ShaderStage::Pixel, 1, myPointSampler);
 
 	// Deferred structured light buffer (t15) + count (b6).
-	ID3D11ShaderResourceView* lightSrv = myLightSrv.Get();
-	DX11::Context->PSSetShaderResources(15, 1, &lightSrv);
+	ctx.SetShaderResource(rhi::ShaderStage::Pixel, 15, myLightBuffer.Srv());
 	myLightParamsCb.Bind(ctx);   // b6
 
 	// Clustered light grid (t16 indices, t17 counts) + params (b7).
-	const bool clustered = IsClustered() && myClusterIndexSrv && myClusterCountSrv;
-	ID3D11ShaderResourceView* clusterSrvs[2] = {
-		clustered ? myClusterIndexSrv.Get() : nullptr,
-		clustered ? myClusterCountSrv.Get() : nullptr,
-	};
-	DX11::Context->PSSetShaderResources(16, 2, clusterSrvs);
+	const bool clustered = IsClustered() && myClusterIndexBuffer.IsValid() && myClusterCountBuffer.IsValid();
+	ctx.SetShaderResource(rhi::ShaderStage::Pixel, 16, clustered ? myClusterIndexBuffer.Srv() : rhi::SrvHandle{});
+	ctx.SetShaderResource(rhi::ShaderStage::Pixel, 17, clustered ? myClusterCountBuffer.Srv() : rhi::SrvHandle{});
 	myClusterCb.Bind(ctx, rhi::ShaderStage::Pixel, 7);   // also bound at CS b0
 
 	// Blurred SSAO (t18). gSsaoEnabled in b6 tells the shader whether to read it.
@@ -1274,16 +1184,13 @@ void DeferredRenderer::BindGBufferSrvs()
 
 	// Emissive-GI irradiance volume (b13 params, t22 SH buffer).
 	myGiVolumeCb.Bind(ctx);   // b13
-	ID3D11ShaderResourceView* giSrv = HasGi() ? myGiShSrv.Get() : nullptr;
-	DX11::Context->PSSetShaderResources(22, 1, &giSrv);
+	ctx.SetShaderResource(rhi::ShaderStage::Pixel, 22, HasGi() ? myGiShBuffer.Srv() : rhi::SrvHandle{});
 
 	// Point / spot shadow atlas (t20 transforms, t21 depth). Shared s2 cmp sampler.
 	const bool localSh = IsLocalShadows();
-	ID3D11ShaderResourceView* localSrvs[2] = {
-		localSh ? myLocalShadowSrv.Get() : nullptr,
-		localSh ? myLocalAtlasSrv.Get()  : nullptr,
-	};
-	DX11::Context->PSSetShaderResources(20, 2, localSrvs);
+	ctx.SetShaderResource(rhi::ShaderStage::Pixel, 20, localSh ? myLocalShadowBuffer.Srv() : rhi::SrvHandle{});
+	ID3D11ShaderResourceView* atlasSrv = localSh ? myLocalAtlasSrv.Get() : nullptr;
+	DX11::Context->PSSetShaderResources(21, 1, &atlasSrv);
 }
 
 void DeferredRenderer::UnbindGBufferSrvs()

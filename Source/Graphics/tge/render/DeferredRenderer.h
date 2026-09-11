@@ -11,6 +11,7 @@
 #include <tge/graphics/RenderTarget.h>
 #include <tge/graphics/Camera.h>
 #include <tge/rhi/ConstantBuffer.h>
+#include <tge/rhi/StructuredBuffer.h>
 
 struct ID3D11SamplerState;
 struct ID3D11Buffer;
@@ -137,7 +138,7 @@ namespace Tga
 		// captures probes (small cubes) and calls GiProjectProbe() to fold each one
 		// into the SH buffer; the lighting resolve then samples it (b13 / t22).
 		static constexpr int kMaxGiProbes = 4096;
-		bool HasGi() const { return myGiProjectCS != nullptr && myGiShBuffer; }
+		bool HasGi() const { return myGiProjectCS != nullptr && myGiShBuffer.IsValid(); }
 		int  GetMaxGiProbes() const { return kMaxGiProbes; }
 		void SetGiVolume(const Vector3f& aOrigin, const Vector3f& aSpacing,
 		                 int aCx, int aCy, int aCz, float aIntensity, bool aEnabled,
@@ -260,19 +261,14 @@ namespace Tga
 
 		rhi::SamplerHandle myPointSampler;   // s1
 
-		Microsoft::WRL::ComPtr<ID3D11Buffer> myLightBuffer;              // t15 structured
-		Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> myLightSrv;
+		rhi::StructuredBuffer myLightBuffer;              // t15 structured (CPU-updated)
 		rhi::ConstantBuffer myLightParamsCb;           // b6 { uint count; }
 		int myLightCount = 0;
 
 		// --- clustered light culling ---
 		const ComputeShader* myClusterCS = nullptr;
-		Microsoft::WRL::ComPtr<ID3D11Buffer> myClusterIndexBuffer;      // t16 / u0
-		Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> myClusterIndexSrv;
-		Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> myClusterIndexUav;
-		Microsoft::WRL::ComPtr<ID3D11Buffer> myClusterCountBuffer;      // t17 / u1
-		Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> myClusterCountSrv;
-		Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> myClusterCountUav;
+		rhi::StructuredBuffer myClusterIndexBuffer;      // t16 / u0 (GPU-only, CS-written)
+		rhi::StructuredBuffer myClusterCountBuffer;      // t17 / u1 (GPU-only, CS-written)
 		rhi::ConstantBuffer myClusterCb;               // CS b0 / PS b7
 		Vector2ui myTileCount{ 0, 0 };
 		int myNumClusters = 0;
@@ -306,9 +302,7 @@ namespace Tga
 
 		// --- emissive-GI irradiance volume ---
 		const ComputeShader* myGiProjectCS = nullptr;
-		Microsoft::WRL::ComPtr<ID3D11Buffer> myGiShBuffer;                   // structured float4, 9 per probe
-		Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> myGiShSrv;         // t22
-		Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> myGiShUav;        // CS u0
+		rhi::StructuredBuffer myGiShBuffer;                   // structured float4, 9 per probe; t22 / CS u0
 		rhi::ConstantBuffer myGiVolumeCb;                  // b13
 		rhi::ConstantBuffer myGiProjectCb;                 // CS b0
 		rhi::SamplerHandle myGiLinearSampler;       // CS s0
@@ -333,8 +327,7 @@ namespace Tga
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> myLocalAtlasTex;              // R32_TYPELESS
 		Microsoft::WRL::ComPtr<ID3D11DepthStencilView> myLocalAtlasDsv;      // D32_FLOAT, whole atlas
 		Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> myLocalAtlasSrv;    // t21, R32_FLOAT
-		Microsoft::WRL::ComPtr<ID3D11Buffer> myLocalShadowBuffer;            // structured, t20
-		Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> myLocalShadowSrv;
+		rhi::StructuredBuffer myLocalShadowBuffer;            // structured, t20 (CPU-updated)
 		std::vector<DeferredLight> myLights;   // CPU copy (UploadLights); shadowSlot patched per frame
 		Vector3f myCameraPos{ 0.f, 0.f, 0.f };
 		bool myLocalShadowsWanted = true;

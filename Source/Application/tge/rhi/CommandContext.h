@@ -20,6 +20,7 @@ namespace Tga::rhi
 		virtual void ClearRenderTarget(RtvHandle rtv, const float rgba[4]) = 0;
 		virtual void ClearDepthStencil(DsvHandle dsv, float depth = 1.f, uint8_t stencil = 0,
 		                               bool clearDepth = true, bool clearStencil = false) = 0;
+		virtual void ClearUnorderedAccessFloat(UavHandle uav, const float rgba[4]) = 0;
 
 		// ---- pipeline + bindings (by register slot) ----
 		virtual void SetGraphicsPipeline(GraphicsPipelineHandle) = 0;

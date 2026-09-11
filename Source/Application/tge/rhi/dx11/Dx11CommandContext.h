@@ -20,6 +20,7 @@ namespace Tga::rhi::dx11
 		void SetScissor(int32_t x, int32_t y, uint32_t w, uint32_t h) override;
 		void ClearRenderTarget(RtvHandle, const float rgba[4]) override;
 		void ClearDepthStencil(DsvHandle, float depth, uint8_t stencil, bool clearDepth, bool clearStencil) override;
+	void ClearUnorderedAccessFloat(UavHandle, const float rgba[4]) override;
 
 		void SetGraphicsPipeline(GraphicsPipelineHandle) override;
 		void SetComputePipeline(ComputePipelineHandle) override;
