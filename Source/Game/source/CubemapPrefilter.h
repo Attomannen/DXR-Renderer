@@ -9,6 +9,7 @@
 #include <tge/graphics/TextureResource.h>
 #include <tge/Math/Vector.h>
 #include <tge/Math/Matrix.h>
+#include <tge/rhi/ConstantBuffer.h>
 
 using Microsoft::WRL::ComPtr;
 
@@ -86,10 +87,10 @@ namespace Tga
             CubemapData& outCubemap,
             ComPtr<ID3D11UnorderedAccessView>* outMip0UAV = nullptr);
 
-        ComPtr<ID3D11SamplerState> mySampler;
-        ComPtr<ID3D11Buffer> myPrefilterConstantBuffer;
-        ComPtr<ID3D11Buffer> myDiffuseConstantBuffer;
-        ComPtr<ID3D11Buffer> myPanoConstantBuffer;
-        ComPtr<ID3D11Buffer> myCrossConstantBuffer;
+        rhi::SamplerHandle mySampler;
+        rhi::ConstantBuffer myPrefilterConstantBuffer;
+        rhi::ConstantBuffer myDiffuseConstantBuffer;
+        rhi::ConstantBuffer myPanoConstantBuffer;
+        rhi::ConstantBuffer myCrossConstantBuffer;
     };
 }

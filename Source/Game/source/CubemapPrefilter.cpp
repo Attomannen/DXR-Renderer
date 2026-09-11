@@ -149,44 +149,28 @@ namespace Tga
 
     bool CubemapPrefilter::Init()
     {
-        // Linear clamp sampler for cubemap sampling
-        D3D11_SAMPLER_DESC sampDesc = {};
-        sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-        sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
-        sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
-        sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-        sampDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
-        sampDesc.MinLOD = 0;
-        sampDesc.MaxLOD = D3D11_FLOAT32_MAX;
+        rhi::IDevice* dev = DX11::Rhi();
+        if (!dev) return false;
 
-        HRESULT hr = DX11::Device->CreateSamplerState(&sampDesc, mySampler.ReleaseAndGetAddressOf());
-        if (FAILED(hr))
+        // Linear clamp sampler for cubemap sampling
+        rhi::SamplerDesc sampDesc;
+        sampDesc.filter = rhi::FilterMode::Trilinear;
+        sampDesc.address = rhi::AddressMode::Clamp;
+        mySampler = dev->CreateSampler(sampDesc);
+        if (!mySampler.IsValid())
         {
             ERROR_PRINT("CubemapPrefilter: Failed to create sampler state.");
             return false;
         }
 
-        // Constant buffers for compute shaders
-        D3D11_BUFFER_DESC cbDesc = {};
-        cbDesc.Usage = D3D11_USAGE_DYNAMIC;
-        cbDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-        cbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-
-        cbDesc.ByteWidth = sizeof(PrefilterCBData);
-        hr = DX11::Device->CreateBuffer(&cbDesc, nullptr, myPrefilterConstantBuffer.ReleaseAndGetAddressOf());
-        if (FAILED(hr)) return false;
-
-        cbDesc.ByteWidth = sizeof(DiffuseCBData);
-        hr = DX11::Device->CreateBuffer(&cbDesc, nullptr, myDiffuseConstantBuffer.ReleaseAndGetAddressOf());
-        if (FAILED(hr)) return false;
-
-        cbDesc.ByteWidth = sizeof(PanoCBData);
-        hr = DX11::Device->CreateBuffer(&cbDesc, nullptr, myPanoConstantBuffer.ReleaseAndGetAddressOf());
-        if (FAILED(hr)) return false;
-
-        cbDesc.ByteWidth = sizeof(CrossCBData);
-        hr = DX11::Device->CreateBuffer(&cbDesc, nullptr, myCrossConstantBuffer.ReleaseAndGetAddressOf());
-        if (FAILED(hr)) return false;
+        // Constant buffers for compute shaders (all bound at CS b0)
+        myPrefilterConstantBuffer.Create(*dev, sizeof(PrefilterCBData), rhi::ShaderStage::Compute, 0, "CubemapPrefilter/PrefilterCB");
+        myDiffuseConstantBuffer.Create(*dev, sizeof(DiffuseCBData), rhi::ShaderStage::Compute, 0, "CubemapPrefilter/DiffuseCB");
+        myPanoConstantBuffer.Create(*dev, sizeof(PanoCBData), rhi::ShaderStage::Compute, 0, "CubemapPrefilter/PanoCB");
+        myCrossConstantBuffer.Create(*dev, sizeof(CrossCBData), rhi::ShaderStage::Compute, 0, "CubemapPrefilter/CrossCB");
+        if (!myPrefilterConstantBuffer.IsValid() || !myDiffuseConstantBuffer.IsValid() ||
+            !myPanoConstantBuffer.IsValid() || !myCrossConstantBuffer.IsValid())
+            return false;
 
         return true;
     }
@@ -354,29 +338,33 @@ namespace Tga
         }
 
         // Update constant buffer
-        D3D11_MAPPED_SUBRESOURCE mapped;
-        if (SUCCEEDED(DX11::Context->Map(myPanoConstantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+        rhi::ICommandContext& panoCtx = DX11::Rhi()->GetContext();
         {
-            PanoCBData* data = reinterpret_cast<PanoCBData*>(mapped.pData);
-            data->faceResolution = targetResolution;
-            DX11::Context->Unmap(myPanoConstantBuffer.Get(), 0);
+            PanoCBData data{};
+            data.faceResolution = targetResolution;
+            myPanoConstantBuffer.Update(panoCtx, data);
         }
 
-        DX11::Context->CSSetShader(cs->shader.Get(), nullptr, 0);
-        DX11::Context->CSSetConstantBuffers(0, 1, myPanoConstantBuffer.GetAddressOf());
-        DX11::Context->CSSetSamplers(0, 1, mySampler.GetAddressOf());
+        rhi::ComputePipelineDesc panoPd;
+        panoPd.cs = cs->module;
+        panoCtx.SetComputePipeline(DX11::Rhi()->CreateComputePipeline(panoPd));
+        myPanoConstantBuffer.Bind(panoCtx);
+        panoCtx.SetSampler(rhi::ShaderStage::Compute, 0, mySampler);
+        // panoSRV / cubemapUAV are per-call transient DirectXTex-adjacent views --
+        // stay raw (wrapping them into the RHI's permanent handle pool here would
+        // leak one pool slot per load, since this can run once per baked cubemap).
         DX11::Context->CSSetShaderResources(0, 1, panoSRV.GetAddressOf());
         DX11::Context->CSSetUnorderedAccessViews(0, 1, cubemapUAV.GetAddressOf(), nullptr);
 
         uint32_t threadGroups = (targetResolution + 7) / 8;
-        DX11::Context->Dispatch(threadGroups, threadGroups, 6);
+        panoCtx.Dispatch(threadGroups, threadGroups, 6);
 
         // Unbind resources
         ID3D11UnorderedAccessView* nullUAV = nullptr;
         ID3D11ShaderResourceView* nullSRV = nullptr;
         DX11::Context->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
         DX11::Context->CSSetShaderResources(0, 1, &nullSRV);
-        DX11::Context->CSSetShader(nullptr, nullptr, 0);
+        panoCtx.SetComputePipeline({});
 
         // Generate base cubemap mipmaps
         DX11::Context->GenerateMips(outCubemap.srv.Get());
@@ -439,30 +427,30 @@ namespace Tga
             return false;
         }
 
-        D3D11_MAPPED_SUBRESOURCE mapped;
-        if (SUCCEEDED(DX11::Context->Map(myCrossConstantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+        rhi::ICommandContext& crossCtx = DX11::Rhi()->GetContext();
         {
-            CrossCBData* data = reinterpret_cast<CrossCBData*>(mapped.pData);
-            data->faceResolution = faceSize;
-            data->padding[0] = 0.0f;
-            data->padding[1] = 0.0f;
-            data->padding[2] = 0.0f;
-            DX11::Context->Unmap(myCrossConstantBuffer.Get(), 0);
+            CrossCBData data{};
+            data.faceResolution = faceSize;
+            myCrossConstantBuffer.Update(crossCtx, data);
         }
 
-        DX11::Context->CSSetShader(cs->shader.Get(), nullptr, 0);
-        DX11::Context->CSSetConstantBuffers(0, 1, myCrossConstantBuffer.GetAddressOf());
+        rhi::ComputePipelineDesc crossPd;
+        crossPd.cs = cs->module;
+        crossCtx.SetComputePipeline(DX11::Rhi()->CreateComputePipeline(crossPd));
+        myCrossConstantBuffer.Bind(crossCtx);
+        // crossSRV / cubemapUAV are per-call transient views -- stay raw (see
+        // LoadBaseFromEquirectangular for why wrapping them would leak).
         DX11::Context->CSSetShaderResources(0, 1, crossSRV.GetAddressOf());
         DX11::Context->CSSetUnorderedAccessViews(0, 1, cubemapUAV.GetAddressOf(), nullptr);
 
         uint32_t threadGroups = (faceSize + 7) / 8;
-        DX11::Context->Dispatch(threadGroups, threadGroups, 6);
+        crossCtx.Dispatch(threadGroups, threadGroups, 6);
 
         ID3D11UnorderedAccessView* nullUAV = nullptr;
         ID3D11ShaderResourceView* nullSRV = nullptr;
         DX11::Context->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
         DX11::Context->CSSetShaderResources(0, 1, &nullSRV);
-        DX11::Context->CSSetShader(nullptr, nullptr, 0);
+        crossCtx.SetComputePipeline({});
 
         // Generate base cubemap mipmaps
         DX11::Context->GenerateMips(outCubemap.srv.Get());
@@ -558,8 +546,7 @@ namespace Tga
             renderFaceCallback(face);
 
             // Unbind active render target before copying subresource
-            ID3D11RenderTargetView* nullRTV = nullptr;
-            DX11::Context->OMSetRenderTargets(1, &nullRTV, nullptr);
+            DX11::Rhi()->GetContext().SetRenderTargets(0, nullptr, {});
 
             uint32_t dstSubresource = D3D11CalcSubresource(0, face, mipCount);
             DX11::Context->CopySubresourceRegion(outCubemap.texture.Get(), dstSubresource, 0, 0, 0, rtTexture.Get(), 0, nullptr);
@@ -647,6 +634,8 @@ namespace Tga
         INFO_PRINT("CubemapPrefilter: Prefiltering %u mips (%u specular mips, %u diffuse tail mips) [In: %u -> Out: %u]",
             numMips, firstDiffuseMip, numMips - firstDiffuseMip, sourceCubemapResolution, outputResolution);
 
+        rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
+
         for (uint32_t m = 0; m < numMips; ++m)
         {
             uint32_t mipRes = std::max(1u, outputResolution >> m);
@@ -667,53 +656,51 @@ namespace Tga
                 float linearRoughness = perceptualRoughness * perceptualRoughness;
 
                 // Update Specular Constant Buffer
-                D3D11_MAPPED_SUBRESOURCE mapped;
-                if (SUCCEEDED(DX11::Context->Map(myPrefilterConstantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-                {
-                    PrefilterCBData* data = reinterpret_cast<PrefilterCBData*>(mapped.pData);
-                    data->alpha = linearRoughness;
-                    data->mipIndex = m;
-                    data->numMips = numMips;
-                    data->faceResolution = mipRes;
-                    data->sampleCount = sampleCount;
-                    data->sourceCubemapResolution = static_cast<float>(sourceCubemapResolution);
-                    data->padding[0] = 0.0f;
-                    data->padding[1] = 0.0f;
-                    DX11::Context->Unmap(myPrefilterConstantBuffer.Get(), 0);
-                }
+                PrefilterCBData data{};
+                data.alpha = linearRoughness;
+                data.mipIndex = m;
+                data.numMips = numMips;
+                data.faceResolution = mipRes;
+                data.sampleCount = sampleCount;
+                data.sourceCubemapResolution = static_cast<float>(sourceCubemapResolution);
+                myPrefilterConstantBuffer.Update(ctx, data);
 
-                DX11::Context->CSSetShader(specularCS->shader.Get(), nullptr, 0);
-                DX11::Context->CSSetConstantBuffers(0, 1, myPrefilterConstantBuffer.GetAddressOf());
-                DX11::Context->CSSetSamplers(0, 1, mySampler.GetAddressOf());
+                rhi::ComputePipelineDesc pd;
+                pd.cs = specularCS->module;
+                ctx.SetComputePipeline(DX11::Rhi()->CreateComputePipeline(pd));
+                myPrefilterConstantBuffer.Bind(ctx);
+                ctx.SetSampler(rhi::ShaderStage::Compute, 0, mySampler);
+                // baseCubemapSRV / mipUAVs are per-call transient views (baseCubemapSRV
+                // is a caller-owned parameter, mipUAVs are freshly created above) --
+                // stay raw, see LoadBaseFromEquirectangular for why wrapping them
+                // into the RHI's permanent handle pool here would leak.
                 DX11::Context->CSSetShaderResources(0, 1, &baseCubemapSRV);
                 DX11::Context->CSSetUnorderedAccessViews(0, 1, mipUAVs[m].GetAddressOf(), nullptr);
 
                 uint32_t threadGroups = (mipRes + 7) / 8;
-                DX11::Context->Dispatch(threadGroups, threadGroups, 6);
+                ctx.Dispatch(threadGroups, threadGroups, 6);
             }
             else
             {
                 // Tail mips: Diffuse Irradiance Convolution
-                D3D11_MAPPED_SUBRESOURCE mapped;
-                if (SUCCEEDED(DX11::Context->Map(myDiffuseConstantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-                {
-                    DiffuseCBData* data = reinterpret_cast<DiffuseCBData*>(mapped.pData);
-                    data->mipIndex = m;
-                    data->numMips = numMips;
-                    data->faceResolution = mipRes;
-                    data->sampleCount = sampleCount;
-                    data->sourceCubemapResolution = static_cast<float>(sourceCubemapResolution);
-                    DX11::Context->Unmap(myDiffuseConstantBuffer.Get(), 0);
-                }
+                DiffuseCBData data{};
+                data.mipIndex = m;
+                data.numMips = numMips;
+                data.faceResolution = mipRes;
+                data.sampleCount = sampleCount;
+                data.sourceCubemapResolution = static_cast<float>(sourceCubemapResolution);
+                myDiffuseConstantBuffer.Update(ctx, data);
 
-                DX11::Context->CSSetShader(diffuseCS->shader.Get(), nullptr, 0);
-                DX11::Context->CSSetConstantBuffers(0, 1, myDiffuseConstantBuffer.GetAddressOf());
-                DX11::Context->CSSetSamplers(0, 1, mySampler.GetAddressOf());
+                rhi::ComputePipelineDesc pd;
+                pd.cs = diffuseCS->module;
+                ctx.SetComputePipeline(DX11::Rhi()->CreateComputePipeline(pd));
+                myDiffuseConstantBuffer.Bind(ctx);
+                ctx.SetSampler(rhi::ShaderStage::Compute, 0, mySampler);
                 DX11::Context->CSSetShaderResources(0, 1, &baseCubemapSRV);
                 DX11::Context->CSSetUnorderedAccessViews(0, 1, mipUAVs[m].GetAddressOf(), nullptr);
 
                 uint32_t threadGroups = (mipRes + 7) / 8;
-                DX11::Context->Dispatch(threadGroups, threadGroups, 6);
+                ctx.Dispatch(threadGroups, threadGroups, 6);
             }
 
             ID3D11UnorderedAccessView* nullUAV = nullptr;
@@ -722,7 +709,7 @@ namespace Tga
 
         ID3D11ShaderResourceView* nullSRV = nullptr;
         DX11::Context->CSSetShaderResources(0, 1, &nullSRV);
-        DX11::Context->CSSetShader(nullptr, nullptr, 0);
+        ctx.SetComputePipeline({});
 
         INFO_PRINT("CubemapPrefilter: Generated prefiltered cubemap (%ux%u, %u mips)", outputResolution, outputResolution, numMips);
         return true;
