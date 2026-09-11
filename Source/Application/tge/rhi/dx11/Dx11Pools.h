@@ -1,6 +1,7 @@
 #pragma once
 #include <vector>
 #include <cstdint>
+#include <memory>
 #include "tge/rhi/Handles.h"
 
 // Generation-checked slot pool. Slot 0 is reserved as the null slot, so a live
@@ -26,9 +27,10 @@ namespace Tga::rhi::dx11
 				idx = (uint32_t)mySlots.size();
 				mySlots.emplace_back();
 			}
-			mySlots[idx].value = std::move(value);
-			mySlots[idx].alive = true;
-			return HandleT{ idx, mySlots[idx].generation };
+			Slot& s = mySlots[idx];
+			s.value = static_cast<T&&>(value);
+			s.alive = true;
+			return HandleT{ idx, s.generation };
 		}
 
 		T* Get(HandleT h)
@@ -36,7 +38,10 @@ namespace Tga::rhi::dx11
 			if (!h.IsValid() || h.index >= mySlots.size()) return nullptr;
 			Slot& s = mySlots[h.index];
 			if (!s.alive || s.generation != h.generation) return nullptr;
-			return &s.value;
+			// NOTE: plain `&s.value` is wrong here -- for T = ComPtr<...>, unary &
+			// is overloaded (WRL's out-parameter idiom) and does NOT return the
+			// object's real address. std::addressof bypasses any such overload.
+			return std::addressof(s.value);
 		}
 
 		const T* Get(HandleT h) const
@@ -65,7 +70,7 @@ namespace Tga::rhi::dx11
 
 	private:
 		struct Slot { T value{}; uint32_t generation = 1; bool alive = false; };
-		std::deque<Slot> mySlots;
+		std::vector<Slot> mySlots;
 		std::vector<uint32_t> myFree;
 	};
 }
