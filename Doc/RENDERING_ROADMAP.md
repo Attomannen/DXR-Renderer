@@ -278,7 +278,7 @@ than a separate lib, to avoid a link cycle with `Tga::DX11`), with a `dx11/` bac
 subfolder. Four stages:
 
 - **Stage 1** — RHI seam + DX11 backend at parity (12 steps, zero visible change).
-  Currently here — steps 0–9 done, step 10 next (75% of Stage 1's 12 steps):
+  Currently here — steps 0–10 done, step 11 next (~83% of Stage 1's 12 steps):
   - [x] Step 0 — RHI interface (`Handles.h`/`Descs.h`/`Device.h`/`CommandContext.h`) +
     DX11 backend (`Dx11Device`, `Dx11CommandContext`, gen-checked handle pools) wrapping
     the pre-existing `Tga::DX11` statics.
@@ -337,7 +337,13 @@ subfolder. Four stages:
     **zero raw D3D11 references** — down from ~390 at the start of step 7), and `CubemapData`
     gained a leak-safe `GetSrv()` bridge (`MigrationView`, invalidated on each `Reset()`).
     Raw D3D11 refs: `GameWorld.cpp` 17 → 1 (bench screenshot capture, step-12 territory).
-  - [ ] Steps 10–12 — video player, ImGui / editor viewport + font atlas, then delete the
+  - [x] Step 10 — `Source/Graphics/tge/videoplayer/video.cpp`: DYNAMIC texture + Map/Unmap
+    per decoded frame → `IDevice::CreateTexture`/`CreateSrv` (once) + new `ctx.UpdateTexture`
+    (every frame). Also added `IDevice::GetNativeSrv` (raw-pointer bridge for legacy
+    `TextureResource` construction). Raw D3D11 calls: 6 → 0. Not wired into GameMain/
+    GameEditor, so verified by building + running the standalone `Tutorial-13_Video` sample
+    live for 16s (stable memory, no crash).
+  - [ ] Steps 11–12 — ImGui / editor viewport + `TextService` font atlas, then delete the
     `DX11::Device/Context/SwapChain/BackBuffer/DepthBuffer` statics + final grep-clean sweep.
   - **Found + fixed a real bug along the way** (not port-scope, a genuine engine
     correctness bug the port's extra scrutiny surfaced): `Pool<ComPtr<T>>::Get()` in the
