@@ -234,7 +234,7 @@ namespace Tga
 		void RenderLocalShadows(const std::function<void(const Camera&)>& aDrawShadowCasters);
 		bool CreatePostFxTargets(Vector2ui aResolution);
 		void PostFxFullscreen(const PixelShader* aPs, RenderTarget& aDst, Vector2ui aDstSize,
-		                      ID3D11ShaderResourceView* const* aSrvs, int aSrvCount,
+		                      const rhi::SrvHandle* aSrvs, int aSrvCount,
 		                      Vector2f aSrcTexel, bool aAdditive = false);
 		void CullClusters();
 		void RenderSSAO();

@@ -383,7 +383,6 @@ void DeferredRenderer::RenderSSAO()
 	if (!IsSSAO()) return;
 
 	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
-	ID3D11ShaderResourceView* nulls[3] = {};
 
 	// --- pass 1: occlusion -> myAoRaw ---
 	{
@@ -400,18 +399,15 @@ void DeferredRenderer::RenderSSAO()
 
 		SetTargets(ctx, { myAoRaw.GetRtv() }, {}, myResolution);
 
-		ID3D11ShaderResourceView* srvs[2] = { myNormal.GetShaderResourceView(),
-		                                      DX11::DepthBuffer->GetShaderResourceView() };
-		DX11::Context->PSSetShaderResources(11, 1, &srvs[0]);
-		DX11::Context->PSSetShaderResources(14, 1, &srvs[1]);
+		ctx.SetShaderResource(rhi::ShaderStage::Pixel, 11, myNormal.GetSrv());
+		ctx.SetShaderResource(rhi::ShaderStage::Pixel, 14, DX11::DepthBuffer->GetSrv());
 		ctx.SetSampler(rhi::ShaderStage::Pixel, 1, myPointSampler);
 		mySsaoCb.Bind(ctx);
 
 		BindFullscreen(mySsaoPs);
-		DX11::LogDrawCall();
-		DX11::Context->Draw(3, 0);
-		DX11::Context->PSSetShaderResources(11, 1, nulls);
-		DX11::Context->PSSetShaderResources(14, 1, nulls);
+		ctx.Draw(3, 0);
+		ctx.SetShaderResource(rhi::ShaderStage::Pixel, 11, {});
+		ctx.SetShaderResource(rhi::ShaderStage::Pixel, 14, {});
 	}
 
 	// --- pass 2: depth-aware blur myAoRaw -> myAo ---
@@ -426,18 +422,15 @@ void DeferredRenderer::RenderSSAO()
 
 		SetTargets(ctx, { myAo.GetRtv() }, {}, myResolution);
 
-		ID3D11ShaderResourceView* rawSrv = myAoRaw.GetShaderResourceView();
-		ID3D11ShaderResourceView* depSrv = DX11::DepthBuffer->GetShaderResourceView();
-		DX11::Context->PSSetShaderResources(18, 1, &rawSrv);
-		DX11::Context->PSSetShaderResources(14, 1, &depSrv);
+		ctx.SetShaderResource(rhi::ShaderStage::Pixel, 18, myAoRaw.GetSrv());
+		ctx.SetShaderResource(rhi::ShaderStage::Pixel, 14, DX11::DepthBuffer->GetSrv());
 		ctx.SetSampler(rhi::ShaderStage::Pixel, 1, myPointSampler);
 		mySsaoBlurCb.Bind(ctx);
 
 		BindFullscreen(mySsaoBlurPs);
-		DX11::LogDrawCall();
-		DX11::Context->Draw(3, 0);
-		DX11::Context->PSSetShaderResources(18, 1, nulls);
-		DX11::Context->PSSetShaderResources(14, 1, nulls);
+		ctx.Draw(3, 0);
+		ctx.SetShaderResource(rhi::ShaderStage::Pixel, 18, {});
+		ctx.SetShaderResource(rhi::ShaderStage::Pixel, 14, {});
 	}
 }
 
@@ -531,7 +524,6 @@ void DeferredRenderer::RenderSSR()
 	}
 
 	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
-	ID3D11ShaderResourceView* nulls[6] = {};
 	rhi::SamplerHandle lin = myLinearSampler.IsValid() ? myLinearSampler : myPointSampler;
 
 	// --- pass 1: half-res ray-march -> mySsrTex ---
@@ -540,25 +532,21 @@ void DeferredRenderer::RenderSSR()
 		ctx.ClearRenderTarget(mySsrTex.GetRtv(), clr);
 		SetTargets(ctx, { mySsrTex.GetRtv() }, {}, mySsrRes);
 
-		ID3D11ShaderResourceView* scene = myHdr.GetShaderResourceView();
-		ID3D11ShaderResourceView* gb[3] = { myAlbedo.GetShaderResourceView(),
-		                                    myNormal.GetShaderResourceView(),
-		                                    myMaterial.GetShaderResourceView() };
-		ID3D11ShaderResourceView* depth = DX11::DepthBuffer->GetShaderResourceView();
-		DX11::Context->PSSetShaderResources(1, 1, &scene);
-		DX11::Context->PSSetShaderResources(10, 3, gb);
-		DX11::Context->PSSetShaderResources(14, 1, &depth);
+		ctx.SetShaderResource(rhi::ShaderStage::Pixel, 1, myHdr.GetSrv());
+		const rhi::SrvHandle gb[3] = { myAlbedo.GetSrv(), myNormal.GetSrv(), myMaterial.GetSrv() };
+		ctx.SetShaderResources(rhi::ShaderStage::Pixel, 10, 3, gb);
+		ctx.SetShaderResource(rhi::ShaderStage::Pixel, 14, DX11::DepthBuffer->GetSrv());
 		ctx.SetSampler(rhi::ShaderStage::Pixel, 1, myPointSampler);
 		ctx.SetSampler(rhi::ShaderStage::Pixel, 3, lin);
 		mySsrCb.Bind(ctx);
 
 		BindFullscreen(mySsrPs);
-		DX11::LogDrawCall();
-		DX11::Context->Draw(3, 0);
+		ctx.Draw(3, 0);
 
-		DX11::Context->PSSetShaderResources(1, 1, nulls);
-		DX11::Context->PSSetShaderResources(10, 3, nulls);
-		DX11::Context->PSSetShaderResources(14, 1, nulls);
+		ctx.SetShaderResource(rhi::ShaderStage::Pixel, 1, {});
+		const rhi::SrvHandle gbNull[3] = {};
+		ctx.SetShaderResources(rhi::ShaderStage::Pixel, 10, 3, gbNull);
+		ctx.SetShaderResource(rhi::ShaderStage::Pixel, 14, {});
 	}
 
 	// --- pass 2: resolve SSR over the probe IBL, additively into HDR ---
@@ -570,17 +558,16 @@ void DeferredRenderer::RenderSSR()
 
 		SetTargets(ctx, { myHdr.GetRtv() }, {}, myResolution);
 
-		ID3D11ShaderResourceView* srvs2[2] = { mySsrTex.GetShaderResourceView(),
-		                                       myIblSpecTex.GetShaderResourceView() };
-		DX11::Context->PSSetShaderResources(0, 2, srvs2);
+		const rhi::SrvHandle srvs2[2] = { mySsrTex.GetSrv(), myIblSpecTex.GetSrv() };
+		ctx.SetShaderResources(rhi::ShaderStage::Pixel, 0, 2, srvs2);
 		ctx.SetSampler(rhi::ShaderStage::Pixel, 1, myPointSampler);
 		ctx.SetSampler(rhi::ShaderStage::Pixel, 3, lin);   // bilinear upsample of the half-res SSR
 
 		BindFullscreen(mySsrApplyPs);
-		DX11::LogDrawCall();
-		DX11::Context->Draw(3, 0);
+		ctx.Draw(3, 0);
 
-		DX11::Context->PSSetShaderResources(0, 2, nulls);
+		const rhi::SrvHandle srvs2Null[2] = {};
+		ctx.SetShaderResources(rhi::ShaderStage::Pixel, 0, 2, srvs2Null);
 		gss.SetBlendState(BlendState::Disabled);
 	}
 }
@@ -1148,14 +1135,11 @@ void DeferredRenderer::BindGBufferSrvs()
 {
 	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
 
-	ID3D11ShaderResourceView* srvs[5] = {
-		myAlbedo.GetShaderResourceView(),
-		myNormal.GetShaderResourceView(),
-		myMaterial.GetShaderResourceView(),
-		myEmissive.GetShaderResourceView(),
-		DX11::DepthBuffer->GetShaderResourceView(),
+	const rhi::SrvHandle srvs[5] = {
+		myAlbedo.GetSrv(), myNormal.GetSrv(), myMaterial.GetSrv(), myEmissive.GetSrv(),
+		DX11::DepthBuffer->GetSrv(),
 	};
-	DX11::Context->PSSetShaderResources(10, 5, srvs);
+	ctx.SetShaderResources(rhi::ShaderStage::Pixel, 10, 5, srvs);
 	ctx.SetSampler(rhi::ShaderStage::Pixel, 1, myPointSampler);
 
 	// Deferred structured light buffer (t15) + count (b6).
@@ -1169,8 +1153,7 @@ void DeferredRenderer::BindGBufferSrvs()
 	myClusterCb.Bind(ctx, rhi::ShaderStage::Pixel, 7);   // also bound at CS b0
 
 	// Blurred SSAO (t18). gSsaoEnabled in b6 tells the shader whether to read it.
-	ID3D11ShaderResourceView* aoSrv = IsSSAO() ? myAo.GetShaderResourceView() : nullptr;
-	DX11::Context->PSSetShaderResources(18, 1, &aoSrv);
+	ctx.SetShaderResource(rhi::ShaderStage::Pixel, 18, IsSSAO() ? myAo.GetSrv() : rhi::SrvHandle{});
 
 	// Shadow cascades (t19, cmp sampler s2, params b9). gShadowEnabled gates use.
 	ctx.SetShaderResource(rhi::ShaderStage::Pixel, 19, IsShadows() ? myShadowSrv : rhi::SrvHandle{});
@@ -1193,24 +1176,21 @@ void DeferredRenderer::BindGBufferSrvs()
 
 void DeferredRenderer::UnbindGBufferSrvs()
 {
-	ID3D11ShaderResourceView* nulls[13] = {};
-	DX11::Context->PSSetShaderResources(10, 13, nulls);   // t10..t22
+	const rhi::SrvHandle nulls[13] = {};
+	DX11::Rhi()->GetContext().SetShaderResources(rhi::ShaderStage::Pixel, 10, 13, nulls);   // t10..t22
 }
 
 void DeferredRenderer::BindFullscreen(const PixelShader* aPixelShader)
 {
 	GraphicsEngine::GetInstance()->GetGraphicsStateStack().UpdateGpuStates();
 
-	DX11::Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-	DX11::Context->IASetInputLayout(nullptr);
-	ID3D11Buffer* noBuffers[1] = { nullptr };
-	UINT z0 = 0;
-	DX11::Context->IASetVertexBuffers(0, 1, noBuffers, &z0, &z0);
-	DX11::Context->IASetIndexBuffer(nullptr, DXGI_FORMAT_UNKNOWN, 0);
-
-	DX11::Context->VSSetShader(myFullscreenVs->shader.Get(), nullptr, 0);
-	DX11::Context->GSSetShader(nullptr, nullptr, 0);
-	DX11::Context->PSSetShader(aPixelShader->shader.Get(), nullptr, 0);
+	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
+	ctx.SetPrimitiveTopology(rhi::Topology::TriangleList);
+	ctx.SetInputLayout({}, nullptr, 0);
+	ctx.SetVertexBuffer(0, {}, 0, 0);
+	ctx.SetIndexBuffer({}, rhi::Format::R32_UInt, 0);
+	ctx.SetVertexShader(myFullscreenVs->module);
+	ctx.SetPixelShader(aPixelShader->module);
 }
 
 void DeferredRenderer::ResolveLighting()
@@ -1223,15 +1203,14 @@ void DeferredRenderer::ResolveLighting()
 
 	BindGBufferSrvs();
 	BindFullscreen(myLightingPs);
-	DX11::LogDrawCall();
-	DX11::Context->Draw(3, 0);
+	ctx.Draw(3, 0);
 	UnbindGBufferSrvs();
 
 	ctx.SetRenderTargets(0, nullptr, {});
 }
 
 void DeferredRenderer::PostFxFullscreen(const PixelShader* aPs, RenderTarget& aDst, Vector2ui aDstSize,
-                                       ID3D11ShaderResourceView* const* aSrvs, int aSrvCount,
+                                       const rhi::SrvHandle* aSrvs, int aSrvCount,
                                        Vector2f aSrcTexel, bool aAdditive)
 {
 	const Tunables& t = myTunables;
@@ -1254,18 +1233,18 @@ void DeferredRenderer::PostFxFullscreen(const PixelShader* aPs, RenderTarget& aD
 	auto& gss = GraphicsEngine::GetInstance()->GetGraphicsStateStack();
 	gss.SetBlendState(aAdditive ? BlendState::AdditiveBlend : BlendState::Disabled);
 
-	SetTargets(DX11::Rhi()->GetContext(), { aDst.GetRtv() }, {}, aDstSize);
+	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
+	SetTargets(ctx, { aDst.GetRtv() }, {}, aDstSize);
 
-	DX11::Context->PSSetShaderResources(0, aSrvCount, aSrvs);
-	DX11::Rhi()->GetContext().SetSampler(rhi::ShaderStage::Pixel, 3, myLinearSampler);
-	myPostFxCb.Bind(DX11::Rhi()->GetContext());   // b10
+	ctx.SetShaderResources(rhi::ShaderStage::Pixel, 0, (uint32_t)aSrvCount, aSrvs);
+	ctx.SetSampler(rhi::ShaderStage::Pixel, 3, myLinearSampler);
+	myPostFxCb.Bind(ctx);   // b10
 
 	BindFullscreen(aPs);
-	DX11::LogDrawCall();
-	DX11::Context->Draw(3, 0);
+	ctx.Draw(3, 0);
 
-	ID3D11ShaderResourceView* nulls[4] = {};
-	DX11::Context->PSSetShaderResources(0, aSrvCount < 4 ? aSrvCount : 4, nulls);
+	const rhi::SrvHandle nulls[4] = {};
+	ctx.SetShaderResources(rhi::ShaderStage::Pixel, 0, (uint32_t)(aSrvCount < 4 ? aSrvCount : 4), nulls);
 	gss.SetBlendState(BlendState::Disabled);
 }
 
@@ -1285,19 +1264,19 @@ void DeferredRenderer::RenderPostFx()
 	// --- bloom: prefilter HDR -> mip[0], downsample chain, additive tent upsample ---
 	if (myTunables.bloomEnabled)
 	{
-		ID3D11ShaderResourceView* src = myHdr.GetShaderResourceView();
+		rhi::SrvHandle src = myHdr.GetSrv();
 		PostFxFullscreen(myBloomPrefilterPs, myBloomMip[0], myBloomSize[0], &src, 1, hdrTexel);
 
 		for (int i = 1; i < kBloomMips; ++i)
 		{
-			ID3D11ShaderResourceView* s = myBloomMip[i - 1].GetShaderResourceView();
+			rhi::SrvHandle s = myBloomMip[i - 1].GetSrv();
 			const Vector2f texel{ 1.f / (float)myBloomSize[i - 1].x, 1.f / (float)myBloomSize[i - 1].y };
 			PostFxFullscreen(myBloomDownPs, myBloomMip[i], myBloomSize[i], &s, 1, texel);
 		}
 
 		for (int i = kBloomMips - 2; i >= 0; --i)
 		{
-			ID3D11ShaderResourceView* s = myBloomMip[i + 1].GetShaderResourceView();
+			rhi::SrvHandle s = myBloomMip[i + 1].GetSrv();
 			const Vector2f texel{ 1.f / (float)myBloomSize[i + 1].x, 1.f / (float)myBloomSize[i + 1].y };
 			PostFxFullscreen(myBloomUpPs, myBloomMip[i], myBloomSize[i], &s, 1, texel, /*additive*/ true);
 		}
@@ -1311,19 +1290,19 @@ void DeferredRenderer::RenderPostFx()
 	if (myTunables.exposureAuto)
 	{
 		const unsigned expSizes[7] = { 64, 32, 16, 8, 4, 2, 1 };
-		ID3D11ShaderResourceView* hdrSrv = myHdr.GetShaderResourceView();
+		rhi::SrvHandle hdrSrv = myHdr.GetSrv();
 		PostFxFullscreen(myExposureLumaPs, myExpMip[0], { 64, 64 }, &hdrSrv, 1, hdrTexel);
 		for (int i = 1; i < 7; ++i)
 		{
-			ID3D11ShaderResourceView* s = myExpMip[i - 1].GetShaderResourceView();
+			rhi::SrvHandle s = myExpMip[i - 1].GetSrv();
 			const float p = 1.f / (float)expSizes[i - 1];
 			PostFxFullscreen(myExposureDownPs, myExpMip[i], { expSizes[i], expSizes[i] }, &s, 1, { p, p });
 		}
 
 		const int dst = 1 - myExposureSrc;
-		ID3D11ShaderResourceView* adaptSrvs[2] = {
-			myExpMip[6].GetShaderResourceView(),
-			myExposure[myExposureSrc].GetShaderResourceView(),
+		const rhi::SrvHandle adaptSrvs[2] = {
+			myExpMip[6].GetSrv(),
+			myExposure[myExposureSrc].GetSrv(),
 		};
 		PostFxFullscreen(myExposureAdaptPs, myExposure[dst], { 1, 1 }, adaptSrvs, 2, { 1.f, 1.f });
 		myExposureSrc = dst;
@@ -1332,14 +1311,14 @@ void DeferredRenderer::RenderPostFx()
 
 void DeferredRenderer::Composite()
 {
+	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
+
 	if (!IsPostFx())
 	{
 		// Fallback: HDR -> engine tonemap -> currently bound target (samples t1).
-		ID3D11ShaderResourceView* hdr = myHdr.GetShaderResourceView();
-		DX11::Context->PSSetShaderResources(1, 1, &hdr);
+		ctx.SetShaderResource(rhi::ShaderStage::Pixel, 1, myHdr.GetSrv());
 		GraphicsEngine::GetInstance()->GetFullscreenEffectTonemap().Render();
-		ID3D11ShaderResourceView* nullSrv = nullptr;
-		DX11::Context->PSSetShaderResources(1, 1, &nullSrv);
+		ctx.SetShaderResource(rhi::ShaderStage::Pixel, 1, {});
 		return;
 	}
 
@@ -1362,21 +1341,20 @@ void DeferredRenderer::Composite()
 		myPostFxCb.Update(DX11::Rhi()->GetContext(), c);
 	}
 
-	ID3D11ShaderResourceView* srvs[3] = {
-		myHdr.GetShaderResourceView(),
-		myBloomMip[0].GetShaderResourceView(),
-		myExposure[myExposureSrc].GetShaderResourceView(),
+	const rhi::SrvHandle srvs[3] = {
+		myHdr.GetSrv(),
+		myBloomMip[0].GetSrv(),
+		myExposure[myExposureSrc].GetSrv(),
 	};
-	DX11::Context->PSSetShaderResources(0, 3, srvs);
-	DX11::Rhi()->GetContext().SetSampler(rhi::ShaderStage::Pixel, 3, myLinearSampler);
-	myPostFxCb.Bind(DX11::Rhi()->GetContext());   // b10
+	ctx.SetShaderResources(rhi::ShaderStage::Pixel, 0, 3, srvs);
+	ctx.SetSampler(rhi::ShaderStage::Pixel, 3, myLinearSampler);
+	myPostFxCb.Bind(ctx);   // b10
 
 	BindFullscreen(myCompositePs);
-	DX11::LogDrawCall();
-	DX11::Context->Draw(3, 0);
+	ctx.Draw(3, 0);
 
-	ID3D11ShaderResourceView* nulls[3] = {};
-	DX11::Context->PSSetShaderResources(0, 3, nulls);
+	const rhi::SrvHandle nulls[3] = {};
+	ctx.SetShaderResources(rhi::ShaderStage::Pixel, 0, 3, nulls);
 }
 
 void DeferredRenderer::DebugBlit(int aChannel)
@@ -1386,8 +1364,7 @@ void DeferredRenderer::DebugBlit(int aChannel)
 
 	BindGBufferSrvs();
 	BindFullscreen(myDebugPs);
-	DX11::LogDrawCall();
-	DX11::Context->Draw(3, 0);
+	DX11::Rhi()->GetContext().Draw(3, 0);
 	UnbindGBufferSrvs();
 
 	gss.SetCustomShaderParameters({ 0.f, 0.f, 0.f, 0.f });
