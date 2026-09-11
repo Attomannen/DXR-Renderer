@@ -34,6 +34,37 @@ namespace Tga::rhi::dx12
 	}
 
 	// ---- targets / viewport / clears ----
+	// SEH-isolated: found debugging DeferredRenderer::GiProjectProbe (2026-09-11)
+	// -- the FIRST OMSetRenderTargets call after ANY compute-pipeline Dispatch
+	// (e.g. a GI probe's SH-projection pass) reliably access-violates deep
+	// inside the D3D12 runtime/driver on this hardware, then works completely
+	// normally on every subsequent identical call using the exact same RTV/DSV
+	// handles -- i.e. it is not a resource lifetime bug (the handles, heap
+	// slots, and underlying resources are all confirmed valid before and after
+	// via bisection) and not debug-layer-specific (reproduces identically with
+	// the D3D12 debug layer OFF, and the layer logs nothing unusual around the
+	// fault). It looks like a real, narrow driver/runtime quirk in this
+	// specific compute-to-graphics transition. SEH-isolating it here is a
+	// pragmatic containment, not a real fix: the one dropped frame's targets
+	// don't get (re)bound, but the crash no longer takes down the whole
+	// process, and every GI-probe/graphics-after-compute frame after the first
+	// one recovers normally. Revisit if this GPU/driver combo changes, or if a
+	// real root cause surfaces (candidates not yet ruled out: a PIX/NSight
+	// capture of the exact faulting frame; an NVIDIA driver update).
+	static void SEH_OMSetRenderTargets(ID3D12GraphicsCommandList* list, UINT n,
+	                                    const D3D12_CPU_DESCRIPTOR_HANDLE* rtvHandles,
+	                                    const D3D12_CPU_DESCRIPTOR_HANDLE* pDsv)
+	{
+		__try
+		{
+			list->OMSetRenderTargets(n, n ? rtvHandles : nullptr, FALSE, pDsv);
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			ERROR_PRINT("Dx12: OMSetRenderTargets faulted (0x%08X), frame dropped -- see SetRenderTargets's class comment", (unsigned)GetExceptionCode());
+		}
+	}
+
 	void Dx12CommandContext::SetRenderTargets(uint32_t count, const RtvHandle* rtvs, DsvHandle dsv)
 	{
 		D3D12_CPU_DESCRIPTOR_HANDLE rtvHandles[8] = {};
@@ -54,7 +85,7 @@ namespace Tga::rhi::dx12
 			dsvHandle = myDevice.DsvCpuHandle(*dsvSlot);
 			pDsv = &dsvHandle;
 		}
-		List()->OMSetRenderTargets(n, n ? rtvHandles : nullptr, FALSE, pDsv);
+		SEH_OMSetRenderTargets(List(), n, rtvHandles, pDsv);
 	}
 
 	void Dx12CommandContext::SetViewport(float x, float y, float w, float h, float minZ, float maxZ)
@@ -119,6 +150,17 @@ namespace Tga::rhi::dx12
 		ComputePipelineRec* rec = myDevice.GetComputePipeline(h);
 		if (!rec || !rec->pso) return;   // {} (unbind) has no PSO to restore to on DX12; harmless no-op, matches "nothing to draw with" intent
 		List()->SetPipelineState(rec->pso.Get());
+		// A command list has exactly ONE active pipeline-state slot regardless
+		// of type -- SetPipelineState here just silently replaced whatever
+		// graphics PSO was bound. SetGraphicsPipeline's "already bound, skip
+		// the redundant SetPipelineState" cache would otherwise stay fooled:
+		// the next Draw reusing the same GraphicsPipelineHandle as before this
+		// dispatch would see it match myBoundGfxPipeline and skip re-binding,
+		// leaving this COMPUTE pso active for a Draw call -- a real, silent
+		// GPU-side crash (found debugging DeferredRenderer::GiProjectProbe,
+		// which runs between two cubemap-face graphics draws using the exact
+		// same PSO). Invalidate so the next SetGraphicsPipeline always rebinds.
+		myBoundGfxPipeline = {};
 	}
 
 	void Dx12CommandContext::SetBlendState(BlendMode m) { myPendingBlend = m; }

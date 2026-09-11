@@ -223,7 +223,14 @@ namespace Tga::rhi::dx12
 		static constexpr uint32_t kCbvSrvUavCapacity = 8192;          // permanent (non-shader-visible)
 		static constexpr uint32_t kSamplerCapacity = 256;             // permanent (non-shader-visible)
 		static constexpr uint32_t kCbvSrvUavScratchPerFrame = 131072; // shader-visible, per frame-in-flight
-		static constexpr uint32_t kSamplerScratchPerFrame = 800;      // shader-visible, per frame-in-flight (<2048 total across both)
+		// 2048 is the actual D3D12 hardware limit for a single shader-visible
+		// sampler heap (Tier 1+), so this is the most headroom this heap can
+		// ever have -- raised from 800 after a real GI-probe-priming frame
+		// (many small draws packed into one BeginFrame/EndFrame, see
+		// GameWorld::CaptureGiProbesImpl's batch loop) exhausted 800 well
+		// before the frame finished recording (AllocateRange's capacity
+		// assert firing mid-frame, found 2026-09-11 debugging GiProjectProbe).
+		static constexpr uint32_t kSamplerScratchPerFrame = 2048;     // shader-visible, per frame-in-flight (hardware max)
 		static constexpr uint32_t kRtvCapacity = 256;
 		static constexpr uint32_t kDsvCapacity = 64;
 		static constexpr uint32_t kDynRingBytes = 4u << 20;   // 4 MB per frame

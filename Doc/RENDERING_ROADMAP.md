@@ -615,18 +615,54 @@ subfolder. Four stages:
   scene, DX12's `CaptureSceneToCubemap` now genuinely captures the scene into a cubemap texture and
   generates its mip chain (`CubemapPrefilter: Captured scene to cubemap (256x256, 9 mips)` — no
   crash, matching the DX11 log line). **Furthest any DX12 run has reached.**
-  **Still to do / newly discovered, out of this step's scope**:
-  - `GeneratePrefilteredCubemap`'s DX12 branch correctly detects (rather than crashes on) that DX12
-    compute-shader loading for `PrefilterSpecularCS`/`PrefilterDiffuseCS` isn't wired up yet, logs
-    an error, and bails out cleanly — DX12 compute-shader loading in general is still an open gap.
-  - A second, separate crash now surfaces one level up the call stack, in `DeferredRenderer::
-    GiProjectProbe` (the per-GI-probe SH-projection compute dispatch in `GameWorld.cpp`'s
-    `CaptureGiProbesImpl`, called right after each GI probe's own, smaller `CaptureSceneToCubemap`
-    succeeds) — belongs to the still-not-yet-ported `DeferredRenderer.cpp` (migration order item
-    #7 from Stage 1, not started for DX12), not to `CubemapPrefilter.cpp` itself.
-  - `video.cpp`/`TextService.cpp`'s remaining `GetNativeSrv` uses share a related but smaller gap.
-  Only after those does the actual RenderDoc/PIX-clean, visually-identical-to-DX11 checkpoint
-  become pursuable.
+  **Still to do**: `GeneratePrefilteredCubemap`'s DX12 branch correctly detects (rather than
+  crashes on) that DX12 compute-shader loading for `PrefilterSpecularCS`/`PrefilterDiffuseCS`
+  isn't wired up yet, logs an error, and bails out cleanly — DX12 compute-shader loading in
+  general is still an open gap. `video.cpp`/`TextService.cpp`'s remaining `GetNativeSrv` uses
+  share a related but smaller gap.
+- [x] `DeferredRenderer::GiProjectProbe` DX12 crash (2026-09-11) — the per-GI-probe SH-projection
+  compute dispatch (`GameWorld.cpp`'s `CaptureGiProbesImpl`, called right after each GI probe's
+  own smaller `CaptureSceneToCubemap` succeeds) was the very first real DX12 compute dispatch +
+  the very first compute→graphics transition this whole port had ever exercised, and turned up
+  **three** distinct, real bugs plus one resource-budget wall, none actually specific to
+  `GiProjectProbe` itself:
+  1. **UAV-usage buffers/textures left in `COMMON` instead of `UNORDERED_ACCESS`.**
+     `Dx12Device::CreateBuffer`/`CreateTexture` only set a real initial resource state for
+     render-target/depth-stencil/copy-destination cases; a GPU-only UAV resource with no initial
+     data (`myGiShBuffer`, the cluster-culling buffers, any future compute-output texture) was
+     left in `COMMON`. D3D12's implicit state-promotion rule only promotes a resource from
+     `COMMON` into *read* states on first use — **never** into `UNORDERED_ACCESS` — so writing
+     through such a UAV is undefined behavior. Fixed by creating these resources directly in
+     `UNORDERED_ACCESS` state when there's no initial data to upload first (the debug layer later
+     confirmed this is a no-op for *buffers* specifically — "Buffers are effectively created in
+     state COMMON", i.e. buffers already auto-promote fine regardless — but the identical fix for
+     *textures* is real and necessary, since that rule doesn't apply to textures).
+  2. **Stale graphics-PSO cache across a compute dispatch.** A D3D12 command list has exactly one
+     active pipeline-state slot regardless of type — binding a compute PSO silently replaces
+     whatever graphics PSO was bound. `Dx12CommandContext::SetGraphicsPipeline`'s "already bound,
+     skip the redundant call" cache didn't know this, so the next `Draw` reusing the same
+     `GraphicsPipelineHandle` as before a `Dispatch` would wrongly skip re-binding it, leaving the
+     compute PSO active for a `Draw` call. Fixed by invalidating that cache whenever
+     `SetComputePipeline` actually rebinds.
+  3. **Unresolved, contained**: the *first* `OMSetRenderTargets` call after *any* compute
+     `Dispatch` reliably access-violates deep in the D3D12 runtime/driver on this hardware — every
+     subsequent identical call with the same handles then works completely normally. Confirmed via
+     bisection this is not a resource-lifetime bug (handles/heap slots/resources all valid before
+     and after) and not debug-layer-specific (identical with the layer off; the layer logs nothing
+     around the fault). SEH-isolated in `Dx12CommandContext::SetRenderTargets` as a documented,
+     honest containment (one dropped frame, not a real fix) rather than leaving it fatal — see the
+     code comment there for what's already been ruled out.
+  4. **Sampler descriptor-scratch-heap exhaustion.** A GI-probe-priming frame packs many more
+     draws into one `BeginFrame`/`EndFrame` than a normal frame (`GameWorld::CaptureGiProbesImpl`'s
+     batch loop) and exhausted the 800-slot-per-frame shader-visible sampler heap mid-recording.
+     Raised to 2048 — the actual D3D12 hardware ceiling for a single shader-visible sampler heap,
+     so this is the most headroom available short of a real per-frame-budget redesign.
+  **Verified**: DX11 regression via `BENCH_SCREENSHOT`, pixel-identical (unaffected — all four
+  fixes are DX12-only). DX12: the crash is gone — `GiProjectProbe` and the whole GI-probe-priming
+  batch now run to completion inside one frame without crashing (previously: guaranteed crash on
+  the very first probe). Execution now reaches the main scene draw (G-buffer + deferred lighting)
+  for the first time ever, where it currently **hangs** (not a crash) — a new, separate,
+  not-yet-debugged issue in that as-yet-unexercised code path, out of this fix's scope.
   Checkpoint (unchanged): `-rhi=dx12` visually identical to `-rhi=dx11` on every scene +
   editor + Tutorials, PIX-clean, perf parity or better.
 - **Stage 3** — DXR inline `RayQuery` (SM 6.5) hardware-traced GI, replacing the Phase 6

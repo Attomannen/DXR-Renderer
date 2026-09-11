@@ -664,6 +664,21 @@ namespace Tga::rhi::dx12
 		if (d.memory == MemoryType::Upload) { heapType = D3D12_HEAP_TYPE_UPLOAD; initState = D3D12_RESOURCE_STATE_GENERIC_READ; }
 		else if (d.memory == MemoryType::Readback) { heapType = D3D12_HEAP_TYPE_READBACK; initState = D3D12_RESOURCE_STATE_COPY_DEST; }
 		else if (initialData) initState = D3D12_RESOURCE_STATE_COPY_DEST;   // uploaded into, then transitioned by the caller
+		// A Default-heap buffer with no initial data and UAV usage is a GPU-only
+		// scratch/output buffer (cluster lists, GI SH coefficients, ...) never
+		// touched by CPU upload -- its very first real use is a compute shader
+		// writing through its UAV. D3D12's implicit resource-state-promotion
+		// rule ONLY promotes a buffer FROM COMMON into read states (SRV, COPY_
+		// SOURCE, VERTEX_AND_CONSTANT_BUFFER, INDEX_BUFFER, INDIRECT_ARGUMENT)
+		// on first access -- promotion to UNORDERED_ACCESS is explicitly NOT
+		// allowed. Leaving such a buffer in COMMON and binding it as a UAV
+		// anyway is undefined behavior; on this hardware/driver it manifests as
+		// a silent crash on the first Dispatch that writes it (found debugging
+		// DeferredRenderer::GiProjectProbe, but the same bug applies to every
+		// GPU-only UAV buffer created this way, e.g. the cluster-culling
+		// buffers). Create these already in UNORDERED_ACCESS state instead --
+		// legal since nothing needs to read them before their first write.
+		else if (!initialData && HasUsage(d.usage, BufferUsage::UAV)) initState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 
 		D3D12_HEAP_PROPERTIES heapProps = { heapType };
 		ComPtr<ID3D12Resource> res;
@@ -735,6 +750,13 @@ namespace Tga::rhi::dx12
 		}
 		else if (initial && initialCount)
 			initState = D3D12_RESOURCE_STATE_COPY_DEST;
+		// See the identical case in CreateBuffer just above: a UAV-only texture
+		// (no RenderTarget/DepthStencil, no initial data -- a pure compute
+		// output) must not be left in COMMON, since D3D12's implicit state
+		// promotion never promotes into UNORDERED_ACCESS. Create it there
+		// directly instead.
+		else if (HasBind(d.bind, TextureBind::UnorderedAccess))
+			initState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 
 		D3D12_HEAP_PROPERTIES heapProps = { D3D12_HEAP_TYPE_DEFAULT };
 		ComPtr<ID3D12Resource> res;
