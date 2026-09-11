@@ -313,8 +313,10 @@ subfolder. Four stages:
       GI SH-coefficient buffer, local-shadow transform buffer. Shadow-cascade texture
       array + local-shadow-atlas texture (real `ID3D11Texture2D`/DSV work, using one
       `Format::D32_Float` to auto-derive the typeless resource + depth SRV + DSV).
-    - [ ] sub-pass 5 — compute dispatch (shader object bind + `Dispatch`) (next) ·
-      sub-pass 6 — remaining fullscreen-draw plumbing
+    - [x] sub-pass 5 — compute dispatch: `ctx.SetComputePipeline` (hash-cached
+      `CreateComputePipeline` off the shader module) + `ctx.Dispatch` for cluster
+      culling and GI SH projection.
+    - [ ] sub-pass 6 — remaining fullscreen-draw plumbing (next, closes out step 7)
   - [ ] Steps 8–12 — `CubemapPrefilter`, `GameWorld` GI capture, video player, ImGui /
     editor viewport + font atlas, then delete the `DX11::Device/Context/...` statics.
   - **Found + fixed a real bug along the way** (not port-scope, a genuine engine

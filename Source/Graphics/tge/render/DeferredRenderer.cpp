@@ -481,18 +481,22 @@ void DeferredRenderer::GiProjectProbe(ID3D11ShaderResourceView* aCubeSrv, int aP
 	}
 
 	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
-	DX11::Context->CSSetShader(myGiProjectCS->shader.Get(), nullptr, 0);
+	rhi::ComputePipelineDesc pd;
+	pd.cs = myGiProjectCS->module;
+	ctx.SetComputePipeline(DX11::Rhi()->CreateComputePipeline(pd));
+	// aCubeSrv is a raw per-call capture SRV from the caller (GameWorld's cube
+	// capture) -- stays raw until that call chain is on the RHI (step 9).
 	DX11::Context->CSSetShaderResources(0, 1, &aCubeSrv);
 	ctx.SetSampler(rhi::ShaderStage::Compute, 0, myGiLinearSampler);
 	myGiProjectCb.Bind(ctx);
 	ctx.SetUnorderedAccess(0, myGiShBuffer.Uav());
 
-	DX11::Context->Dispatch(1, 1, 1);
+	ctx.Dispatch(1, 1, 1);
 
 	ID3D11ShaderResourceView* ns = nullptr;
 	ctx.SetUnorderedAccess(0, {});
 	DX11::Context->CSSetShaderResources(0, 1, &ns);
-	DX11::Context->CSSetShader(nullptr, nullptr, 0);
+	ctx.SetComputePipeline({});
 }
 
 void DeferredRenderer::BindDebugMaterial(const DebugMaterial& m)
@@ -1015,18 +1019,22 @@ void DeferredRenderer::CullClusters()
 
 	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
 
-	DX11::Context->CSSetShader(myClusterCS->shader.Get(), nullptr, 0);
+	{
+		rhi::ComputePipelineDesc pd;
+		pd.cs = myClusterCS->module;
+		ctx.SetComputePipeline(DX11::Rhi()->CreateComputePipeline(pd));
+	}
 	ctx.SetShaderResource(rhi::ShaderStage::Compute, 0, myLightBuffer.Srv());
 	myClusterCb.Bind(ctx);   // CS b0
 	const rhi::UavHandle uavs[2] = { myClusterIndexBuffer.Uav(), myClusterCountBuffer.Uav() };
 	ctx.SetUnorderedAccesses(0, 2, uavs);
 
-	DX11::Context->Dispatch((myNumClusters + 63) / 64, 1, 1);
+	ctx.Dispatch((myNumClusters + 63) / 64, 1, 1);
 
 	const rhi::UavHandle nullUavs[2] = {};
 	ctx.SetUnorderedAccesses(0, 2, nullUavs);
 	ctx.SetShaderResource(rhi::ShaderStage::Compute, 0, rhi::SrvHandle{});
-	DX11::Context->CSSetShader(nullptr, nullptr, 0);
+	ctx.SetComputePipeline({});
 }
 
 void DeferredRenderer::BuildFrame(RenderGraph& aGraph,
