@@ -8,10 +8,10 @@ This class will store a texture bound to DX11
 #ifdef USE_VIDEO
 
 #include <wrl/client.h>
+#include <tge/rhi/Handles.h>
 
 using Microsoft::WRL::ComPtr;
 struct ID3D11ShaderResourceView;
-struct ID3D11Texture2D;
 
 namespace Tga
 {
@@ -46,8 +46,10 @@ namespace Tga
 		class VideoPlayer* myPlayer;
 
 		ComPtr<ID3D11ShaderResourceView> myShaderResource;
-		ComPtr<ID3D11Texture2D> myD3DTexture;
-		
+		rhi::TextureHandle myVideoTex;
+		rhi::SrvHandle myVideoSrv;   // RHI-owned view; myShaderResource holds its own ref for TextureResource
+
+
 		int *myBuffer;
 
 		Vector2i mySize;

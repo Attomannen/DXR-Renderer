@@ -51,6 +51,7 @@ namespace Tga::rhi::dx11
 		void Dispatch(uint32_t x, uint32_t y, uint32_t z) override;
 
 		void UpdateBuffer(BufferHandle, const void* data, uint32_t byteSize, uint32_t dstOffset) override;
+		void UpdateTexture(TextureHandle, const void* data, uint32_t rowPitch) override;
 		void CopyTexture(TextureHandle dst, TextureHandle src) override;
 		void CopyTextureRegion(TextureHandle dst, uint32_t dstMip, uint32_t dstArray,
 		                       TextureHandle src, uint32_t srcMip, uint32_t srcArray) override;

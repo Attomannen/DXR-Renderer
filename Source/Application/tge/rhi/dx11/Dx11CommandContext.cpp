@@ -265,6 +265,13 @@ namespace Tga::rhi::dx11
 		}
 	}
 
+	void Dx11CommandContext::UpdateTexture(TextureHandle h, const void* data, uint32_t rowPitch)
+	{
+		TextureRec* t = myDevice.GetTexture(h);
+		if (!t || !t->res) return;
+		Ctx()->UpdateSubresource(t->res.Get(), 0, nullptr, data, rowPitch, 0);
+	}
+
 	void Dx11CommandContext::CopyTexture(TextureHandle dst, TextureHandle src)
 	{
 		TextureRec* d = myDevice.GetTexture(dst);

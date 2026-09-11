@@ -5,6 +5,7 @@
 #ifdef USE_VIDEO
 #include <tge/sprite/sprite.h>
 #include <tge/graphics/DX11.h>
+#include <tge/rhi/Device.h>
 #include <tge/texture/TextureManager.h>
 #include <tge/log/Log.h>
 #include <tge/application.h>
@@ -32,9 +33,15 @@ Tga::Video::~Video()
 		delete[] myBuffer;
 	}
 
+	if (rhi::IDevice* dev = DX11::Rhi())
+	{
+		if (myVideoSrv.IsValid()) dev->Destroy(myVideoSrv);
+		if (myVideoTex.IsValid()) dev->Destroy(myVideoTex);
+	}
+
 	delete myPlayer;
 	myPlayer = nullptr;
-	
+
 }
 
 void Tga::Video::Play(bool aLoop)
@@ -106,22 +113,21 @@ bool Video::Init(const char* aPath, bool aPlayAudio)
 
 	if (!myShaderResource)
 	{
-		D3D11_TEXTURE2D_DESC texture_desc;
-		memset(&texture_desc, 0, sizeof(texture_desc));
-		texture_desc.Width = myPowerSizeX;
-		texture_desc.Height = myPowerSizeY;
-		texture_desc.MipLevels = 1;
-		texture_desc.ArraySize = 1;
-		texture_desc.SampleDesc.Count = 1;
-		texture_desc.SampleDesc.Quality = 0;
-		texture_desc.Usage = D3D11_USAGE_DYNAMIC;
-		texture_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-		texture_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-		texture_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-		texture_desc.MiscFlags = 0;
+		rhi::IDevice* dev = DX11::Rhi();
 
-		DX11::Device->CreateTexture2D(&texture_desc, nullptr, myD3DTexture.ReleaseAndGetAddressOf());
-		DX11::Device->CreateShaderResourceView(myD3DTexture.Get(), NULL, myShaderResource.ReleaseAndGetAddressOf());
+		rhi::TextureDesc td;
+		td.width = myPowerSizeX;
+		td.height = myPowerSizeY;
+		td.format = rhi::Format::R8G8B8A8_UNorm_sRGB;
+		td.bind = rhi::TextureBind::ShaderResource;
+		td.debugName = "Video texture";
+		myVideoTex = dev->CreateTexture(td);
+		myVideoSrv = dev->CreateSrv(myVideoTex, {});
+
+		// myShaderResource takes its own ref (ComPtr's raw-pointer ctor AddRefs) so
+		// the legacy TextureResource(ID3D11ShaderResourceView*) API keeps working;
+		// myVideoTex/myVideoSrv remain the RHI-owned handles, destroyed in ~Video().
+		myShaderResource = static_cast<ID3D11ShaderResourceView*>(dev->GetNativeSrv(myVideoSrv));
 
 		myTexture = new TextureResource(myShaderResource.Get());
 	}
@@ -129,17 +135,11 @@ bool Video::Init(const char* aPath, bool aPlayAudio)
 	bool wantsToPlay = myWantsToPlay;
 	myWantsToPlay = true;
 
-	if (myShaderResource && myD3DTexture)
+	if (myShaderResource && myVideoTex.IsValid())
 	{
-		D3D11_MAPPED_SUBRESOURCE mappedResource;
-		HRESULT result = DX11::Context->Map(myD3DTexture.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
-
-		if (SUCCEEDED(result))
-		{
-			unsigned int* dest = reinterpret_cast<unsigned int*>(mappedResource.pData);
-			myPlayer->Update(dest, myPowerSizeX, myPowerSizeY);
-			DX11::Context->Unmap(myD3DTexture.Get(), 0);
-		}
+		unsigned int* dest = reinterpret_cast<unsigned int*>(myBuffer);
+		myPlayer->Update(dest, myPowerSizeX, myPowerSizeY);
+		DX11::Rhi()->GetContext().UpdateTexture(myVideoTex, myBuffer, myPowerSizeX * 4);
 	}
 	myUpdateTime = 0.0f;
 	myWantsToPlay = wantsToPlay;
@@ -164,7 +164,7 @@ void Video::Update(float aDelta)
 
 	while (myUpdateTime >= frameTime && framesDecoded < maxFramesPerUpdate)
 	{
-		if (myShaderResource && myD3DTexture)
+		if (myShaderResource && myVideoTex.IsValid())
 		{
 			int status = myPlayer->GrabNextFrame();
 
@@ -176,15 +176,9 @@ void Video::Update(float aDelta)
 				return;
 			}
 
-			D3D11_MAPPED_SUBRESOURCE mappedResource;
-			HRESULT result = DX11::Context->Map(myD3DTexture.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
-
-			if (SUCCEEDED(result))
-			{
-				unsigned int* dest = reinterpret_cast<unsigned int*>(mappedResource.pData);
-				myPlayer->Update(dest, myPowerSizeX, myPowerSizeY);
-				DX11::Context->Unmap(myD3DTexture.Get(), 0);
-			}
+			unsigned int* dest = reinterpret_cast<unsigned int*>(myBuffer);
+			myPlayer->Update(dest, myPowerSizeX, myPowerSizeY);
+			DX11::Rhi()->GetContext().UpdateTexture(myVideoTex, myBuffer, myPowerSizeX * 4);
 		}
 		myUpdateTime -= (float)frameTime;
 		framesDecoded++;

@@ -91,6 +91,7 @@ namespace Tga::rhi::dx11
 
 		void* GetNativeDevice() override;
 		void* GetNativeContext() override;
+		void* GetNativeSrv(SrvHandle) override;
 		void* ImGuiTextureId(SrvHandle) override;
 
 		SrvHandle WrapNativeSrv(void* nativeSrv) override;

@@ -65,6 +65,10 @@ namespace Tga::rhi
 
 		// ---- resource ops ----
 		virtual void UpdateBuffer(BufferHandle, const void* data, uint32_t byteSize, uint32_t dstOffset = 0) = 0;
+		// Full upload of a single-mip, single-slice 2D texture's contents (DX11:
+		// UpdateSubresource on mip 0 / slice 0; DX12 will route through an upload
+		// heap + copy). `rowPitch` is the source data's tightly-packed row stride.
+		virtual void UpdateTexture(TextureHandle, const void* data, uint32_t rowPitch) = 0;
 		virtual void CopyTexture(TextureHandle dst, TextureHandle src) = 0;
 		virtual void CopyTextureRegion(TextureHandle dst, uint32_t dstMip, uint32_t dstArray,
 		                               TextureHandle src, uint32_t srcMip, uint32_t srcArray) = 0;
