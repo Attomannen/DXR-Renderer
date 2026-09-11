@@ -216,12 +216,30 @@ Bench + baselines: `Source/Game/BENCH.md`. Per-phase numbers are captured there.
 - [ ] Editor-side exposure/curve controls + per-camera exposure
 - [ ] Lens dirt / chromatic-aberration options on the composite
 
-## Phase 4.5 — TAA + motion vectors  `[ ]`
+## Phase 4.5 — TAA + motion vectors + DLSS  `[ ]`
 
-- [ ] Per-object motion-vector G-buffer channel (needs prev-frame transforms)
-- [ ] Jittered projection + temporal resolve with neighbourhood clamp
-- [ ] History buffer management, disocclusion handling
-- Prereq for reflection / GI denoising; also unlocks motion blur later
+Grouped as one initiative (2026-09-12) rather than kept separate: TAA and DLSS both consume the
+exact same jittered-rendering + motion-vector + depth pipeline, so building that once and layering
+two resolve strategies on top of it is the right shape, not two unrelated features.
+
+- [ ] Per-object motion-vector G-buffer channel (needs prev-frame transforms — a `prevWorldMatrix`
+      alongside each `ModelInstance`'s current one, fed into the geometry pass). Build this first,
+      regardless of what follows — it's also a prereq for reflection/GI denoising (including
+      Stage 3's DXR GI temporal accumulation) and unlocks motion blur later.
+- [ ] Jittered projection (Halton sequence sub-pixel offset per frame) + DIY temporal resolve with
+      neighbourhood clamping (reject ghosting on disocclusion/fast motion) + history buffer
+      management (disocclusion detection, first-frame/resize handling — the part that actually
+      costs engineering time). A real, portable, engine-owned AA baseline — there is currently
+      none beyond whatever the hardware defaults to, which for this deferred renderer is
+      effectively nothing.
+- [ ] **DLSS** (new item, not part of the original plan) — layered on top of the same jitter/
+      motion-vector/depth infrastructure as a *second* resolve path behind a toggle, once DIY TAA
+      is proven stable (don't bring in an unfamiliar external SDK before the surrounding
+      infrastructure is validated). Integration path: NVIDIA Streamline (the modern umbrella API
+      covering Super Resolution/Frame Generation/Ray Reconstruction) rather than raw NGX — this is
+      the first non-Microsoft, license-bound binary SDK dependency this engine would take on
+      (redistributable DLL + NVIDIA license terms). Keep DIY TAA as the non-NVIDIA-hardware
+      fallback.
 
 ## Phase 5 — Reflections  `[x]` (multi-probe blend is the only follow-up)
 
@@ -947,6 +965,15 @@ subfolder. Four stages:
 - **Stage 3** — DXR inline `RayQuery` (SM 6.5) hardware-traced GI, replacing the Phase 6
   SH-volume software path with a real DDGI (BLAS/TLAS, per-probe ray tracing into the
   existing SH probe volume). Not started.
+  **Two prerequisites the plan always assumed, confirmed NOT actually done yet (checked
+  2026-09-12)**: (1) every shader, DX12 included, still compiles via legacy `D3DCompileFromFile`
+  at `*_5_0` (DXBC, Shader Model 5.0) — fine for ordinary PSOs, but inline `RayQuery` needs SM 6.5/
+  DXIL, which only DXC produces; the DXC swap from Stage 2's own outline never actually happened.
+  (2) `Dx12Device` creates a plain `ID3D12Device`, not `ID3D12Device5` — acceleration-structure
+  build/update needs that plus `ID3D12GraphicsCommandList4`, and a `D3D12_FEATURE_D3D12_OPTIONS5`
+  `RAYTRACING_TIER_1_1` check (the RTX 5060 Ti supports this comfortably — Turing onward all do).
+  Both are small, mechanical, do-first items — not blockers, just not yet true despite being
+  assumed complete by this section's own outline below.
 - **Stage 4** — RT reflections (replaces Phase 5 SSR) / RT shadows (replaces Phase 3.5
   shadow maps) / RT AO (replaces Phase 3.2 SSAO), each behind its own toggle against the
   existing screen-space technique. Not started.
