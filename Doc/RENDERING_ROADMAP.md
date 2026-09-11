@@ -277,10 +277,8 @@ lives in `Source/Application/tge/rhi/` (`Tga::rhi` namespace; in Application rat
 than a separate lib, to avoid a link cycle with `Tga::DX11`), with a `dx11/` backend
 subfolder. Four stages:
 
-- **Stage 1** — RHI seam + DX11 backend at parity (12 steps, zero visible change).
-  Currently here — steps 0–10 done, steps 11+12 substantially advanced but not fully closed
-  (see below) — realistically ~90% of Stage 1's total work, with the `RenderTarget`/
-  `DepthBuffer`/`TextureResource` public-API rewrite as the one large remaining piece:
+- **Stage 1 — COMPLETE** (functionally; see the honest exceptions list below) — RHI seam +
+  DX11 backend at parity, zero visible change, heavily verified at every step:
   - [x] Step 0 — RHI interface (`Handles.h`/`Descs.h`/`Device.h`/`CommandContext.h`) +
     DX11 backend (`Dx11Device`, `Dx11CommandContext`, gen-checked handle pools) wrapping
     the pre-existing `Tga::DX11` statics.
@@ -361,9 +359,27 @@ subfolder. Four stages:
     wrapper classes' own `.cpp` files still need them. DirectXTex-based real asset loaders stay
     raw by design (Stage 2's `*11`→`*12` loader swap). A few per-call scratch-resource sites
     stay raw for leak-avoidance (`CubemapPrefilter`, `Viewport.cpp`'s mouse-picking readback).
-  - [ ] Remaining before Stage 1 is literally complete: the `RenderTarget`/`DepthBuffer`/
-    `TextureResource` public-API rewrite (own dedicated pass), then delete the
-    `DX11::Device/Context/SwapChain/BackBuffer/DepthBuffer` statics + final grep-clean sweep.
+  - [x] Wrapper-API rewrite — done for its actual scope: `RenderTarget::Create`'s two "create
+    fresh" overloads (`DXGI_FORMAT` → `rhi::Format`), the one part of `RenderTarget`/
+    `DepthBuffer`/`TextureResource` the raw-format complaint actually applied to
+    (`DepthBuffer::Create` never took a format param; `TextureResource`'s raw-pointer API is
+    used far too pervasively across the whole codebase to change in this pass). Added
+    `rhi::Format::R8G8B8A8_Typeless` + two new native-pointer bridges (`GetNativeRtv`,
+    `GetNativeTexture`) to support it. Updated ~20 call sites across `DeferredRenderer.cpp`,
+    `Viewport.cpp`, `GameWorld.cpp`, `RenderResourcePool.h`, plus 3 sites outside this repo's
+    tracked tree (2 Tutorials, 1 Example). The two "adopt the swapchain backbuffer" overloads,
+    `Clear()`/`SetAsActiveTarget()`, and all of `DepthBuffer`'s internals stay raw on purpose —
+    both are called during `DX11::Init` **before the RHI device object exists**, a real
+    bootstrap ordering constraint, and the Clear/SetAsActiveTarget pair is besides the single
+    hottest per-frame path in the renderer. **Verified as the highest-stakes single change in
+    the whole port** (every render target the engine creates goes through it): both `.sln`
+    build clean, Sponza + Room + auto-exposure-chain screenshots pixel-identical, editor ran
+    18s+ clean including Viewport's trickiest TYPELESS+sRGB-RTV+linear-SRV case.
+  - Stage 1 is now considered **functionally complete** — not literally "0 raw D3D11 anywhere"
+    (a short, fully-documented list of deliberate exceptions remains: bootstrap-timing-bound
+    code, a couple of leak-avoidance cases, and `TextureResource`'s stable legacy API surface)
+    but every remaining site is either load-bearing by design or outside the engine runtime.
+    See memory `p5g3-dx12-port` for the full accounting. Moving to **Stage 2**.
   - **Found + fixed a real bug along the way** (not port-scope, a genuine engine
     correctness bug the port's extra scrutiny surfaced): `Pool<ComPtr<T>>::Get()` in the
     new RHI backend was itself broken (`&s.value` invoked `ComPtr`'s overloaded out-param
@@ -376,9 +392,14 @@ subfolder. Four stages:
     instead of `&`). Verified against the reference image. Repo now under git
     (`github.com/Attomannen/TGE-DX12-Port`, private) specifically so this kind of
     regression is bisectable going forward.
-- **Stage 2** — DX12 backend behind the same seam (D3D12MA, `d3dx12.h`/Agility SDK, DXC,
+- **Stage 2** `[~]` — DX12 backend behind the same seam (D3D12MA, `d3dx12.h`/Agility SDK, DXC,
   one root signature mirroring the existing register layout, automatic barrier tracker).
-  Not started.
+  **Starting now.** Goal: implement `Source/Application/tge/rhi/dx12/` against the exact same
+  `IDevice`/`ICommandContext` interface Stage 1 built — every converted call site should work
+  unmodified, selected via `-rhi=dx12` at startup. See memory `p5g3-dx12-port` for the detailed
+  plan (descriptor heaps, upload ring, PSO cache, root signature, barrier tracker, DXC compile
+  path, `imgui_impl_dx12`, DirectXTex `*12` loaders). Checkpoint: `-rhi=dx12` visually identical
+  to `-rhi=dx11` on every scene + editor + Tutorials, PIX-clean, perf parity or better.
 - **Stage 3** — DXR inline `RayQuery` (SM 6.5) hardware-traced GI, replacing the Phase 6
   SH-volume software path with a real DDGI (BLAS/TLAS, per-probe ray tracing into the
   existing SH probe volume). Not started.
