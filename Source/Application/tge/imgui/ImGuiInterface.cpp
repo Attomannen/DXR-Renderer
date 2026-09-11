@@ -8,6 +8,7 @@
 #include <IconFontHeaders/IconsLucide.h>
 
 #include "imgui/imgui_impl_dx11.h"
+#include "imgui/imgui_impl_dx12.h"
 #include "imgui/imgui_impl_win32.h"
 
 //#pragma comment(lib, "..\\Libs\\imgui.lib")
@@ -35,7 +36,11 @@ ImFont* ImGuiInterface::GetIconFontLarge()
 void ImGuiInterface::Shutdown()
 {
 #ifndef _RETAIL
-	ImGui_ImplDX11_Shutdown();
+	Tga::rhi::IDevice* rhiDevice = Tga::DX11::Rhi();
+	if (rhiDevice && rhiDevice->GetBackend() == Tga::rhi::Backend::DX12)
+		ImGui_ImplDX12_Shutdown();
+	else
+		ImGui_ImplDX11_Shutdown();
 	ImGui_ImplWin32_Shutdown();
 	ImNodes::DestroyContext();
 	ImGui::DestroyContext();
@@ -122,7 +127,15 @@ void ImGuiInterface::Init()
 	ImGuiIO& io = ImGui::GetIO();
 
 	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-	io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+	// Multi-viewport (dragging a panel out into its own OS window) needs BOTH
+	// the platform backend (Win32, always supports it) and the RENDERER
+	// backend to implement Renderer_CreateWindow/RenderWindow/DestroyWindow.
+	// imgui_impl_dx12 (as vendored, 1.91.6) implements none of these -- if
+	// ViewportsEnable were set under DX12, ImGui::RenderPlatformWindowsDefault
+	// would call a null Renderer_RenderWindow the first time a panel is torn
+	// out, and crash. DX11 keeps the existing behavior unchanged.
+	if (!Tga::DX11::Rhi() || Tga::DX11::Rhi()->GetBackend() != Tga::rhi::Backend::DX12)
+		io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 	io.ConfigWindowsMoveFromTitleBarOnly = true;
 	//io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;  // Enable Keyboard Controls
 	//io.IniFilename = nullptr;
@@ -132,12 +145,26 @@ void ImGuiInterface::Init()
 
 	// Setup ImGui binding
 	ImGui_ImplWin32_Init(*Tga::Application::GetInstance()->GetHWND());
-	// imgui_impl_dx11 is a dedicated DX11 backend (stays outside the RHI seam per
-	// the plan); GetNativeDevice/GetNativeContext are the sanctioned escape hatch
-	// rather than reaching for the legacy DX11::Device/Context statics directly.
+	// imgui_impl_dx11/dx12 are dedicated per-backend renderer backends (stay
+	// outside the RHI seam per the plan); GetNative*/GetImGuiSrv* are the
+	// sanctioned escape hatches rather than reaching for backend-private
+	// statics/types directly.
 	Tga::rhi::IDevice* rhiDevice = Tga::DX11::Rhi();
-	ImGui_ImplDX11_Init(static_cast<ID3D11Device*>(rhiDevice->GetNativeDevice()),
-	                    static_cast<ID3D11DeviceContext*>(rhiDevice->GetNativeContext()));
+	if (rhiDevice->GetBackend() == Tga::rhi::Backend::DX12)
+	{
+		D3D12_CPU_DESCRIPTOR_HANDLE fontCpu{ reinterpret_cast<SIZE_T>(rhiDevice->ImGuiFontSrvCpuHandle()) };
+		D3D12_GPU_DESCRIPTOR_HANDLE fontGpu{ reinterpret_cast<UINT64>(rhiDevice->ImGuiFontSrvGpuHandle()) };
+		ImGui_ImplDX12_Init(static_cast<ID3D12Device*>(rhiDevice->GetNativeDevice()),
+		                    2,   // frames in flight -- matches Dx12Device::kFramesInFlight
+		                    DXGI_FORMAT_R8G8B8A8_UNORM,   // BackBufferNoSrgbConversion's format -- ImGui renders here, not the sRGB view (see Application::EndFrame)
+		                    static_cast<ID3D12DescriptorHeap*>(rhiDevice->GetImGuiSrvDescriptorHeap()),
+		                    fontCpu, fontGpu);
+	}
+	else
+	{
+		ImGui_ImplDX11_Init(static_cast<ID3D11Device*>(rhiDevice->GetNativeDevice()),
+		                    static_cast<ID3D11DeviceContext*>(rhiDevice->GetNativeContext()));
+	}
 	ImGui::StyleColorsDark();
 
 	ImGui::GetStyle().TabBarOverlineSize = 0;
@@ -235,7 +262,11 @@ void ImGuiInterface::PreFrame()
 {
 #ifndef _RETAIL
 	ImGui_ImplWin32_NewFrame();
-	ImGui_ImplDX11_NewFrame();
+	Tga::rhi::IDevice* rhiDevice = Tga::DX11::Rhi();
+	if (rhiDevice && rhiDevice->GetBackend() == Tga::rhi::Backend::DX12)
+		ImGui_ImplDX12_NewFrame();
+	else
+		ImGui_ImplDX11_NewFrame();
 	ImGui::NewFrame();
 #endif
 }
@@ -244,8 +275,29 @@ void ImGuiInterface::Render()
 {
 #ifndef _RETAIL
 	ImGui::Render();
-	ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 
+	Tga::rhi::IDevice* rhiDevice = Tga::DX11::Rhi();
+	if (rhiDevice && rhiDevice->GetBackend() == Tga::rhi::Backend::DX12)
+	{
+		auto* cmdList = static_cast<ID3D12GraphicsCommandList*>(rhiDevice->GetNativeCommandList());
+		auto* srvHeap = static_cast<ID3D12DescriptorHeap*>(rhiDevice->GetImGuiSrvDescriptorHeap());
+		// imgui_impl_dx12 expects the CALLER to have the right descriptor heap
+		// bound before RenderDrawData -- unlike imgui_impl_dx11, it never calls
+		// SetDescriptorHeaps itself. This heap is exclusively ImGui's own (see
+		// Dx12Device::myImGuiSrvHeap); the engine's own scratch heaps get
+		// rebound fresh next frame in Dx12Device::BeginFrame, and nothing else
+		// draws in this command list after ImGui (see Application::EndFrame).
+		cmdList->SetDescriptorHeaps(1, &srvHeap);
+		ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cmdList);
+	}
+	else
+	{
+		ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+	}
+
+	// Multi-viewport is DX11-only (see Init's ConfigFlags comment) -- both
+	// calls below are no-ops when ImGuiConfigFlags_ViewportsEnable isn't set,
+	// so leaving them unconditional here is safe under DX12 too.
 	ImGui::UpdatePlatformWindows();
 	ImGui::RenderPlatformWindowsDefault();
 #endif

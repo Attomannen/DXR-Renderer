@@ -91,6 +91,11 @@ namespace Tga::rhi
 		return f == Format::D16_UNorm || f == Format::D24_UNorm_S8_UInt || f == Format::D32_Float;
 	}
 
+	bool IsTypeless(Format f)
+	{
+		return f == Format::R32_Typeless || f == Format::R8G8B8A8_Typeless;
+	}
+
 	DXGI_FORMAT ToTypeless(Format f)
 	{
 		switch (f)

@@ -95,6 +95,13 @@ namespace Tga::rhi::dx11
 		void* GetNativeRtv(RtvHandle) override;
 		void* GetNativeTexture(TextureHandle) override;
 		void* ImGuiTextureId(SrvHandle) override;
+		// DX12/imgui_impl_dx12-only; unused on this backend (imgui_impl_dx11
+		// only ever asks for GetNativeDevice/GetNativeContext above).
+		void* GetNativeCommandQueue() override { return nullptr; }
+		void* GetNativeCommandList() override { return nullptr; }
+		void* GetImGuiSrvDescriptorHeap() override { return nullptr; }
+		void* ImGuiFontSrvCpuHandle() override { return nullptr; }
+		void* ImGuiFontSrvGpuHandle() override { return nullptr; }
 
 		SrvHandle WrapNativeSrv(void* nativeSrv) override;
 		RtvHandle WrapNativeRtv(void* nativeRtv) override;

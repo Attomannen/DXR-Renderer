@@ -45,12 +45,21 @@ namespace Tga::rhi::dx12
 	// Still NOT implemented (asserts if reached): GenerateMips (no DX12
 	// equivalent -- needs a compute-shader mip generator), timestamp query
 	// begin/end (the query heap + readback buffer exist from milestone 1;
-	// wiring WriteTimestampBegin/End + resolving GetTimestampMs is not done),
-	// ImGui interop (ImGuiTextureId returns a real GPU descriptor handle but
-	// nothing calls it -- needs the imgui_impl_dx11->dx12 swap), and this
-	// backend is still not wired into DX11::Init()'s live bootstrap (needs
-	// the RenderTarget/DepthBuffer/TextureResource storage migration --
-	// milestone 3).
+	// wiring WriteTimestampBegin/End + resolving GetTimestampMs is not done).
+	// ImGui interop is now real (milestone 3): imgui_impl_dx12 is wired up in
+	// ImGuiInterface.cpp via GetNativeCommandQueue/GetNativeCommandList/
+	// GetImGuiSrvDescriptorHeap/ImGuiFontSrv*Handle; ImGuiTextureId (for
+	// ImGui::Image on an arbitrary rhi SRV, e.g. Viewport.cpp's scene preview)
+	// is UNVERIFIED and likely still wrong for the milestone-2
+	// dual-heap redesign (it reads a GPU handle off the permanent,
+	// non-shader-visible myCbvSrvUavHeap, which has no valid GPU handle at
+	// all) -- but nothing currently calls it under DX12, since that call site
+	// (Viewport.cpp) still uses a raw, DX11-only accessor and is one of the
+	// already-documented separate gaps. Fix alongside that call site's own
+	// DX12 migration, not here.
+	// This backend is wired into DX11::Init()'s live bootstrap via
+	// TGE_RHI=dx12 as of milestone 3 (RenderTarget/DepthBuffer storage
+	// migration).
 	class Dx12Device final : public IDevice
 	{
 	public:
@@ -87,7 +96,7 @@ namespace Tga::rhi::dx12
 
 		bool          Resize(uint32_t w, uint32_t h) override;
 		TextureHandle GetBackBuffer() const override { return myBackBufferTex[myFrameIndex]; }
-		RtvHandle     GetBackBufferRtv(bool /*srgb*/) const override { return myBackBufferRtv[myFrameIndex]; }
+		RtvHandle     GetBackBufferRtv(bool srgb) const override { return srgb ? myBackBufferRtv[myFrameIndex] : myBackBufferRtvNoSrgb[myFrameIndex]; }
 		TextureHandle GetDefaultDepth() const override { return myDepthTex; }
 		DsvHandle     GetDefaultDepthDsv() const override { return myDepthDsv; }
 		Vector2ui     GetResolution() const override { return myResolution; }
@@ -112,6 +121,11 @@ namespace Tga::rhi::dx12
 		void* GetNativeRtv(RtvHandle) override;
 		void* GetNativeTexture(TextureHandle) override;
 		void* ImGuiTextureId(SrvHandle) override;
+		void* GetNativeCommandQueue() override;
+		void* GetNativeCommandList() override;
+		void* GetImGuiSrvDescriptorHeap() override;
+		void* ImGuiFontSrvCpuHandle() override;
+		void* ImGuiFontSrvGpuHandle() override;
 		SrvHandle WrapNativeSrv(void*) override;
 		RtvHandle WrapNativeRtv(void*) override;
 		DsvHandle WrapNativeDsv(void*) override;
@@ -203,6 +217,7 @@ namespace Tga::rhi::dx12
 		static constexpr uint32_t kRtvCapacity = 256;
 		static constexpr uint32_t kDsvCapacity = 64;
 		static constexpr uint32_t kDynRingBytes = 4u << 20;   // 4 MB per frame
+		static constexpr uint32_t kImGuiSrvCapacity = 64;     // shader-visible, owned exclusively by imgui_impl_dx12
 
 		ComPtr<IDXGIFactory6> myFactory;
 		ComPtr<ID3D12Device>  myDevice;
@@ -215,6 +230,13 @@ namespace Tga::rhi::dx12
 		Dx12DescriptorHeap mySamplerHeap;      // non-shader-visible (permanent storage)
 		Dx12DescriptorHeap myCbvSrvUavScratch[kFramesInFlight];   // shader-visible (bind-time tables)
 		Dx12DescriptorHeap mySamplerScratch[kFramesInFlight];     // shader-visible (bind-time tables)
+		// Small persistent shader-visible heap reserved exclusively for
+		// imgui_impl_dx12's own use (its font atlas descriptor, and any future
+		// ImGui::Image user textures) -- it needs allocations that survive
+		// across frames, unlike the per-frame scratch heaps above which get
+		// bulk-reset every BeginFrame. Unused/uninitialized on DX11.
+		Dx12DescriptorHeap myImGuiSrvHeap;
+		uint32_t myImGuiFontSrvSlot = 0;
 
 		ComPtr<ID3D12RootSignature> myGraphicsRootSig;
 		ComPtr<ID3D12RootSignature> myComputeRootSig;
@@ -234,7 +256,8 @@ namespace Tga::rhi::dx12
 		ComPtr<ID3D12GraphicsCommandList> myUploadCmdList;
 
 		TextureHandle myBackBufferTex[kFramesInFlight];
-		RtvHandle     myBackBufferRtv[kFramesInFlight];
+		RtvHandle     myBackBufferRtv[kFramesInFlight];        // sRGB write view (default DX11::BackBuffer)
+		RtvHandle     myBackBufferRtvNoSrgb[kFramesInFlight];  // linear/UNORM write view on the SAME resource (DX11::BackBufferNoSrgbConversion -- ImGui renders here)
 		TextureHandle myDepthTex;
 		DsvHandle     myDepthDsv;
 		Vector2ui     myResolution;

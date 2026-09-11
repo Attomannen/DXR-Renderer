@@ -217,6 +217,13 @@ namespace Tga::rhi::dx12
 			mySamplerScratch[i].Init(myDevice.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, kSamplerScratchPerFrame, true);
 		}
 
+		// Small persistent shader-visible heap owned exclusively by
+		// imgui_impl_dx12 (see the member comment) -- separate from the two
+		// scratch heaps above, which get bulk-reset every BeginFrame and so
+		// can't hold anything that must survive across frames (the font atlas).
+		myImGuiSrvHeap.Init(myDevice.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kImGuiSrvCapacity, true);
+		myImGuiFontSrvSlot = myImGuiSrvHeap.Allocate();
+
 		D3D12_QUERY_HEAP_DESC qhd = {};
 		qhd.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
 		qhd.Count = kMaxTimestamps;
@@ -466,6 +473,18 @@ namespace Tga::rhi::dx12
 			rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
 			myDevice->CreateRenderTargetView(res.Get(), &rtvDesc, myRtvHeap.Cpu(slot));
 			myBackBufferRtv[i] = myRtvSlots.Alloc(RtvRec{ slot, Format::R8G8B8A8_UNorm_sRGB });
+
+			// A second, non-sRGB (linear/UNORM write) view on the SAME resource --
+			// mirrors DX11::BackBufferNoSrgbConversion. ImGui's colors are already
+			// gamma-encoded, so writing through an sRGB RTV would double-apply
+			// gamma; it renders through this view instead (see DX11::EndFrame's
+			// BackBufferNoSrgbConversion->SetAsActiveTarget() call).
+			uint32_t noSrgbSlot = myRtvHeap.Allocate();
+			D3D12_RENDER_TARGET_VIEW_DESC noSrgbDesc = {};
+			noSrgbDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+			noSrgbDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+			myDevice->CreateRenderTargetView(res.Get(), &noSrgbDesc, myRtvHeap.Cpu(noSrgbSlot));
+			myBackBufferRtvNoSrgb[i] = myRtvSlots.Alloc(RtvRec{ noSrgbSlot, Format::R8G8B8A8_UNorm });
 		}
 	}
 
@@ -541,6 +560,8 @@ namespace Tga::rhi::dx12
 		{
 			if (RtvRec* r = myRtvSlots.Get(myBackBufferRtv[i])) myRtvHeap.Free(r->slot);
 			myRtvSlots.Free(myBackBufferRtv[i]);
+			if (RtvRec* r = myRtvSlots.Get(myBackBufferRtvNoSrgb[i])) myRtvHeap.Free(r->slot);
+			myRtvSlots.Free(myBackBufferRtvNoSrgb[i]);
 			myTextures.Free(myBackBufferTex[i]);
 		}
 		if (myDepthDsv.IsValid()) { Destroy(myDepthDsv); myDepthDsv = {}; }
@@ -625,8 +646,21 @@ namespace Tga::rhi::dx12
 		D3D12_RESOURCE_STATES initState = D3D12_RESOURCE_STATE_COMMON;
 		if (HasBind(d.bind, TextureBind::RenderTarget))
 		{
-			clearValue.Format = ToDxgi(d.format);
-			pClear = &clearValue;
+			// A D3D12_CLEAR_VALUE must be a concrete, non-typeless format --
+			// but a render target can legitimately be REQUESTED as a typeless
+			// resource (e.g. RenderTarget's TYPELESS+sRGB-RTV+linear-SRV case),
+			// and CreateTexture has no visibility into which RtvDesc::
+			// formatOverride a later CreateRtv call will actually view it as.
+			// Rather than guess, skip the optimized clear value entirely for a
+			// typeless format -- legal in D3D12, it just forgoes the fast-clear
+			// hint (irrelevant for the small, infrequently-cleared targets this
+			// case is used for). A concrete format (the common case) still gets
+			// its real clear value as before.
+			if (!IsTypeless(d.format))
+			{
+				clearValue.Format = ToDxgi(d.format);
+				pClear = &clearValue;
+			}
 			initState = D3D12_RESOURCE_STATE_RENDER_TARGET;
 		}
 		else if (HasBind(d.bind, TextureBind::DepthStencil))
@@ -1055,20 +1089,30 @@ namespace Tga::rhi::dx12
 	bool Dx12Device::GetTimestampMs(TimestampQueryHandle, double&) { return false; }
 
 	// ------------------------------------------------------------------ Stage-1-only bridges (DX12 never uses these)
-	void* Dx12Device::GetNativeDevice()  { assert(false && "Dx12: GetNativeDevice is a DX11/imgui_impl_dx11-only bridge"); return nullptr; }
-	void* Dx12Device::GetNativeContext() { assert(false && "Dx12: GetNativeContext is a DX11/imgui_impl_dx11-only bridge"); return nullptr; }
+	void* Dx12Device::GetNativeDevice()  { return myDevice.Get(); }
+	void* Dx12Device::GetNativeContext() { assert(false && "Dx12: GetNativeContext has no DX12 equivalent -- see GetNativeCommandQueue/CommandList"); return nullptr; }
 	void* Dx12Device::GetNativeSrv(SrvHandle)     { assert(false && "Dx12: GetNativeSrv is a DX11-only legacy-interop bridge"); return nullptr; }
 	void* Dx12Device::GetNativeRtv(RtvHandle)     { assert(false && "Dx12: GetNativeRtv is a DX11-only legacy-interop bridge"); return nullptr; }
 	void* Dx12Device::GetNativeTexture(TextureHandle) { assert(false && "Dx12: GetNativeTexture is a DX11-only legacy-interop bridge"); return nullptr; }
 	void* Dx12Device::ImGuiTextureId(SrvHandle h)
 	{
 		// imgui_impl_dx12 expects a GPU descriptor handle (as a UINT64), not a
-		// raw view pointer -- real support is milestone 2 alongside the
-		// imgui_impl_dx11 -> imgui_impl_dx12 swap.
+		// raw view pointer. NOTE (milestone 3): this predates the milestone-2
+		// dual-heap redesign and is very likely broken now -- myCbvSrvUavHeap
+		// is the PERMANENT, non-shader-visible storage heap; Gpu() on a
+		// non-shader-visible heap has no valid GPU handle to return at all.
+		// Unused so far (Viewport.cpp's ImGui::Image call is still raw DX11,
+		// a separately-documented gap) -- fix this alongside migrating that
+		// call site, not speculatively here. See Dx12Device.h's class comment.
 		uint32_t* slot = mySrvSlots.Get(h);
 		assert(slot && "Dx12: ImGuiTextureId milestone 2");
 		return slot ? reinterpret_cast<void*>(myCbvSrvUavHeap.Gpu(*slot).ptr) : nullptr;
 	}
+	void* Dx12Device::GetNativeCommandQueue() { return myQueue.Get(); }
+	void* Dx12Device::GetNativeCommandList()  { return myCmdList.Get(); }
+	void* Dx12Device::GetImGuiSrvDescriptorHeap() { return myImGuiSrvHeap.Heap(); }
+	void* Dx12Device::ImGuiFontSrvCpuHandle() { return reinterpret_cast<void*>(myImGuiSrvHeap.Cpu(myImGuiFontSrvSlot).ptr); }
+	void* Dx12Device::ImGuiFontSrvGpuHandle() { return reinterpret_cast<void*>(myImGuiSrvHeap.Gpu(myImGuiFontSrvSlot).ptr); }
 	SrvHandle Dx12Device::WrapNativeSrv(void*) { assert(false && "Dx12: WrapNativeSrv is a DX11-only Stage-1 migration bridge"); return {}; }
 	RtvHandle Dx12Device::WrapNativeRtv(void*) { assert(false && "Dx12: WrapNativeRtv is a DX11-only Stage-1 migration bridge"); return {}; }
 	DsvHandle Dx12Device::WrapNativeDsv(void*) { assert(false && "Dx12: WrapNativeDsv is a DX11-only Stage-1 migration bridge"); return {}; }

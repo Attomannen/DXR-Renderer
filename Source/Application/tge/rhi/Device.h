@@ -68,6 +68,10 @@ namespace Tga::rhi
 		virtual bool  GetTimestampMs(TimestampQueryHandle, double& outMs) = 0;
 
 		// ---- escape hatch (imgui bridge + editor only; removed in Stage 2) ----
+		// GetNativeDevice() is real on both backends (ID3D11Device* / ID3D12Device*).
+		// GetNativeContext() is DX11-only -- DX12 has no persistent "device
+		// context" equivalent (see GetNativeCommandQueue/CommandList below for
+		// what imgui_impl_dx12 uses instead) -- and asserts if called there.
 		virtual void* GetNativeDevice() = 0;
 		virtual void* GetNativeContext() = 0;
 		// Raw pointers behind rhi-created resources/views, for legacy wrapper classes
@@ -80,6 +84,23 @@ namespace Tga::rhi
 
 		// ---- ImGui interop: opaque texture id for ImGui::Image ----
 		virtual void* ImGuiTextureId(SrvHandle) = 0;
+
+		// ---- ImGui/DX12 interop only: raw D3D12 objects with no DX11 analogue.
+		// DX12 has no persistent "device context" the way DX11 does, so
+		// GetNativeContext doesn't apply there -- imgui_impl_dx12 instead needs
+		// the command queue (once, at Init) and the CURRENT frame's command
+		// list (every RenderDrawData call), plus a small persistent
+		// shader-visible descriptor heap it owns exclusively (its font atlas
+		// needs an allocation that survives across frames, unlike this engine's
+		// own per-frame scratch heaps). No-op/unused on DX11 -- ImGuiInterface.cpp
+		// branches on GetBackend() and only calls these for DX12. Descriptor
+		// handles follow the same "D3D12_C/GPU_DESCRIPTOR_HANDLE.ptr reinterpreted
+		// as void*" convention already used by ImGuiTextureId above.
+		virtual void* GetNativeCommandQueue() = 0;      // ID3D12CommandQueue*
+		virtual void* GetNativeCommandList() = 0;       // ID3D12GraphicsCommandList*
+		virtual void* GetImGuiSrvDescriptorHeap() = 0;  // ID3D12DescriptorHeap*
+		virtual void* ImGuiFontSrvCpuHandle() = 0;
+		virtual void* ImGuiFontSrvGpuHandle() = 0;
 
 		// ---- Stage-1 migration bridge: adopt a view created by legacy raw-D3D11
 		// code so the wrapper can hand out an rhi handle. Removed in Stage 2 when

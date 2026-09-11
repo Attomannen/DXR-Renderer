@@ -454,9 +454,70 @@ subfolder. Four stages:
   no DX12 equivalent yet (`imgui_impl_dx11` → `imgui_impl_dx12` is explicitly a Stage 2
   outline item, not part of milestone 3's scope). DX11 regression-checked throughout
   (process-liveness smoke test after every change — zero impact on the shipping path).
-  **Still to do for milestone 3**: swap in `imgui_impl_dx12` (or stub ImGui out under DX12
-  temporarily) to get past that wall and reach real scene rendering; then the actual
-  RenderDoc/PIX-clean, visually-identical-to-DX11 checkpoint becomes possible to pursue.
+  **`imgui_impl_dx12` swap — DONE, verified against real UI, same day.** Vendored
+  `imgui_impl_dx12.h`/`.cpp` (ImGui 1.91.6, matching the already-vendored `imgui_impl_dx11`)
+  into `Source/External/imgui/`. `ImGuiInterface.cpp`'s `Init`/`PreFrame`/`Render`/`Shutdown`
+  all branch on `GetBackend()`. New `IDevice` escape hatches for what DX12 needs that DX11
+  doesn't (`GetNativeCommandQueue`/`GetNativeCommandList`/`GetImGuiSrvDescriptorHeap`/
+  `ImGuiFontSrvCpuHandle`/`ImGuiFontSrvGpuHandle` — DX12 has no persistent "device context"
+  the way `GetNativeContext` assumes, so a few dedicated accessors were added rather than
+  overloading that one); `GetNativeDevice()` is now real on DX12 too (`ID3D12Device*`).
+  `Dx12Device` gained a small persistent shader-visible descriptor heap
+  (`myImGuiSrvHeap`, capacity 64) reserved exclusively for ImGui's own font-atlas descriptor —
+  separate from the engine's own per-frame scratch heaps, which reset every `BeginFrame` and
+  can't hold anything that must survive across frames. `ImGuiInterface::Render()` binds this
+  heap via `SetDescriptorHeaps` itself before calling `ImGui_ImplDX12_RenderDrawData` (that
+  backend, unlike DX11's, expects the caller to bind heaps — confirmed by reading its source,
+  not guessed); safe because ImGui renders last in the frame (right before `Present`) and
+  nothing else touches a descriptor table afterward. Multi-viewport
+  (`ImGuiConfigFlags_ViewportsEnable`, dragging a panel into its own OS window) is gated to
+  DX11-only — this ImGui version's DX12 backend implements no `Renderer_CreateWindow`/
+  `RenderWindow`/`DestroyWindow`, so leaving it on under DX12 would crash the first time a
+  panel was torn out, a self-inflicted regression worth avoiding even though nothing exercised
+  it yet.
+  Also added a real, non-sRGB backbuffer RTV (`Dx12Device::myBackBufferRtvNoSrgb`, mirroring
+  `DX11::BackBufferNoSrgbConversion`) — `GetBackBufferRtv(bool srgb)` previously ignored the
+  flag and always returned the sRGB view; ImGui renders onto the non-sRGB one specifically
+  because its colors are already gamma-encoded (writing through an sRGB RTV would double-apply
+  gamma). Premake regenerated for both workspaces to pick up the two new vendored files
+  (`External.vcxproj`'s file list is a static glob snapshot); toolset stayed `v145`, no
+  regression this time.
+  **Two more real bugs found and fixed via actually running it, not by inspection:**
+  - `Dx12Device::CreateTexture`'s `RenderTarget`-bind branch unconditionally set the
+    `D3D12_CLEAR_VALUE`'s format to `ToDxgi(desc.format)` — correct for the common case
+    (a concrete format), but wrong for the deliberately-*typeless* case
+    (`RenderTarget::Create`'s 4-arg overload, used by e.g. Viewport's TYPELESS+sRGB-RTV+
+    linear-SRV editor render target): a clear value's format must be concrete, and
+    `CreateTexture` has no visibility into which `RtvDesc::formatOverride` a later `CreateRtv`
+    call will actually view it as. `D3D12CreateCommittedResource` rejected the typeless clear
+    value with `E_INVALIDARG`, an assert away from a crash the very first time the editor
+    created its own viewport render target (i.e. immediately after the main UI chrome
+    finished its first frame). Fixed by adding `rhi::IsTypeless(Format)` (`Format.h`/`.cpp`,
+    alongside the existing `IsDepth`) and skipping the clear value entirely for a typeless
+    format — legal in D3D12 (just forgoes the fast-clear hint, irrelevant for these small,
+    infrequently-cleared targets).
+  - Caught live, with the user in the loop: after the fix above, the editor rendered a full,
+    real, interactive frame (docked panels, menu bar, asset browser with a directory tree and
+    file list, hover/selection highlighting) confirmed visually by the user — the first time
+    any real UI has rendered through this DX12 backend. Clicking an asset (a `.tgs` scene file)
+    then hit `Dx12Device::GetNativeSrv`'s intentional `assert(false)` — but this is a
+    *different*, already-catalogued gap, not a new one: `TextureManager.cpp`'s texture-loading
+    paths (`CreateSolidSrv` for the 3 procedural fallback textures, `CreateTextureFromTarga`)
+    still extract a raw `ID3D11ShaderResourceView*` via `GetNativeSrv`, part of the
+    Stage-1-accounting's documented "DirectXTex-based real asset loaders stay raw by design"
+    gap (the plan itself defers the `*11`→`*12` DirectXTex loader swap to Stage 2). Loading a
+    scene pulls in real textures, hitting this immediately — expected, not a regression from
+    the ImGui work.
+  DX11 regression-checked after every change (process-liveness + `Game.sln`/`GameEditor.sln`
+  both build 0 errors throughout).
+  **Net for milestone 3 so far**: DX12 now brings up its device, swapchain, backbuffer,
+  depth buffer, AND a fully real, interactive ImGui UI, through the actual engine bootstrap —
+  the frontier has moved from "can't create a depth buffer" to "can't load a texture asset."
+  **Still to do**: the DirectXTex `*11`→`*12` loader swap (`TextureManager.cpp` at minimum;
+  `CubemapPrefilter.cpp`'s `LoadBaseFromDDS`/`Export*` and `video.cpp`/`TextService.cpp`'s
+  `GetNativeSrv` uses share the same underlying gap) to get past scene/texture loading and
+  reach real 3D scene rendering; only then does the actual RenderDoc/PIX-clean,
+  visually-identical-to-DX11 checkpoint become pursuable.
   Checkpoint (unchanged): `-rhi=dx12` visually identical to `-rhi=dx11` on every scene +
   editor + Tutorials, PIX-clean, perf parity or better.
 - **Stage 3** — DXR inline `RayQuery` (SM 6.5) hardware-traced GI, replacing the Phase 6
