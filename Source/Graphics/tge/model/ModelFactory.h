@@ -10,7 +10,6 @@
 
 #include <tge/stringRegistry/StringRegistry.h>
 
-struct ID3D11Device;
 struct BoxSphereBounds;
 namespace Tga
 {

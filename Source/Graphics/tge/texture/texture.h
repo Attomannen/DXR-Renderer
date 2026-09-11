@@ -6,8 +6,6 @@ This class will store a texture bound to DX11
 #include <tge/graphics/TextureResource.h>
 
 using Microsoft::WRL::ComPtr;
-struct ID3D11ShaderResourceView;
-struct ID3D11RenderTargetView;
 namespace Tga
 {
 

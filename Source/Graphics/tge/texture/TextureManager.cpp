@@ -6,6 +6,8 @@
 #include <tge/application.h>
 #include <tge/log/Log.h>
 #include <tge/graphics/DX11.h>
+#include <tge/rhi/Device.h>
+#include <vector>
 #include <tge/noise/PerlinNoise.h>
 #include <tge/Math/color.h>
 #include <d3d11.h>
@@ -356,16 +358,10 @@ Texture* TextureManager::CreateTextureFromTarga(Tga32::Image* aImage)
 	{
 		return nullptr;
 	}
-	ID3D11Texture2D* texture = nullptr;
-	Texture *tex = nullptr;
-	ID3D11ShaderResourceView* resource = nullptr;
-
-	D3D11_TEXTURE2D_DESC tdesc;
-	D3D11_SUBRESOURCE_DATA tbsd;
 
 	int h = aImage->height;
 	int w = aImage->width;
-	int *buf = new int[h*w];
+	std::vector<int> buf(h * w);
 	for (int i = 0; i < (h*w) * 4; i+=4)
 	{
 		unsigned char b = static_cast<unsigned char>(aImage->image[i]);
@@ -382,198 +378,94 @@ Texture* TextureManager::CreateTextureFromTarga(Tga32::Image* aImage)
 		buf[i/4] = final;
 	}
 
-	tbsd.pSysMem = (void *)buf;
-	tbsd.SysMemPitch = w * 4;
-	tbsd.SysMemSlicePitch = w * h * 4;
+	// Created once (never re-mapped afterward), so the RHI's DEFAULT-usage
+	// CreateTexture covers this fine -- the old D3D11_USAGE_DYNAMIC/CPU_WRITE
+	// flags were never exercised beyond the initial upload.
+	rhi::IDevice& dev = *DX11::Rhi();
+	rhi::TextureDesc tdesc = {};
+	tdesc.width = w;
+	tdesc.height = h;
+	tdesc.format = rhi::Format::R8G8B8A8_UNorm_sRGB;
+	tdesc.bind = rhi::TextureBind::ShaderResource;
+	tdesc.debugName = "TargaTexture";
 
-	tdesc.Width = w;
-	tdesc.Height = h;
-	tdesc.MipLevels = 1;
-	tdesc.ArraySize = 1;
+	rhi::SubresourceData initial = {};
+	initial.data = buf.data();
+	initial.rowPitch = w * 4;
+	initial.slicePitch = w * h * 4;
 
-	tdesc.SampleDesc.Count = 1;
-	tdesc.SampleDesc.Quality = 0;
-	tdesc.Usage = D3D11_USAGE_DYNAMIC;
-	tdesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-	tdesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-	tdesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-	tdesc.MiscFlags = 0;
-
-	if (FAILED(DX11::Device->CreateTexture2D(&tdesc, &tbsd, &texture)))
+	rhi::TextureHandle texHandle = dev.CreateTexture(tdesc, &initial, 1);
+	if (!texHandle.IsValid())
 		return nullptr;
 
-	delete[] buf;
-
-	HRESULT hr = DX11::Device->CreateShaderResourceView(texture, NULL, &resource);
-	if (FAILED(hr))
+	rhi::SrvHandle srvHandle = dev.CreateSrv(texHandle, {});
+	ID3D11ShaderResourceView* resource = static_cast<ID3D11ShaderResourceView*>(dev.GetNativeSrv(srvHandle));
+	if (!resource)
 	{
 		return nullptr;
 	}
 
-	if (resource)
-	{
-		tex = new Texture();
-		tex->myImageSize.Set(aImage->width, aImage->height);
-		tex->SetShaderResourceView(resource);
-	}
+	Texture* tex = new Texture();
+	tex->myImageSize.Set(aImage->width, aImage->height);
+	tex->SetShaderResourceView(resource);
 
 	return tex;
 }
 
+// Shared by the three procedural fallback textures below: create a small
+// DEFAULT-usage 2D texture from tightly-packed RGBA8 pixel data and return its
+// raw SRV pointer (AddRef'd once via GetNativeSrv -- the caller's ComPtr keeps
+// it alive independently of the RHI's own pool entry, same pattern as video.cpp
+// and TextService.cpp's font atlas).
+static ID3D11ShaderResourceView* CreateSolidSrv(rhi::IDevice& aDevice, int aWidth, int aHeight,
+                                                 const std::vector<int>& aPixels, rhi::Format aFormat,
+                                                 const char* aDebugName)
+{
+	rhi::TextureDesc tdesc = {};
+	tdesc.width = aWidth;
+	tdesc.height = aHeight;
+	tdesc.format = aFormat;
+	tdesc.bind = rhi::TextureBind::ShaderResource;
+	tdesc.debugName = aDebugName;
+
+	rhi::SubresourceData initial = {};
+	initial.data = aPixels.data();
+	initial.rowPitch = aWidth * 4;
+	initial.slicePitch = aWidth * aHeight * 4;
+
+	rhi::TextureHandle texHandle = aDevice.CreateTexture(tdesc, &initial, 1);
+	if (!texHandle.IsValid())
+		return nullptr;
+
+	rhi::SrvHandle srvHandle = aDevice.CreateSrv(texHandle, {});
+	return static_cast<ID3D11ShaderResourceView*>(aDevice.GetNativeSrv(srvHandle));
+}
+
 void TextureManager::CreateErrorSquareTexture()
 {
-	HRESULT hr;
+	const int h = 16, w = 16;
+	std::vector<int> buf(h * w);
+	for (int i = 0; i < h; i++)
+		for (int j = 0; j < w; j++)
+			buf[i*w+j] = ((i+j) % 2 == 0) ? 0xff000000 : 0xffff00ff;
 
-	ComPtr<ID3D11Texture2D> tex;
-	D3D11_TEXTURE2D_DESC tdesc;
-	D3D11_SUBRESOURCE_DATA tbsd;
-
-	int h = 16;
-	int w = 16;
-	int *buf = new int[h*w];
-	for(int i=0;i<h;i++)
-	{
-		for(int j=0;j<w;j++)
-		{
-			if ((i+j) % 2 == 0)
-			{
-				buf[i*w+j] = 0xff000000;
-			}
-			else
-			{
-				buf[i*w+j] = 0xffff00ff;
-			}
-		}
-	}
-
-	tbsd.pSysMem = (void *)buf;
-	tbsd.SysMemPitch = w*4;
-	tbsd.SysMemSlicePitch = w*h*4; // Not needed since this is a 2d texture
-
-	tdesc.Width = w;
-	tdesc.Height = h;
-	tdesc.MipLevels = 1;
-	tdesc.ArraySize = 1;
-
-	tdesc.SampleDesc.Count = 1;
-	tdesc.SampleDesc.Quality = 0;
-	tdesc.Usage = D3D11_USAGE_DEFAULT;
-	tdesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-	tdesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-
-	tdesc.CPUAccessFlags = 0;
-	tdesc.MiscFlags = 0;
-
-	if(FAILED( DX11::Device->CreateTexture2D(&tdesc,&tbsd,&tex)))
-		return;
-
-	delete[] buf;
-
-	hr = DX11::Device->CreateShaderResourceView(tex.Get(), NULL, myFailedResource.ReleaseAndGetAddressOf());
-	if (FAILED(hr))
-	{
-		return;
-	}
+	myFailedResource = CreateSolidSrv(*DX11::Rhi(), w, h, buf, rhi::Format::R8G8B8A8_UNorm, "ErrorSquareTexture");
 }
 
 ComPtr<ID3D11ShaderResourceView> TextureManager::CreateWhiteSquareTexture()
 {
-	HRESULT hr;
+	const int h = 4, w = 4;
+	std::vector<int> buf(h * w, 0xffffffff);
 
-	ComPtr<ID3D11Texture2D> tex;
-	D3D11_TEXTURE2D_DESC tdesc;
-	D3D11_SUBRESOURCE_DATA tbsd;
-
-	int h = 4;
-	int w = 4;
-	int *buf = new int[h*w];
-	for (int i = 0; i < h; i++)
-	{
-		for (int j = 0; j < w; j++)
-		{
-			buf[i*w + j] = 0xffffffff;
-		}
-	}
-
-	tbsd.pSysMem = (void *)buf;
-	tbsd.SysMemPitch = w * 4;
-	tbsd.SysMemSlicePitch = w*h * 4; // Not needed since this is a 2d texture
-
-	tdesc.Width = w;
-	tdesc.Height = h;
-	tdesc.MipLevels = 1;
-	tdesc.ArraySize = 1;
-
-	tdesc.SampleDesc.Count = 1;
-	tdesc.SampleDesc.Quality = 0;
-	tdesc.Usage = D3D11_USAGE_DEFAULT;
-	tdesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-	tdesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-
-	tdesc.CPUAccessFlags = 0;
-	tdesc.MiscFlags = 0;
-
-	if (FAILED(DX11::Device->CreateTexture2D(&tdesc, &tbsd, &tex)))
-		return nullptr;
-
-	delete[] buf;
-
-	ComPtr<ID3D11ShaderResourceView> resource;
-	hr = DX11::Device->CreateShaderResourceView(tex.Get(), NULL, resource.ReleaseAndGetAddressOf());
-	if (FAILED(hr))
-	{
-		return nullptr;
-	}
-	return resource;
+	return CreateSolidSrv(*DX11::Rhi(), w, h, buf, rhi::Format::R8G8B8A8_UNorm, "WhiteSquareTexture");
 }
 
 void TextureManager::CreateDefaultNormalmapTexture()
 {
-	HRESULT hr;
+	const int h = 4, w = 4;
+	std::vector<int> buf(h * w, 0xffff8080);
 
-	ComPtr<ID3D11Texture2D> tex;
-	D3D11_TEXTURE2D_DESC tdesc;
-	D3D11_SUBRESOURCE_DATA tbsd;
-
-	int h = 4;
-	int w = 4;
-	int *buf = new int[h*w];
-	for (int i = 0; i < h; i++)
-	{
-		for (int j = 0; j < w; j++)
-		{
-			buf[i*w + j] = 0xffff8080;
-		}
-	}
-
-	tbsd.pSysMem = (void *)buf;
-	tbsd.SysMemPitch = w * 4;
-	tbsd.SysMemSlicePitch = w*h * 4; // Not needed since this is a 2d texture
-
-	tdesc.Width = w;
-	tdesc.Height = h;
-	tdesc.MipLevels = 1;
-	tdesc.ArraySize = 1;
-
-	tdesc.SampleDesc.Count = 1;
-	tdesc.SampleDesc.Quality = 0;
-	tdesc.Usage = D3D11_USAGE_DEFAULT;
-	tdesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-	tdesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-
-	tdesc.CPUAccessFlags = 0;
-	tdesc.MiscFlags = 0;
-
-	if (FAILED(DX11::Device->CreateTexture2D(&tdesc, &tbsd, &tex)))
-		return;
-
-	delete[] buf;
-
-	hr = DX11::Device->CreateShaderResourceView(tex.Get(), NULL, myDefaultNormalMapResource.ReleaseAndGetAddressOf());
-	if (FAILED(hr))
-	{
-		return;
-	}
+	myDefaultNormalMapResource = CreateSolidSrv(*DX11::Rhi(), w, h, buf, rhi::Format::R8G8B8A8_UNorm, "DefaultNormalMapTexture");
 }
 
 void Tga::TextureManager::Init()

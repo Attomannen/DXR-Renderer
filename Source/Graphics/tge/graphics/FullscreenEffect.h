@@ -4,9 +4,6 @@
 
 using Microsoft::WRL::ComPtr;
 
-struct ID3D11VertexShader;
-struct ID3D11PixelShader;
-
 namespace Tga
 {
 	struct VertexShader;

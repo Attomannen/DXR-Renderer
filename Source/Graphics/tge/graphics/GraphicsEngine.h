@@ -7,10 +7,8 @@
 #include "FullscreenPixelateEffect.h"
 using Microsoft::WRL::ComPtr;
 
-struct ID3D11Buffer;
-
 namespace Tga
-{ 
+{
 	class TextService;
 	class DebugDrawer;
 	class TextureManager;

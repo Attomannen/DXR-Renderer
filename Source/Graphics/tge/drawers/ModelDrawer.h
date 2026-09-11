@@ -6,7 +6,6 @@
 #include <tge/shaders/ShaderCommon.h>
 #include <wrl\client.h>
 
-struct ID3D11Buffer;
 using Microsoft::WRL::ComPtr;
 
 namespace Tga

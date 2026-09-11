@@ -3,6 +3,7 @@
 #include <string>
 #include <tge/application.h>
 #include <tge/graphics/DX11.h>
+#include <tge/rhi/Device.h>
 #include <imnodes/imnodes.h>
 #include <IconFontHeaders/IconsLucide.h>
 
@@ -131,7 +132,12 @@ void ImGuiInterface::Init()
 
 	// Setup ImGui binding
 	ImGui_ImplWin32_Init(*Tga::Application::GetInstance()->GetHWND());
-	ImGui_ImplDX11_Init(Tga::DX11::Device, Tga::DX11::Context);
+	// imgui_impl_dx11 is a dedicated DX11 backend (stays outside the RHI seam per
+	// the plan); GetNativeDevice/GetNativeContext are the sanctioned escape hatch
+	// rather than reaching for the legacy DX11::Device/Context statics directly.
+	Tga::rhi::IDevice* rhiDevice = Tga::DX11::Rhi();
+	ImGui_ImplDX11_Init(static_cast<ID3D11Device*>(rhiDevice->GetNativeDevice()),
+	                    static_cast<ID3D11DeviceContext*>(rhiDevice->GetNativeContext()));
 	ImGui::StyleColorsDark();
 
 	ImGui::GetStyle().TabBarOverlineSize = 0;
