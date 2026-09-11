@@ -278,7 +278,9 @@ than a separate lib, to avoid a link cycle with `Tga::DX11`), with a `dx11/` bac
 subfolder. Four stages:
 
 - **Stage 1** — RHI seam + DX11 backend at parity (12 steps, zero visible change).
-  Currently here — steps 0–10 done, step 11 next (~83% of Stage 1's 12 steps):
+  Currently here — steps 0–10 done, steps 11+12 substantially advanced but not fully closed
+  (see below) — realistically ~90% of Stage 1's total work, with the `RenderTarget`/
+  `DepthBuffer`/`TextureResource` public-API rewrite as the one large remaining piece:
   - [x] Step 0 — RHI interface (`Handles.h`/`Descs.h`/`Device.h`/`CommandContext.h`) +
     DX11 backend (`Dx11Device`, `Dx11CommandContext`, gen-checked handle pools) wrapping
     the pre-existing `Tga::DX11` statics.
@@ -343,7 +345,24 @@ subfolder. Four stages:
     `TextureResource` construction). Raw D3D11 calls: 6 → 0. Not wired into GameMain/
     GameEditor, so verified by building + running the standalone `Tutorial-13_Video` sample
     live for 16s (stable memory, no crash).
-  - [ ] Steps 11–12 — ImGui / editor viewport + `TextService` font atlas, then delete the
+  - [~] Steps 11+12 (combined) — substantially done, not fully closed. Converted (2 parallel
+    subagents on disjoint files + several pieces done directly, all builds/verification/commits
+    centralized): `Model::MeshData` vertex/index buffers + `ModelShader::RenderMesh` (highest-
+    traffic path in the port — every mesh, every scene), `DefaultEditorGraphics`/`SceneUtil`'s
+    constant buffers, `FullscreenPixelateEffect` (a fullscreen effect missed back in step 6),
+    `TextService`'s font atlas, `ImGuiInterface`'s device/context bridge, `TextureManager`'s
+    procedural fallback textures, plus a dead-forward-declaration sweep. `ModelShader.cpp`/`.h`
+    and `DeferredRenderer.cpp`/`.h` are now at **zero** raw D3D11 references.
+    **Honest remaining gap** (see memory `p5g3-dx12-port` for full detail): `RenderTarget`/
+    `DepthBuffer`/`TextureResource`'s own public API still takes/returns raw `DXGI_FORMAT`/
+    `ID3D11ShaderResourceView*` — these are called from dozens of sites across the whole
+    codebase, and rewriting them is a genuinely separate, high-ripple task not attempted here.
+    This is also why the `DX11::Device/Context/SwapChain` statics can't be deleted yet — the
+    wrapper classes' own `.cpp` files still need them. DirectXTex-based real asset loaders stay
+    raw by design (Stage 2's `*11`→`*12` loader swap). A few per-call scratch-resource sites
+    stay raw for leak-avoidance (`CubemapPrefilter`, `Viewport.cpp`'s mouse-picking readback).
+  - [ ] Remaining before Stage 1 is literally complete: the `RenderTarget`/`DepthBuffer`/
+    `TextureResource` public-API rewrite (own dedicated pass), then delete the
     `DX11::Device/Context/SwapChain/BackBuffer/DepthBuffer` statics + final grep-clean sweep.
   - **Found + fixed a real bug along the way** (not port-scope, a genuine engine
     correctness bug the port's extra scrutiny surfaced): `Pool<ComPtr<T>>::Get()` in the
