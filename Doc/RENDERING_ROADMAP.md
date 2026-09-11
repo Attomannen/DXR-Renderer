@@ -403,15 +403,29 @@ subfolder. Four stages:
   animated clear color, plus a mid-run `Resize()` exercising full backbuffer/depth
   teardown-recreate — all clean, no crashes, no validation errors. DX11 regression-checked
   throughout (this is purely additive code; `DX11::Init()` untouched).
-  **Not yet implemented** (asserts clearly if reached): root signature, PSO cache, the
-  bind/draw/dispatch surface, `GenerateMips` (no DX12 equivalent, needs a compute shader),
-  timestamp queries, ImGui interop, the Stage-1-only migration bridges (not needed by DX12
-  at all). **Not yet wired into the live game** — found while scoping this that `RenderTarget`/
-  `DepthBuffer`/`TextureResource`'s internal storage (`ComPtr<ID3D11RenderTargetView>` etc)
-  cannot represent a DX12 descriptor-heap-based view at all, so no engine rendering code can
-  run against this backend until those three classes' storage is migrated to `rhi::Handle`
-  types — a substantial, separate task (milestone 3), bigger than the format-parameter-only
-  rewrite done earlier. See memory `p5g3-dx12-port` for the full milestone 2/3 plan.
+  **Milestone 2 done** (same day): the two root signatures (graphics/compute, sized from a
+  survey of every `register()` in `EngineAssets/Shaders/*.hlsl*` — b0-b13, t0-t23, s0-s5,
+  u0-u3), root-CBV binding for constant buffers (D3D12 root arguments are sticky across
+  draws, matching this engine's bind-once-draw-many pattern with no extra tracking), a
+  desc-hash PSO cache mirroring `Dx11Device`'s own, and the full `Dx12CommandContext` bind/
+  draw/dispatch surface. The hard problem solved here: a DX12 descriptor table must be
+  contiguous in the bound heap, but this engine binds arbitrary resources to arbitrary
+  slots — solved with a permanent non-shader-visible creation heap plus per-frame shader-
+  visible scratch heaps that get the actual bound set copied in right before each draw,
+  with dirty-tracking specifically needed for samplers (a hard, universal 2048-descriptor
+  heap ceiling that a naive "copy every draw" scheme would blow through on a busy scene).
+  Verified via two standalone tests against the real RTX 5060 Ti: an animated-color triangle
+  via the SV_VertexID trick, and a second pass drawing a real indexed quad through actual
+  vertex/index buffers (`ModelShader::RenderMesh`'s exact draw shape) with a second, distinct
+  PSO cached alongside the first — both 180 clean frames, no crashes, no validation errors.
+  **Still not implemented** (assert clearly if reached, nothing needs them yet):
+  `ClearUnorderedAccessFloat`, `UpdateTexture`'s mid-lifetime path, `GenerateMips` (no DX12
+  equivalent, needs a compute shader), timestamp queries, PIX markers, ImGui interop.
+  **Not yet wired into the live game** — `RenderTarget`/`DepthBuffer`/`TextureResource`'s
+  internal storage (`ComPtr<ID3D11RenderTargetView>` etc) cannot represent a DX12
+  descriptor-heap-based view at all, so no engine rendering code can run against this
+  backend until those three classes' storage is migrated to `rhi::Handle` types — milestone
+  3, the one large remaining piece. See memory `p5g3-dx12-port` for the full plan.
   Checkpoint (unchanged): `-rhi=dx12` visually identical to `-rhi=dx11` on every scene +
   editor + Tutorials, PIX-clean, perf parity or better.
 - **Stage 3** — DXR inline `RayQuery` (SM 6.5) hardware-traced GI, replacing the Phase 6
