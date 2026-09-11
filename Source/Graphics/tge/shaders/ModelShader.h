@@ -7,7 +7,6 @@
 #include <tge/math/matrix4x4.h>
 #include <tge/model/model.h>
 
-struct ID3D11Buffer;
 namespace Tga
 {
 	class RenderObjectSprite;

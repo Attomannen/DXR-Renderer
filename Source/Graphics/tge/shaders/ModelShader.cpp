@@ -73,16 +73,16 @@ void Tga::ModelShader::RenderMesh(const TextureResource* const* someTextures, co
 		return;
 	}
 
-	ID3D11ShaderResourceView* resourceViews[4];
+	rhi::SrvHandle resourceViews[4];
 	int i = 0;
 	while (i < 4 && someTextures[i] != nullptr)
 	{
-		resourceViews[i] = someTextures[i]->GetShaderResourceView();
+		resourceViews[i] = someTextures[i]->GetSrv();
 		i++;
 	}
-	DX11::Context->PSSetShaderResources(1, i, resourceViews);
 
 	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
+	ctx.SetShaderResources(rhi::ShaderStage::Pixel, 1, (uint32_t)i, resourceViews);
 	ctx.SetIndexBuffer(aModelData.indexBuffer, rhi::Format::R32_UInt, 0);
 	ctx.SetVertexBuffer(0, aModelData.vertexBuffer, aModelData.stride, 0);
 
