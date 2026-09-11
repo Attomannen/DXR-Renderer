@@ -572,15 +572,61 @@ subfolder. Four stages:
   **Verified**: DX11 regression via `BENCH_SCREENSHOT`, pixel-identical. DX12: `GameMain_Debug.exe`
   now runs `GraphicsEngine::Init()` to completion — reaching its own "All done, starting..."
   banner for the first time ever in this port — and enters the real per-frame game loop (scene/
-  light/camera loading, GI probe setup, Sponza model load). **Furthest any DX12 run has reached.**
-  **Still to do**: `CubemapPrefilter.cpp`'s cubemap-capture path is the next wall — a much
-  bigger, already-deliberately-deferred piece from Stage 1 (step 8): the whole file is raw
-  D3D11, creating scratch UAV/SRV/texture resources potentially thousands of times per GI bake,
-  with a real per-call leak-avoidance design constraint that made it out of scope even for the
-  DX11-side RHI migration. Porting it to DX12 needs real design work, not just null-guards.
-  `video.cpp`/`TextService.cpp`'s remaining `GetNativeSrv` uses share a related but smaller
-  gap. Only after those does the actual RenderDoc/PIX-clean, visually-identical-to-DX11
-  checkpoint become pursuable.
+  light/camera loading, GI probe setup, Sponza model load).
+- [x] Step 9 — `CubemapPrefilter.cpp`'s two real, exercised entry points (`CaptureSceneToCubemap`,
+  `GeneratePrefilteredCubemap`; the `LoadBaseFrom*`/`Export*` methods are confirmed-dead code with
+  zero callers, deliberately left untouched) branch DX11/DX12, DX11 code paths unmodified.
+  `CubemapData` gained an owning `MigrationView<TextureHandle>` and its `TextureResource resource`
+  is populated as a **non-owning alias** (`SetRhiTexture(..., aTakesOwnership=false)`) — the same
+  one-owner/many-non-owning-views pattern as `TextService`'s font atlas. `Dx12CommandContext::
+  CopyTextureRegion` and a generalized array/cube-aware `GenerateMips` (per-slice RTV/SRV, explicit
+  per-subresource barrier bracketing) were implemented to support it — previously unimplemented
+  since nothing had called them yet. Along the way, fixed a real, previously-latent bug in
+  `Dx12Device::CreateSrv`: it always took the `TEXTURECUBE` view-dimension branch for any TexCube
+  resource, with no way to view a single face as a plain 2D-array slice (needed by `GenerateMips`'s
+  per-face downsample loop).
+  **Root-cause crash fix (the actual wall, not `CubemapPrefilter` itself)**: DX12 could not get
+  past the very first frame's depth-buffer clear — a silent, deterministic access violation inside
+  `ID3D12CommandList::ClearDepthStencilView`. Diagnosed via a new `Dx12Device::DrainDebugMessages`
+  helper (drains the D3D12 debug layer's `ID3D12InfoQueue`, otherwise invisible without an attached
+  debugger) which surfaced the real message once the debug layer was temporarily re-enabled:
+  *"Descriptor ... which has an underlying stale or released resource is invalid for use"* — a
+  genuine use-after-free, not anything specific to depth clears. Root cause: `TextureResource` and
+  `RenderTarget` each declare a user destructor with no matching move constructor/assignment;
+  under the Rule of Five that **silently suppresses the compiler-generated move operations** (even
+  though `MigrationView` itself is properly move-aware, by design, specifically so these wrapper
+  classes could rely on compiler-generated special members). Every `thing = Thing::Create(...)`
+  factory-by-value assignment across the whole engine (`DepthBuffer::Create`, `RenderTarget::
+  Create`, etc.) was therefore silently falling back to **copy** assignment. `MigrationView`'s
+  copy ctor/assignment deliberately does not propagate ownership (each instance owns only what it
+  creates) — so under a copy, the temporary returned by `Create()` kept ownership and destroyed
+  the real DX12 resource/view the moment it went out of scope at the end of the assignment
+  statement, leaving the just-assigned, persistent object (e.g. `DX11::myDepthBuffer`) holding a
+  dangling handle from the very first frame onward. This is an **engine-wide latent bug**, not
+  a `CubemapPrefilter`-specific one — it would have hit the very first `RenderTarget`/`DepthBuffer`
+  ever assigned by value under DX12, which is exactly why nothing DX12 got further than the first
+  frame before now. Fixed by adding explicit `= default` copy/move ctor+assignment to both
+  `TextureResource` and `RenderTarget`, restoring the real move semantics `MigrationView.h`'s own
+  design comment already assumed were in effect.
+  **Verified**: DX11 regression via `BENCH_SCREENSHOT` on the real Sponza bench scene (`TEST`),
+  pixel-identical, `CubemapPrefilter` DX11 path exercised (reflection probe + 360-probe GI prime).
+  DX12: `GameMain_Debug.exe` now runs an **entire frame to completion and exits cleanly** (was: a
+  silent crash on frame 1's depth clear, before *any* application code ran). On the real bench
+  scene, DX12's `CaptureSceneToCubemap` now genuinely captures the scene into a cubemap texture and
+  generates its mip chain (`CubemapPrefilter: Captured scene to cubemap (256x256, 9 mips)` — no
+  crash, matching the DX11 log line). **Furthest any DX12 run has reached.**
+  **Still to do / newly discovered, out of this step's scope**:
+  - `GeneratePrefilteredCubemap`'s DX12 branch correctly detects (rather than crashes on) that DX12
+    compute-shader loading for `PrefilterSpecularCS`/`PrefilterDiffuseCS` isn't wired up yet, logs
+    an error, and bails out cleanly — DX12 compute-shader loading in general is still an open gap.
+  - A second, separate crash now surfaces one level up the call stack, in `DeferredRenderer::
+    GiProjectProbe` (the per-GI-probe SH-projection compute dispatch in `GameWorld.cpp`'s
+    `CaptureGiProbesImpl`, called right after each GI probe's own, smaller `CaptureSceneToCubemap`
+    succeeds) — belongs to the still-not-yet-ported `DeferredRenderer.cpp` (migration order item
+    #7 from Stage 1, not started for DX12), not to `CubemapPrefilter.cpp` itself.
+  - `video.cpp`/`TextService.cpp`'s remaining `GetNativeSrv` uses share a related but smaller gap.
+  Only after those does the actual RenderDoc/PIX-clean, visually-identical-to-DX11 checkpoint
+  become pursuable.
   Checkpoint (unchanged): `-rhi=dx12` visually identical to `-rhi=dx11` on every scene +
   editor + Tutorials, PIX-clean, perf parity or better.
 - **Stage 3** — DXR inline `RayQuery` (SM 6.5) hardware-traced GI, replacing the Phase 6

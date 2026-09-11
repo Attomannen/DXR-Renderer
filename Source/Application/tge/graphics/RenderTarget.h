@@ -38,6 +38,15 @@ class RenderTarget : public TextureResource
 public:
 	RenderTarget();
 	~RenderTarget();
+	// See TextureResource.h's identical comment -- a user-declared destructor
+	// here suppresses the compiler-generated move ctor/assignment, which
+	// silently turns `myThing = RenderTarget::Create(...)` into a copy that
+	// leaves the assigned-to instance holding a dangling RHI handle once the
+	// temporary's destructor runs. Restore real move explicitly.
+	RenderTarget(const RenderTarget&) = default;
+	RenderTarget(RenderTarget&&) noexcept = default;
+	RenderTarget& operator=(const RenderTarget&) = default;
+	RenderTarget& operator=(RenderTarget&&) noexcept = default;
 
 	static RenderTarget Create(Vector2ui aSize, rhi::Format aFormat = rhi::Format::R8G8B8A8_UNorm);
 	static RenderTarget Create(Vector2ui aSize, rhi::Format aFormat, rhi::Format aRenderTargetFormat, rhi::Format aShaderResourceFormat);

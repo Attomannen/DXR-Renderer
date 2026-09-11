@@ -70,6 +70,7 @@ namespace Tga::rhi::dx12
 
 		BufferHandle  CreateBuffer(const BufferDesc&, const void* initialData = nullptr) override;
 		TextureHandle CreateTexture(const TextureDesc&, const SubresourceData* initial = nullptr, uint32_t initialCount = 0) override;
+		Format GetTextureFormat(TextureHandle) const override;
 
 		SrvHandle CreateSrv(TextureHandle, const SrvDesc&) override;
 		SrvHandle CreateSrv(BufferHandle, const SrvDesc&) override;
@@ -145,6 +146,11 @@ namespace Tga::rhi::dx12
 		// recorded into THIS frame's command list (not the synchronous
 		// CreateBuffer/CreateTexture initial-data path, which already waits).
 		void KeepAliveUntilFrameRetires(ComPtr<ID3D12Resource> res) { myPendingUploadReleases[myFrameIndex].push_back(std::move(res)); }
+
+		// TEMP debugging aid: drains and prints any pending D3D12 debug-layer
+		// validation messages (they normally only go to OutputDebugString,
+		// invisible without an attached debugger).
+		void DrainDebugMessages(const char* tag);
 		D3D12_CPU_DESCRIPTOR_HANDLE CbvSrvUavCpuHandle(uint32_t slot) { return myCbvSrvUavHeap.Cpu(slot); }
 		D3D12_CPU_DESCRIPTOR_HANDLE SamplerCpuHandle(uint32_t slot)   { return mySamplerHeap.Cpu(slot); }
 		uint32_t* GetSrvSlot(SrvHandle h)         { return mySrvSlots.Get(h); }
@@ -253,6 +259,12 @@ namespace Tga::rhi::dx12
 		uint64_t myFenceValues[kFramesInFlight] = {};
 		uint64_t myNextFenceValue = 1;
 		uint32_t myFrameIndex = 0;
+		// The constructor leaves myCmdList open (reset + root sigs bound) so
+		// engine-init code can record onto it before the game loop's first
+		// real BeginFrame() -- that first call must NOT Reset() the same
+		// list again (Reset requires Closed state, and there's nothing to
+		// discard: whatever init recorded should carry through to frame 1).
+		bool myFirstFrame = true;
 
 		// One-off upload command list, reused synchronously by UploadBufferData/
 		// UploadTextureData (separate from the main per-frame list/allocator).

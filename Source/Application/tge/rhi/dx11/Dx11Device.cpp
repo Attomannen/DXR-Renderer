@@ -234,6 +234,12 @@ namespace Tga::rhi::dx11
 		return myTextures.Alloc(std::move(rec));
 	}
 
+	Format Dx11Device::GetTextureFormat(TextureHandle h) const
+	{
+		const TextureRec* t = myTextures.Get(h);
+		return t ? t->desc.format : Format::Unknown;
+	}
+
 	// ------------------------------------------------------------------ views
 	SrvHandle Dx11Device::CreateSrv(TextureHandle h, const SrvDesc& d)
 	{

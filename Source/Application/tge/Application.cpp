@@ -280,7 +280,7 @@ bool Application::BeginFrame()
 	ImGuiInterface::PreFrame();
 #endif // !_RETAIL
     myFileWatcher->FlushChanges();
-	
+
 	myDx11->BeginFrame(myWindowConfiguration.clearColor);
 	DX11::ResetDrawCallCounter();
 

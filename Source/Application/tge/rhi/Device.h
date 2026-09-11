@@ -19,6 +19,11 @@ namespace Tga::rhi
 		virtual BufferHandle  CreateBuffer(const BufferDesc&, const void* initialData = nullptr) = 0;
 		virtual TextureHandle CreateTexture(const TextureDesc&, const SubresourceData* initial = nullptr,
 		                                    uint32_t initialCount = 0) = 0;
+		// The format a texture was actually created with -- Unknown for an
+		// invalid handle. Lets generic code (e.g. CubemapPrefilter's capture
+		// path) match a new texture's format to an existing one's without a
+		// backend-specific desc query.
+		virtual Format GetTextureFormat(TextureHandle) const = 0;
 
 		virtual SrvHandle CreateSrv(TextureHandle, const SrvDesc&) = 0;
 		virtual SrvHandle CreateSrv(BufferHandle, const SrvDesc&) = 0;

@@ -1122,7 +1122,7 @@ struct GameWorld::Impl
 		if (probePrefilter->CaptureSceneToCubemap(*probeFaceRt, faceCb, probeBase))
 		{
 			probePrefilter->GeneratePrefilteredCubemap(
-				probeBase.srv.Get(), probeBase.size, 128, 128, probePrefiltered);
+				probeBase.GetSrv(), probeBase.size, 128, 128, probePrefiltered);
 		}
 
 		gss.SetCamera(savedCam);

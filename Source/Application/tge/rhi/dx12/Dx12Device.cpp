@@ -136,6 +136,24 @@ namespace Tga::rhi::dx12
 
 		myContext = std::make_unique<Dx12CommandContext>(*this);
 
+		// myCmdList was left CLOSED, with no root signature bound, by
+		// CreateFrameResources() -- fine for a list that's only ever touched
+		// between a real BeginFrame()/EndFrame() pair, but engine init code
+		// legitimately records commands via GetContext() *before* the game
+		// loop's first real BeginFrame() ever runs too (e.g. TextService::
+		// Init()'s font-atlas UpdateTexture+GenerateMips -- see
+		// IDevice::GetContext()'s own doc comment: "valid... before the
+		// first BeginFrame during engine init"). Reopen it and bind the root
+		// signatures right now so that's actually true, rather than a closed
+		// list with nothing bound. BeginFrame()'s first-ever call skips
+		// re-Reset()'ing this same list (see myFirstFrame) -- whatever got
+		// recorded during init is submitted together with frame 1's own work.
+		myAllocators[0]->Reset();
+		myCmdList->Reset(myAllocators[0].Get(), nullptr);
+		ID3D12DescriptorHeap* initHeaps[] = { myCbvSrvUavScratch[0].Heap(), mySamplerScratch[0].Heap() };
+		myCmdList->SetDescriptorHeaps(2, initHeaps);
+		myContext->OnBeginFrame();
+
 		INFO_PRINT("Dx12Device: created (%ux%u, %u frames in flight)", d.width, d.height, kFramesInFlight);
 	}
 
@@ -146,6 +164,24 @@ namespace Tga::rhi::dx12
 		// ComPtr, which implicitly unmaps -- nothing to do here explicitly.
 		if (myDevice) WaitForGpuIdle();
 		if (myFenceEvent) CloseHandle(myFenceEvent);
+	}
+
+	void Dx12Device::DrainDebugMessages(const char* tag)
+	{
+		ComPtr<ID3D12InfoQueue> infoQueue;
+		if (FAILED(myDevice.As(&infoQueue)) || !infoQueue) return;
+		UINT64 n = infoQueue->GetNumStoredMessages();
+		for (UINT64 i = 0; i < n; ++i)
+		{
+			SIZE_T len = 0;
+			infoQueue->GetMessage(i, nullptr, &len);
+			if (len == 0) continue;
+			std::vector<uint8_t> buf(len);
+			D3D12_MESSAGE* msg = reinterpret_cast<D3D12_MESSAGE*>(buf.data());
+			infoQueue->GetMessage(i, msg, &len);
+			ERROR_PRINT("D3D12 debug [%s]: %s", tag, msg->pDescription);
+		}
+		infoQueue->ClearStoredMessages();
 	}
 
 	// ------------------------------------------------------------------ device / queue
@@ -504,11 +540,33 @@ namespace Tga::rhi::dx12
 	{
 		myFrameIndex = mySwapChain ? mySwapChain->GetCurrentBackBufferIndex() : 0;
 
-		const uint64_t waitValue = myFenceValues[myFrameIndex];
-		if (waitValue != 0 && myFence->GetCompletedValue() < waitValue)
+		if (myFirstFrame)
 		{
-			myFence->SetEventOnCompletion(waitValue, myFenceEvent);
-			WaitForSingleObject(myFenceEvent, INFINITE);
+			// The constructor left myCmdList open (Reset + root sigs bound)
+			// specifically so engine-init code could record onto it before
+			// this, the game loop's first-ever BeginFrame() (e.g. TextService::
+			// Init()'s font-atlas UpdateTexture+GenerateMips -- see
+			// IDevice::GetContext()'s own doc comment: "valid... before the
+			// first BeginFrame during engine init"). Flush + wait for that
+			// work HERE, synchronously and in isolation, rather than silently
+			// folding it into frame 1's own submission -- keeps init-time GPU
+			// work fully executed (and any problem with it caught) on its
+			// own, and lets every frame after this go through the exact same
+			// Reset() path uniformly.
+			myCmdList->Close();
+			ID3D12CommandList* initLists[] = { myCmdList.Get() };
+			myQueue->ExecuteCommandLists(1, initLists);
+			WaitForGpuIdle();
+			myFirstFrame = false;
+		}
+		else
+		{
+			const uint64_t waitValue = myFenceValues[myFrameIndex];
+			if (waitValue != 0 && myFence->GetCompletedValue() < waitValue)
+			{
+				myFence->SetEventOnCompletion(waitValue, myFenceEvent);
+				WaitForSingleObject(myFenceEvent, INFINITE);
+			}
 		}
 
 		// The fence wait above guarantees this frame-in-flight's LAST
@@ -690,6 +748,12 @@ namespace Tga::rhi::dx12
 		return myTextures.Alloc(std::move(rec));
 	}
 
+	Format Dx12Device::GetTextureFormat(TextureHandle h) const
+	{
+		const TextureRec* t = myTextures.Get(h);
+		return t ? t->desc.format : Format::Unknown;
+	}
+
 	void Dx12Device::UploadBufferData(ID3D12Resource* dst, const void* data, size_t size)
 	{
 		D3D12_HEAP_PROPERTIES uploadHeap = { D3D12_HEAP_TYPE_UPLOAD };
@@ -804,19 +868,28 @@ namespace Tga::rhi::dx12
 			vd.Texture3D.MostDetailedMip = d.mostDetailedMip;
 			vd.Texture3D.MipLevels = mips;
 		}
-		else if (d.asCube || t->desc.dimension == TextureDimension::TexCube)
+		else if ((d.asCube || t->desc.dimension == TextureDimension::TexCube) && d.arraySize == kAllSlices)
 		{
+			// Full 6-face cube view -- the common case (every existing caller
+			// before this comment used the SrvDesc defaults, i.e. this branch).
 			vd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
 			vd.TextureCube.MostDetailedMip = d.mostDetailedMip;
 			vd.TextureCube.MipLevels = mips;
 		}
-		else if (t->desc.dimension == TextureDimension::Tex2DArray)
+		else if (t->desc.dimension == TextureDimension::Tex2DArray || t->desc.dimension == TextureDimension::TexCube)
 		{
+			// Tex2DArray view -- also how an individual cubemap FACE (or a
+			// sub-range of faces) is viewed as a plain array slice when the
+			// caller explicitly asks for one via firstArraySlice/arraySize
+			// (e.g. GenerateMips's per-face blit) -- D3D12_SRV_DIMENSION_
+			// TEXTURECUBE has no such per-slice option, but the underlying
+			// resource is equally a Texture2DArray either way.
 			vd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
 			vd.Texture2DArray.MostDetailedMip = d.mostDetailedMip;
 			vd.Texture2DArray.MipLevels = mips;
 			vd.Texture2DArray.FirstArraySlice = d.firstArraySlice;
-			vd.Texture2DArray.ArraySize = (d.arraySize == kAllSlices) ? t->desc.depthOrArraySize : d.arraySize;
+			vd.Texture2DArray.ArraySize = (d.arraySize == kAllSlices)
+				? ((t->desc.dimension == TextureDimension::TexCube) ? 6u : t->desc.depthOrArraySize) : d.arraySize;
 		}
 		else
 		{

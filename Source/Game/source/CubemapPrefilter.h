@@ -31,15 +31,20 @@ namespace Tga
         uint32_t mipLevels = 0;
         std::unique_ptr<TextureResource> resource;
         // Lazily wraps `srv` into an rhi handle (Stage-1 bridge, same pattern as
-        // TextureResource::GetSrv()); Reset() destroys it before the next capture
-        // creates a new raw SRV, so this never accumulates pool entries even though
-        // CaptureSceneToCubemap can re-populate the same CubemapData thousands of
-        // times per GI bake.
+        // TextureResource::GetSrv()) on DX11; owns the real handle directly on
+        // DX12. Reset() destroys it before the next capture creates a new one,
+        // so this never accumulates pool entries even though CaptureSceneToCubemap
+        // can re-populate the same CubemapData thousands of times per GI bake.
         mutable MigrationView<rhi::SrvHandle> myRhiSrv;
+        // DX12 only: keeps the owning cubemap texture alive (a D3D12 descriptor
+        // holds no reference of its own, unlike a D3D11 view) -- same pattern as
+        // TextureResource's identical member.
+        mutable MigrationView<rhi::TextureHandle> myRhiTexture;
 
-        bool IsValid() const { return texture != nullptr && srv != nullptr; }
+        bool IsValid() const { return (texture != nullptr && srv != nullptr) || myRhiTexture.handle.IsValid(); }
         void Reset()
         {
+            myRhiTexture.Reset();
             myRhiSrv.Reset();
             texture.Reset();
             srv.Reset();
@@ -74,7 +79,7 @@ namespace Tga
         static Matrix4x4f GetCubemapProjectionMatrix(float nearPlane = 0.1f, float farPlane = 50000.0f);
 
         bool GeneratePrefilteredCubemap(
-            ID3D11ShaderResourceView* baseCubemapSRV,
+            rhi::SrvHandle baseCubemapSrv,
             uint32_t sourceCubemapResolution,
             uint32_t outputResolution,
             uint32_t sampleCount,

@@ -26,6 +26,23 @@ public:
 	TextureResource();
 	TextureResource(ID3D11ShaderResourceView* aSRV);
 	~TextureResource();
+	// A user-declared destructor suppresses the compiler-generated move
+	// constructor/assignment (Rule of Five) -- without these explicit
+	// defaults, `derived = Derived::Create(...)` (DepthBuffer/RenderTarget/
+	// Texture's factory-by-value pattern) silently falls back to COPY
+	// assignment instead of move. MigrationView's copy ctor/assignment
+	// deliberately does NOT propagate ownership (each instance owns only
+	// what it creates itself) -- under a copy, the temporary returned by
+	// Create() keeps ownership and destroys the real DX12 resource/view the
+	// moment it goes out of scope at the end of the assignment statement,
+	// leaving the just-assigned object holding a dangling handle. Restoring
+	// real move here (matching MigrationView.h's own design comment, "lets
+	// RenderTarget/DepthBuffer/TextureResource stay copyable/movable with
+	// the compiler-generated special members") transfers ownership instead.
+	TextureResource(const TextureResource&) = default;
+	TextureResource(TextureResource&&) noexcept = default;
+	TextureResource& operator=(const TextureResource&) = default;
+	TextureResource& operator=(TextureResource&&) noexcept = default;
 
 	void SetAsResourceOnSlot(unsigned int aSlot) const;
 	ID3D11ShaderResourceView* GetShaderResourceView() const { return mySRV.Get(); };
@@ -41,6 +58,11 @@ public:
 	void SetRhiTexture(rhi::TextureHandle aTexture, rhi::SrvHandle aSrv, bool aTakesOwnership = true);
 	// rhi handle onto the same view (created on first use). Preferred by migrated code.
 	rhi::SrvHandle GetSrv() const;
+	// The owning texture, DX12 only (empty/invalid on DX11 -- that path never
+	// populates myRhiTexture, since a D3D11 view already carries its own
+	// resource reference). For code that needs the texture itself, not just
+	// a view onto it (e.g. CubemapPrefilter's per-face CopyTextureRegion).
+	rhi::TextureHandle GetTextureHandle() const { return myRhiTexture.handle; }
 	Vector2ui CalculateTextureSize() const;
 };
 

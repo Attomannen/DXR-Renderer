@@ -86,7 +86,8 @@ namespace Tga::rhi::dx12
 		if (clearDepth) flags |= D3D12_CLEAR_FLAG_DEPTH;
 		if (clearStencil) flags |= D3D12_CLEAR_FLAG_STENCIL;
 		if (!flags) return;
-		List()->ClearDepthStencilView(myDevice.DsvCpuHandle(*slot), flags, depth, stencil, 0, nullptr);
+		D3D12_CPU_DESCRIPTOR_HANDLE h = myDevice.DsvCpuHandle(*slot);
+		List()->ClearDepthStencilView(h, flags, depth, stencil, 0, nullptr);
 	}
 
 	void Dx12CommandContext::ClearUnorderedAccessFloat(UavHandle, const float[4])
@@ -469,6 +470,14 @@ namespace Tga::rhi::dx12
 	}
 	void Dx12CommandContext::CopyTextureRegion(TextureHandle dstH, uint32_t dstMip, uint32_t dstArray, TextureHandle srcH, uint32_t srcMip, uint32_t srcArray)
 	{
+		// Self-managed barriers, since (unlike D3D11) a copy needs its exact
+		// subresource in COPY_DEST/COPY_SOURCE first -- brackets the SPECIFIC
+		// subresource being touched (not TextureRec::state's whole-resource
+		// value, which stays valid for every OTHER subresource) and restores
+		// it before returning, same self-contained pattern as GenerateMips/
+		// UpdateTexture. First real caller: CubemapPrefilter's per-face copy
+		// into a cubemap array slice (dst is multi-subresource; each of its 6
+		// calls is independently bracketed).
 		TextureRec* dst = myDevice.GetTexture(dstH);
 		TextureRec* src = myDevice.GetTexture(srcH);
 		if (!dst || !src || !dst->res || !src->res) return;
@@ -478,11 +487,32 @@ namespace Tga::rhi::dx12
 		const uint32_t srcMips = src->desc.mipLevels ? src->desc.mipLevels : 1;
 		const UINT dstSub = dstMip + dstArray * dstMips;
 		const UINT srcSub = srcMip + srcArray * srcMips;
+
+		auto barrier = [&](ID3D12Resource* res, UINT sub, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
+		{
+			if (before == after) return;
+			D3D12_RESOURCE_BARRIER b = {};
+			b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			b.Transition.pResource = res;
+			b.Transition.StateBefore = before;
+			b.Transition.StateAfter = after;
+			b.Transition.Subresource = sub;
+			List()->ResourceBarrier(1, &b);
+		};
+
+		const D3D12_RESOURCE_STATES dstBefore = dst->state;
+		const D3D12_RESOURCE_STATES srcBefore = src->state;
+		barrier(dst->res.Get(), dstSub, dstBefore, D3D12_RESOURCE_STATE_COPY_DEST);
+		barrier(src->res.Get(), srcSub, srcBefore, D3D12_RESOURCE_STATE_COPY_SOURCE);
+
 		D3D12_TEXTURE_COPY_LOCATION dstLoc = { dst->res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {} };
 		dstLoc.SubresourceIndex = dstSub;
 		D3D12_TEXTURE_COPY_LOCATION srcLoc = { src->res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {} };
 		srcLoc.SubresourceIndex = srcSub;
 		List()->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+
+		barrier(dst->res.Get(), dstSub, D3D12_RESOURCE_STATE_COPY_DEST, dstBefore);
+		barrier(src->res.Get(), srcSub, D3D12_RESOURCE_STATE_COPY_SOURCE, srcBefore);
 	}
 	void Dx12CommandContext::GenerateMips(SrvHandle, TextureHandle owner)
 	{
@@ -494,9 +524,11 @@ namespace Tga::rhi::dx12
 		// PostprocessCopyPS shader pair via DX11::Load*Shader (both backends
 		// produce a valid RHI ShaderModuleHandle since this session's
 		// DX11::Device-null-guard fix) rather than compiling anything new.
-		// Only ever called on a plain (non-array) 2D texture today (the font
-		// atlas) -- arrays/cubes/3D are out of scope until a real call site
-		// needs them.
+		// Handles a plain 2D texture (the font atlas) or a Tex2DArray/TexCube
+		// (CubemapPrefilter's per-face captures) -- each array slice's mip
+		// chain is generated independently (a face's mip 1 only ever
+		// downsamples that SAME face's mip 0, never another face). 3D
+		// textures are out of scope until a real call site needs them.
 		TextureRec* t = myDevice.GetTexture(owner);
 		if (!t || !t->res)
 		{
@@ -508,11 +540,12 @@ namespace Tga::rhi::dx12
 		const uint32_t mipCount = desc.MipLevels;
 		const uint32_t baseW = static_cast<uint32_t>(desc.Width);
 		const uint32_t baseH = desc.Height;
+		const uint32_t arraySize = desc.DepthOrArraySize;
 		if (mipCount <= 1 || baseW == 0 || baseH == 0)
 			return;
-		if (desc.DepthOrArraySize != 1)
+		if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D)
 		{
-			assert(false && "Dx12: GenerateMips -- array/cube/3D textures not supported yet, no call site needs it");
+			assert(false && "Dx12: GenerateMips -- only Texture2D/2DArray/Cube supported, no call site needs 3D yet");
 			return;
 		}
 
@@ -533,58 +566,67 @@ namespace Tga::rhi::dx12
 		// only tracks one state for the WHOLE resource, but a mip chain
 		// inherently needs different subresources in different states at once
 		// (destination = RENDER_TARGET while source = PIXEL_SHADER_RESOURCE).
-		std::vector<D3D12_RESOURCE_STATES> subState(mipCount, before);
+		// D3D12 subresource index = mip + arraySlice * mipCount.
+		std::vector<D3D12_RESOURCE_STATES> subState(static_cast<size_t>(mipCount) * arraySize, before);
 
-		auto barrierOne = [&](uint32_t mip, D3D12_RESOURCE_STATES to)
+		auto barrierOne = [&](uint32_t sub, D3D12_RESOURCE_STATES to)
 		{
-			if (subState[mip] == to) return;
+			if (subState[sub] == to) return;
 			D3D12_RESOURCE_BARRIER b = {};
 			b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 			b.Transition.pResource = t->res.Get();
-			b.Transition.StateBefore = subState[mip];
+			b.Transition.StateBefore = subState[sub];
 			b.Transition.StateAfter = to;
-			b.Transition.Subresource = mip;
+			b.Transition.Subresource = sub;
 			List()->ResourceBarrier(1, &b);
-			subState[mip] = to;
+			subState[sub] = to;
 		};
+		auto subIndex = [&](uint32_t mip, uint32_t slice) { return mip + slice * mipCount; };
 
-		// Destinations (mip 1..N-1) must be RENDER_TARGET to be written.
-		for (uint32_t mip = 1; mip < mipCount; ++mip)
-			barrierOne(mip, D3D12_RESOURCE_STATE_RENDER_TARGET);
+		// Destinations (mip 1..N-1, every slice) must be RENDER_TARGET to be written.
+		for (uint32_t slice = 0; slice < arraySize; ++slice)
+			for (uint32_t mip = 1; mip < mipCount; ++mip)
+				barrierOne(subIndex(mip, slice), D3D12_RESOURCE_STATE_RENDER_TARGET);
 
-		for (uint32_t mip = 1; mip < mipCount; ++mip)
+		for (uint32_t slice = 0; slice < arraySize; ++slice)
 		{
-			const uint32_t srcMip = mip - 1;
-			const uint32_t w = std::max<uint32_t>(1u, baseW >> mip);
-			const uint32_t h = std::max<uint32_t>(1u, baseH >> mip);
+			for (uint32_t mip = 1; mip < mipCount; ++mip)
+			{
+				const uint32_t srcMip = mip - 1;
+				const uint32_t w = std::max<uint32_t>(1u, baseW >> mip);
+				const uint32_t h = std::max<uint32_t>(1u, baseH >> mip);
 
-			barrierOne(srcMip, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+				barrierOne(subIndex(srcMip, slice), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
-			RtvDesc rtvDesc = {}; rtvDesc.mipSlice = mip;
-			RtvHandle rtv = myDevice.CreateRtv(owner, rtvDesc);
-			SrvDesc srvDesc = {}; srvDesc.mostDetailedMip = srcMip; srvDesc.mipLevels = 1;
-			SrvHandle srcSrv = myDevice.CreateSrv(owner, srvDesc);
+				RtvDesc rtvDesc = {}; rtvDesc.mipSlice = mip; rtvDesc.firstArraySlice = slice; rtvDesc.arraySize = 1;
+				RtvHandle rtv = myDevice.CreateRtv(owner, rtvDesc);
+				SrvDesc srvDesc = {};
+				srvDesc.mostDetailedMip = srcMip; srvDesc.mipLevels = 1;
+				srvDesc.firstArraySlice = slice; srvDesc.arraySize = 1;   // single slice -- forces the Tex2DArray SRV path even on a TexCube
+				SrvHandle srcSrv = myDevice.CreateSrv(owner, srvDesc);
 
-			SetRenderTargets(1, &rtv, DsvHandle{});
-			SetViewport(0.f, 0.f, static_cast<float>(w), static_cast<float>(h), 0.f, 1.f);
-			SetPrimitiveTopology(Topology::TriangleList);
-			SetVertexBuffer(0, {}, 0, 0);
-			SetIndexBuffer({}, Format::R32_UInt, 0);
-			SetVertexShader(vs->module);
-			SetPixelShader(ps->module);
-			SetShaderResource(ShaderStage::Pixel, 1, srcSrv);   // PostprocessCopyPS: FullscreenTexture1, register(t1)
-			SetSampler(ShaderStage::Pixel, 0, myMipGenSampler); // DefaultSampler, register(s0)
-			Draw(3, 0);
+				SetRenderTargets(1, &rtv, DsvHandle{});
+				SetViewport(0.f, 0.f, static_cast<float>(w), static_cast<float>(h), 0.f, 1.f);
+				SetPrimitiveTopology(Topology::TriangleList);
+				SetVertexBuffer(0, {}, 0, 0);
+				SetIndexBuffer({}, Format::R32_UInt, 0);
+				SetVertexShader(vs->module);
+				SetPixelShader(ps->module);
+				SetShaderResource(ShaderStage::Pixel, 1, srcSrv);   // PostprocessCopyPS: FullscreenTexture1, register(t1)
+				SetSampler(ShaderStage::Pixel, 0, myMipGenSampler); // DefaultSampler, register(s0)
+				Draw(3, 0);
 
-			myDevice.Destroy(rtv);
-			myDevice.Destroy(srcSrv);
+				myDevice.Destroy(rtv);
+				myDevice.Destroy(srcSrv);
+			}
 		}
 
 		// Restore every subresource to its original (whole-resource) state --
 		// t->state itself is left untouched, since it's true again once this
 		// loop finishes.
-		for (uint32_t mip = 0; mip < mipCount; ++mip)
-			barrierOne(mip, before);
+		for (uint32_t slice = 0; slice < arraySize; ++slice)
+			for (uint32_t mip = 0; mip < mipCount; ++mip)
+				barrierOne(subIndex(mip, slice), before);
 	}
 
 	// ---- barriers ----

@@ -50,6 +50,7 @@ namespace Tga::rhi::dx11
 
 		BufferHandle  CreateBuffer(const BufferDesc&, const void* initialData) override;
 		TextureHandle CreateTexture(const TextureDesc&, const SubresourceData* initial, uint32_t initialCount) override;
+		Format GetTextureFormat(TextureHandle) const override;
 
 		SrvHandle CreateSrv(TextureHandle, const SrvDesc&) override;
 		SrvHandle CreateSrv(BufferHandle, const SrvDesc&) override;

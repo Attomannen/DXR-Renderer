@@ -35,7 +35,13 @@ void DepthBuffer::Clear(float aClearDepthValue /* = 1.0f */, uint8_t aClearStenc
 	rhi::IDevice* dev = DX11::Rhi();
 	if (dev && dev->GetBackend() == rhi::Backend::DX12)
 	{
-		dev->GetContext().ClearDepthStencil(GetDsv(), aClearDepthValue, aClearStencilValue, true, true);
+		// DepthBuffer::Create() always uses D32_Float internally, which has
+		// NO stencil plane at all -- D3D11's ClearDepthStencilView tolerates
+		// a stencil-clear flag on a stencil-less resource silently, but
+		// D3D12 does not (clearing a nonexistent plane touches memory the
+		// resource doesn't have). Depth-only clear here, regardless of the
+		// clearStencil-shaped DX11 call below.
+		dev->GetContext().ClearDepthStencil(GetDsv(), aClearDepthValue, aClearStencilValue, /*clearDepth=*/true, /*clearStencil=*/false);
 		return;
 	}
 	DX11::Context->ClearDepthStencilView(myDepth.Get(), D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, aClearDepthValue, aClearStencilValue);

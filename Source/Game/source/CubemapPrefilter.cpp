@@ -5,6 +5,7 @@
 
 #include <tge/graphics/DX11.h>
 #include <tge/graphics/RenderTarget.h>
+#include <tge/rhi/Format.h>
 #include <tge/graphics/GraphicsEngine.h>
 #include <tge/graphics/GraphicsStateStack.h>
 #include <tge/log/Log.h>
@@ -84,6 +85,73 @@ namespace Tga
         ComPtr<ID3D11UnorderedAccessView>* outMip0UAV)
     {
         outCubemap.Reset();
+        (void)miscFlags;   // only ever D3D11_RESOURCE_MISC_GENERATE_MIPS or 0 -- DX12's mip count already
+                            // comes from mipCount itself (GenerateMips is driven explicitly, not a resource flag)
+
+        if (rhi::IDevice* dev = DX11::Rhi(); dev && dev->GetBackend() == rhi::Backend::DX12)
+        {
+            rhi::TextureDesc tdesc = {};
+            tdesc.width = resolution;
+            tdesc.height = resolution;
+            tdesc.depthOrArraySize = 1;   // one cubemap -- TexCube dimension implies the 6 faces
+            tdesc.mipLevels = mipCount;
+            tdesc.dimension = rhi::TextureDimension::TexCube;
+            tdesc.format = rhi::FromDxgi(format);
+            if (bindFlags & D3D11_BIND_SHADER_RESOURCE)  tdesc.bind = tdesc.bind | rhi::TextureBind::ShaderResource;
+            if (bindFlags & D3D11_BIND_RENDER_TARGET)    tdesc.bind = tdesc.bind | rhi::TextureBind::RenderTarget;
+            if (bindFlags & D3D11_BIND_UNORDERED_ACCESS) tdesc.bind = tdesc.bind | rhi::TextureBind::UnorderedAccess;
+            tdesc.debugName = "CubemapPrefilter";
+
+            if (tdesc.format == rhi::Format::Unknown)
+            {
+                ERROR_PRINT("CubemapPrefilter::CreateCubemapTexture (DX12): unsupported DXGI format 0x%X", static_cast<unsigned>(format));
+                return false;
+            }
+
+            rhi::TextureHandle texHandle = dev->CreateTexture(tdesc);
+            if (!texHandle.IsValid())
+            {
+                ERROR_PRINT("CubemapPrefilter::CreateCubemapTexture (DX12): CreateTexture failed (%ux%u, %u mips).", resolution, resolution, mipCount);
+                return false;
+            }
+            outCubemap.myRhiTexture.handle = texHandle;
+
+            if (outMip0UAV && (bindFlags & D3D11_BIND_UNORDERED_ACCESS))
+            {
+                // Only reachable from LoadBaseFromEquirectangular/LoadBaseFromCubeCross,
+                // both confirmed dead code (zero callers) -- not implemented rather
+                // than guessed at. CaptureSceneToCubemap/GeneratePrefilteredCubemap
+                // (the two real call sites) never pass outMip0UAV.
+                assert(false && "CubemapPrefilter (DX12): outMip0UAV path is unreachable dead code");
+                return false;
+            }
+
+            if (bindFlags & D3D11_BIND_SHADER_RESOURCE)
+            {
+                rhi::SrvDesc srvDesc = {};
+                srvDesc.mostDetailedMip = 0;
+                srvDesc.mipLevels = mipCount;
+                rhi::SrvHandle srvHandle = dev->CreateSrv(texHandle, srvDesc);
+                if (!srvHandle.IsValid())
+                {
+                    ERROR_PRINT("CubemapPrefilter::CreateCubemapTexture (DX12): failed to create cubemap SRV.");
+                    return false;
+                }
+                outCubemap.myRhiSrv.handle = srvHandle;
+
+                // outCubemap itself (myRhiTexture/myRhiSrv above) is the true
+                // owner -- .resource is a non-owning alias exposing the same
+                // view as a TextureResource* for code that reads it that way
+                // (e.g. AmbientLight::cubemap), same pattern as TextService's
+                // font atlas.
+                outCubemap.resource = std::make_unique<TextureResource>();
+                outCubemap.resource->SetRhiTexture(texHandle, srvHandle, /*aTakesOwnership=*/false);
+            }
+
+            outCubemap.size = resolution;
+            outCubemap.mipLevels = mipCount;
+            return true;
+        }
 
         D3D11_TEXTURE2D_DESC cubeDesc = {};
         cubeDesc.Width = resolution;
@@ -522,6 +590,42 @@ namespace Tga
         uint32_t resolution = res.X;
         uint32_t mipCount = CalculateMipCount(resolution, resolution);
 
+        rhi::IDevice* dev = DX11::Rhi();
+        if (dev && dev->GetBackend() == rhi::Backend::DX12)
+        {
+            rhi::TextureHandle rtTexHandle = renderTarget.GetTextureHandle();
+            if (!rtTexHandle.IsValid())
+            {
+                ERROR_PRINT("CubemapPrefilter::CaptureSceneToCubemap (DX12): RenderTarget has no texture handle.");
+                return false;
+            }
+            rhi::Format rtFormat = dev->GetTextureFormat(rtTexHandle);
+
+            if (!CreateCubemapTexture(
+                resolution, mipCount, rhi::ToDxgi(rtFormat),
+                D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET,
+                D3D11_RESOURCE_MISC_GENERATE_MIPS,
+                outCubemap))
+            {
+                return false;
+            }
+
+            rhi::ICommandContext& ctx = dev->GetContext();
+            for (uint32_t face = 0; face < 6; ++face)
+            {
+                renderFaceCallback(face);
+
+                // Unbind active render target before copying out of it.
+                ctx.SetRenderTargets(0, nullptr, {});
+                ctx.CopyTextureRegion(outCubemap.myRhiTexture.handle, 0, face, rtTexHandle, 0, 0);
+            }
+
+            ctx.GenerateMips(outCubemap.GetSrv(), outCubemap.myRhiTexture.handle);
+
+            INFO_PRINT("CubemapPrefilter: Captured scene to cubemap (%ux%u, %u mips)", resolution, resolution, mipCount);
+            return true;
+        }
+
         ComPtr<ID3D11Resource> rtResource;
         if (!renderTarget.GetShaderResourceView())
         {
@@ -567,7 +671,7 @@ namespace Tga
     }
 
     bool CubemapPrefilter::GeneratePrefilteredCubemap(
-        ID3D11ShaderResourceView* baseCubemapSRV,
+        rhi::SrvHandle baseCubemapSrv,
         uint32_t sourceCubemapResolution,
         uint32_t outputResolution,
         uint32_t sampleCount,
@@ -575,9 +679,9 @@ namespace Tga
     {
         outPrefilteredCubemap.Reset();
 
-        if (!baseCubemapSRV)
+        if (!baseCubemapSrv.IsValid())
         {
-            ERROR_PRINT("CubemapPrefilter: baseCubemapSRV is null.");
+            ERROR_PRINT("CubemapPrefilter: baseCubemapSrv is invalid.");
             return false;
         }
 
@@ -598,22 +702,49 @@ namespace Tga
             return false;
         }
 
-        // Create UAV for each mip level
-        std::vector<ComPtr<ID3D11UnorderedAccessView>> mipUAVs(numMips);
-        for (uint32_t m = 0; m < numMips; ++m)
-        {
-            D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-            uavDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-            uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2DARRAY;
-            uavDesc.Texture2DArray.MipSlice = m;
-            uavDesc.Texture2DArray.FirstArraySlice = 0;
-            uavDesc.Texture2DArray.ArraySize = 6;
+        rhi::IDevice* dev = DX11::Rhi();
+        const bool isDx12 = dev && dev->GetBackend() == rhi::Backend::DX12;
 
-            HRESULT hr = DX11::Device->CreateUnorderedAccessView(outPrefilteredCubemap.texture.Get(), &uavDesc, mipUAVs[m].ReleaseAndGetAddressOf());
-            if (FAILED(hr))
+        // Create a UAV for each mip level (all 6 faces at once per mip).
+        // DX12 goes through the RHI directly (outPrefilteredCubemap.myRhiTexture
+        // is a real handle there); DX11 stays raw (mipUAVs are per-call transient
+        // views -- wrapping them into the RHI's permanent handle pool here would
+        // leak one pool slot per mip per bake, since this runs once per GI probe).
+        std::vector<ComPtr<ID3D11UnorderedAccessView>> mipUAVs;
+        std::vector<rhi::UavHandle> mipUavHandles;
+        if (isDx12)
+        {
+            mipUavHandles.resize(numMips);
+            for (uint32_t m = 0; m < numMips; ++m)
             {
-                ERROR_PRINT("CubemapPrefilter: Failed to create UAV for mip %u", m);
-                return false;
+                rhi::UavDesc uavDesc = {};
+                uavDesc.mipSlice = m;
+                mipUavHandles[m] = dev->CreateUav(outPrefilteredCubemap.myRhiTexture.handle, uavDesc);
+                if (!mipUavHandles[m].IsValid())
+                {
+                    ERROR_PRINT("CubemapPrefilter: Failed to create UAV for mip %u (DX12)", m);
+                    return false;
+                }
+            }
+        }
+        else
+        {
+            mipUAVs.resize(numMips);
+            for (uint32_t m = 0; m < numMips; ++m)
+            {
+                D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+                uavDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+                uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2DARRAY;
+                uavDesc.Texture2DArray.MipSlice = m;
+                uavDesc.Texture2DArray.FirstArraySlice = 0;
+                uavDesc.Texture2DArray.ArraySize = 6;
+
+                HRESULT hr = DX11::Device->CreateUnorderedAccessView(outPrefilteredCubemap.texture.Get(), &uavDesc, mipUAVs[m].ReleaseAndGetAddressOf());
+                if (FAILED(hr))
+                {
+                    ERROR_PRINT("CubemapPrefilter: Failed to create UAV for mip %u", m);
+                    return false;
+                }
             }
         }
 
@@ -643,6 +774,12 @@ namespace Tga
             numMips, firstDiffuseMip, numMips - firstDiffuseMip, sourceCubemapResolution, outputResolution);
 
         rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
+
+        // DX11 only: raw pointer extracted once, used for every dispatch below
+        // (see LoadBaseFromEquirectangular for why this stays outside the RHI's
+        // permanent handle pool).
+        ID3D11ShaderResourceView* baseCubemapSrvRaw = isDx12 ? nullptr
+            : static_cast<ID3D11ShaderResourceView*>(dev->GetNativeSrv(baseCubemapSrv));
 
         for (uint32_t m = 0; m < numMips; ++m)
         {
@@ -678,12 +815,20 @@ namespace Tga
                 ctx.SetComputePipeline(DX11::Rhi()->CreateComputePipeline(pd));
                 myPrefilterConstantBuffer.Bind(ctx);
                 ctx.SetSampler(rhi::ShaderStage::Compute, 0, mySampler);
-                // baseCubemapSRV / mipUAVs are per-call transient views (baseCubemapSRV
+                // baseCubemapSrv / mipUAVs are per-call transient views (baseCubemapSrv
                 // is a caller-owned parameter, mipUAVs are freshly created above) --
-                // stay raw, see LoadBaseFromEquirectangular for why wrapping them
-                // into the RHI's permanent handle pool here would leak.
-                DX11::Context->CSSetShaderResources(0, 1, &baseCubemapSRV);
-                DX11::Context->CSSetUnorderedAccessViews(0, 1, mipUAVs[m].GetAddressOf(), nullptr);
+                // DX11 stays raw, see LoadBaseFromEquirectangular for why wrapping
+                // them into the RHI's permanent handle pool here would leak.
+                if (isDx12)
+                {
+                    ctx.SetShaderResource(rhi::ShaderStage::Compute, 0, baseCubemapSrv);
+                    ctx.SetUnorderedAccess(0, mipUavHandles[m]);
+                }
+                else
+                {
+                    DX11::Context->CSSetShaderResources(0, 1, &baseCubemapSrvRaw);
+                    DX11::Context->CSSetUnorderedAccessViews(0, 1, mipUAVs[m].GetAddressOf(), nullptr);
+                }
 
                 uint32_t threadGroups = (mipRes + 7) / 8;
                 ctx.Dispatch(threadGroups, threadGroups, 6);
@@ -704,19 +849,41 @@ namespace Tga
                 ctx.SetComputePipeline(DX11::Rhi()->CreateComputePipeline(pd));
                 myDiffuseConstantBuffer.Bind(ctx);
                 ctx.SetSampler(rhi::ShaderStage::Compute, 0, mySampler);
-                DX11::Context->CSSetShaderResources(0, 1, &baseCubemapSRV);
-                DX11::Context->CSSetUnorderedAccessViews(0, 1, mipUAVs[m].GetAddressOf(), nullptr);
+                if (isDx12)
+                {
+                    ctx.SetShaderResource(rhi::ShaderStage::Compute, 0, baseCubemapSrv);
+                    ctx.SetUnorderedAccess(0, mipUavHandles[m]);
+                }
+                else
+                {
+                    DX11::Context->CSSetShaderResources(0, 1, &baseCubemapSrvRaw);
+                    DX11::Context->CSSetUnorderedAccessViews(0, 1, mipUAVs[m].GetAddressOf(), nullptr);
+                }
 
                 uint32_t threadGroups = (mipRes + 7) / 8;
                 ctx.Dispatch(threadGroups, threadGroups, 6);
             }
 
-            ID3D11UnorderedAccessView* nullUAV = nullptr;
-            DX11::Context->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
+            if (isDx12)
+            {
+                ctx.SetUnorderedAccess(0, {});
+            }
+            else
+            {
+                ID3D11UnorderedAccessView* nullUAV = nullptr;
+                DX11::Context->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
+            }
         }
 
-        ID3D11ShaderResourceView* nullSRV = nullptr;
-        DX11::Context->CSSetShaderResources(0, 1, &nullSRV);
+        if (isDx12)
+        {
+            ctx.SetShaderResource(rhi::ShaderStage::Compute, 0, {});
+        }
+        else
+        {
+            ID3D11ShaderResourceView* nullSRV = nullptr;
+            DX11::Context->CSSetShaderResources(0, 1, &nullSRV);
+        }
         ctx.SetComputePipeline({});
 
         INFO_PRINT("CubemapPrefilter: Generated prefiltered cubemap (%ux%u, %u mips)", outputResolution, outputResolution, numMips);
