@@ -302,9 +302,14 @@ subfolder. Four stages:
     - [x] sub-pass 1 — all 11 constant buffers → new `rhi::ConstantBuffer` helper
       (owns buffer + stage + slot; `Update`/`Bind` replace the `CreateBuffer`+
       `Map`/`Unmap`+`XSSetConstantBuffers(slot)` boilerplate — one place to touch for DX12).
-    - [ ] sub-pass 2 — render targets / viewports / clears (in progress)
-    - [ ] sub-pass 3 — samplers · sub-pass 4 — textures/SRVs/UAVs/structured buffers ·
-      sub-pass 5 — compute dispatch · sub-pass 6 — remaining fullscreen-draw plumbing
+    - [x] sub-pass 2 — render targets / viewports / clears → `SetTargets()` helper +
+      `ctx.SetRenderTargets`/`SetViewport`/`ClearRenderTarget` via `RenderTarget::GetRtv()`/
+      `DepthBuffer::GetDsv()` (8 sites: SSAO ×2, SSR ×2, transparent, G-buffer 4-MRT,
+      lighting-resolve 2-MRT, post-fx fullscreen).
+    - [x] sub-pass 3 — the 4 engine samplers (point/shadow-cmp/linear/GI-linear) →
+      `rhi::SamplerHandle` via `IDevice::CreateSampler` + `ctx.SetSampler`.
+    - [ ] sub-pass 4 — textures/SRVs/UAVs/structured buffers (next) · sub-pass 5 —
+      compute dispatch · sub-pass 6 — remaining fullscreen-draw plumbing
   - [ ] Steps 8–12 — `CubemapPrefilter`, `GameWorld` GI capture, video player, ImGui /
     editor viewport + font atlas, then delete the `DX11::Device/Context/...` statics.
   - **Found + fixed a real bug along the way** (not port-scope, a genuine engine

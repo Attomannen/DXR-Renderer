@@ -258,7 +258,7 @@ namespace Tga
 		const PixelShader*  myLightingPs   = nullptr;
 		const PixelShader*  myDebugPs      = nullptr;
 
-		Microsoft::WRL::ComPtr<ID3D11SamplerState> myPointSampler;
+		rhi::SamplerHandle myPointSampler;   // s1
 
 		Microsoft::WRL::ComPtr<ID3D11Buffer> myLightBuffer;              // t15 structured
 		Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> myLightSrv;
@@ -311,7 +311,7 @@ namespace Tga
 		Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> myGiShUav;        // CS u0
 		rhi::ConstantBuffer myGiVolumeCb;                  // b13
 		rhi::ConstantBuffer myGiProjectCb;                 // CS b0
-		Microsoft::WRL::ComPtr<ID3D11SamplerState> myGiLinearSampler;       // CS s0
+		rhi::SamplerHandle myGiLinearSampler;       // CS s0
 
 		// --- cascaded shadow maps (directional) ---
 		static constexpr int kShadowRes = 3072;
@@ -319,7 +319,7 @@ namespace Tga
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> myShadowTex; // R32_TYPELESS, kNumCascades array slices
 		Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> myShadowSrv;                 // t19, array
 		std::array<Microsoft::WRL::ComPtr<ID3D11DepthStencilView>, kNumCascades> myShadowDsvs;
-		Microsoft::WRL::ComPtr<ID3D11SamplerState> myShadowCmpSampler;                // s2
+		rhi::SamplerHandle myShadowCmpSampler;                // s2
 		rhi::ConstantBuffer myShadowCb;     // b9
 		std::array<Camera, kNumCascades> myCascadeCam;
 		std::array<Matrix4x4f, kNumCascades> myCascadeViewProj;
@@ -354,7 +354,7 @@ namespace Tga
 		RenderTarget myExposure[2];                        // persistent 1x1 ping-pong
 		int  myExposureSrc = 0;
 		bool myExposureCleared = false;
-		Microsoft::WRL::ComPtr<ID3D11SamplerState> myLinearSampler;   // s3
+		rhi::SamplerHandle myLinearSampler;   // s3
 		rhi::ConstantBuffer myPostFxCb;              // b10
 		bool myPostFxWanted = true;
 

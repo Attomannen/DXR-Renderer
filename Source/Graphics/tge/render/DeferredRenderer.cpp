@@ -247,28 +247,30 @@ bool DeferredRenderer::Init(Vector2ui aResolution)
 			myGiVolumeCb.Create(*DX11::Rhi(), 48, rhi::ShaderStage::Pixel, 13, "GiVolumeCb");   // 3 x float4
 			myGiProjectCb.Create(*DX11::Rhi(), 16, rhi::ShaderStage::Compute, 0, "GiProjectCb");
 
-			D3D11_SAMPLER_DESC ld{};
-			ld.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-			ld.AddressU = ld.AddressV = ld.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-			ld.MaxLOD = D3D11_FLOAT32_MAX;
-			DX11::Device->CreateSamplerState(&ld, myGiLinearSampler.GetAddressOf());
+			{
+				rhi::SamplerDesc sd2;
+				sd2.filter = rhi::FilterMode::Trilinear;
+				sd2.address = rhi::AddressMode::Clamp;
+				myGiLinearSampler = DX11::Rhi()->CreateSampler(sd2);
+			}
 
-			if (!myGiShSrv || !myGiShUav || !myGiVolumeCb.IsValid() || !myGiProjectCb.IsValid() || !myGiLinearSampler)
+			if (!myGiShSrv || !myGiShUav || !myGiVolumeCb.IsValid() || !myGiProjectCb.IsValid() || !myGiLinearSampler.IsValid())
 				myGiProjectCS = nullptr;
 			else
 				INFO_PRINT("DeferredRenderer: emissive-GI volume ready (max %d probes)", kMaxGiProbes);
 		}
 	}
 
-	D3D11_SAMPLER_DESC sd{};
-	sd.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
-	sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-	sd.ComparisonFunc = D3D11_COMPARISON_NEVER;
-	sd.MaxLOD = D3D11_FLOAT32_MAX;
-	if (FAILED(DX11::Device->CreateSamplerState(&sd, myPointSampler.GetAddressOf())))
 	{
-		ERROR_PRINT("DeferredRenderer: failed to create point sampler");
-		return false;
+		rhi::SamplerDesc sd2;
+		sd2.filter = rhi::FilterMode::Point;
+		sd2.address = rhi::AddressMode::Clamp;
+		myPointSampler = DX11::Rhi()->CreateSampler(sd2);
+		if (!myPointSampler.IsValid())
+		{
+			ERROR_PRINT("DeferredRenderer: failed to create point sampler");
+			return false;
+		}
 	}
 
 	// Structured light buffer (t15) + params cbuffer (b6) for the deferred resolve.
@@ -316,16 +318,17 @@ bool DeferredRenderer::Init(Vector2ui aResolution)
 	}
 	else
 	{
-		D3D11_SAMPLER_DESC cd{};
-		cd.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
-		cd.AddressU = cd.AddressV = cd.AddressW = D3D11_TEXTURE_ADDRESS_BORDER;
-		cd.BorderColor[0] = cd.BorderColor[1] = cd.BorderColor[2] = cd.BorderColor[3] = 1.0f;
-		cd.ComparisonFunc = D3D11_COMPARISON_LESS_EQUAL;
-		cd.MaxLOD = D3D11_FLOAT32_MAX;
-		DX11::Device->CreateSamplerState(&cd, myShadowCmpSampler.GetAddressOf());
+		{
+			rhi::SamplerDesc sd2;
+			sd2.filter = rhi::FilterMode::ComparisonBilinear;
+			sd2.address = rhi::AddressMode::Border;
+			sd2.comparison = true;
+			sd2.borderColor[0] = sd2.borderColor[1] = sd2.borderColor[2] = sd2.borderColor[3] = 1.0f;
+			myShadowCmpSampler = DX11::Rhi()->CreateSampler(sd2);
+		}
 
 		myShadowCb.Create(*DX11::Rhi(), sizeof(ShadowCb), rhi::ShaderStage::Pixel, 9, "ShadowCb");
-		if (!myShadowCmpSampler || !myShadowCb.IsValid()) myShadowShader.reset();
+		if (!myShadowCmpSampler.IsValid() || !myShadowCb.IsValid()) myShadowShader.reset();
 	}
 
 	// --- point / spot light shadow atlas (reuses myShadowShader + s2 cmp sampler) ---
@@ -371,17 +374,17 @@ bool DeferredRenderer::Init(Vector2ui aResolution)
 	}
 	else
 	{
-		D3D11_SAMPLER_DESC ld{};
-		ld.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-		ld.AddressU = ld.AddressV = ld.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-		ld.ComparisonFunc = D3D11_COMPARISON_NEVER;
-		ld.MaxLOD = D3D11_FLOAT32_MAX;
-		DX11::Device->CreateSamplerState(&ld, myLinearSampler.GetAddressOf());
+		{
+			rhi::SamplerDesc sd2;
+			sd2.filter = rhi::FilterMode::Trilinear;
+			sd2.address = rhi::AddressMode::Clamp;
+			myLinearSampler = DX11::Rhi()->CreateSampler(sd2);
+		}
 
 		myPostFxCb.Create(*DX11::Rhi(), sizeof(PostFxCb), rhi::ShaderStage::Pixel, 10, "PostFxCb");
 
 		CreatePostFxTargets(aResolution);
-		if (!myLinearSampler || !myPostFxCb.IsValid()) myCompositePs = nullptr;
+		if (!myLinearSampler.IsValid() || !myPostFxCb.IsValid()) myCompositePs = nullptr;
 	}
 
 	myReady = true;
@@ -439,8 +442,8 @@ void DeferredRenderer::RenderSSAO()
 		                                      DX11::DepthBuffer->GetShaderResourceView() };
 		DX11::Context->PSSetShaderResources(11, 1, &srvs[0]);
 		DX11::Context->PSSetShaderResources(14, 1, &srvs[1]);
-		DX11::Context->PSSetSamplers(1, 1, myPointSampler.GetAddressOf());
-		mySsaoCb.Bind(DX11::Rhi()->GetContext());
+		ctx.SetSampler(rhi::ShaderStage::Pixel, 1, myPointSampler);
+		mySsaoCb.Bind(ctx);
 
 		BindFullscreen(mySsaoPs);
 		DX11::LogDrawCall();
@@ -465,8 +468,8 @@ void DeferredRenderer::RenderSSAO()
 		ID3D11ShaderResourceView* depSrv = DX11::DepthBuffer->GetShaderResourceView();
 		DX11::Context->PSSetShaderResources(18, 1, &rawSrv);
 		DX11::Context->PSSetShaderResources(14, 1, &depSrv);
-		DX11::Context->PSSetSamplers(1, 1, myPointSampler.GetAddressOf());
-		mySsaoBlurCb.Bind(DX11::Rhi()->GetContext());
+		ctx.SetSampler(rhi::ShaderStage::Pixel, 1, myPointSampler);
+		mySsaoBlurCb.Bind(ctx);
 
 		BindFullscreen(mySsaoBlurPs);
 		DX11::LogDrawCall();
@@ -518,7 +521,7 @@ void DeferredRenderer::GiProjectProbe(ID3D11ShaderResourceView* aCubeSrv, int aP
 	ID3D11UnorderedAccessView* uav = myGiShUav.Get();
 	DX11::Context->CSSetShader(myGiProjectCS->shader.Get(), nullptr, 0);
 	DX11::Context->CSSetShaderResources(0, 1, &aCubeSrv);
-	DX11::Context->CSSetSamplers(0, 1, myGiLinearSampler.GetAddressOf());
+	DX11::Rhi()->GetContext().SetSampler(rhi::ShaderStage::Compute, 0, myGiLinearSampler);
 	myGiProjectCb.Bind(DX11::Rhi()->GetContext());
 	DX11::Context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
 
@@ -564,7 +567,7 @@ void DeferredRenderer::RenderSSR()
 
 	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
 	ID3D11ShaderResourceView* nulls[6] = {};
-	ID3D11SamplerState* lin = myLinearSampler ? myLinearSampler.Get() : myPointSampler.Get();
+	rhi::SamplerHandle lin = myLinearSampler.IsValid() ? myLinearSampler : myPointSampler;
 
 	// --- pass 1: half-res ray-march -> mySsrTex ---
 	{
@@ -580,9 +583,9 @@ void DeferredRenderer::RenderSSR()
 		DX11::Context->PSSetShaderResources(1, 1, &scene);
 		DX11::Context->PSSetShaderResources(10, 3, gb);
 		DX11::Context->PSSetShaderResources(14, 1, &depth);
-		DX11::Context->PSSetSamplers(1, 1, myPointSampler.GetAddressOf());
-		DX11::Context->PSSetSamplers(3, 1, &lin);
-		mySsrCb.Bind(DX11::Rhi()->GetContext());
+		ctx.SetSampler(rhi::ShaderStage::Pixel, 1, myPointSampler);
+		ctx.SetSampler(rhi::ShaderStage::Pixel, 3, lin);
+		mySsrCb.Bind(ctx);
 
 		BindFullscreen(mySsrPs);
 		DX11::LogDrawCall();
@@ -605,8 +608,8 @@ void DeferredRenderer::RenderSSR()
 		ID3D11ShaderResourceView* srvs2[2] = { mySsrTex.GetShaderResourceView(),
 		                                       myIblSpecTex.GetShaderResourceView() };
 		DX11::Context->PSSetShaderResources(0, 2, srvs2);
-		DX11::Context->PSSetSamplers(1, 1, myPointSampler.GetAddressOf());
-		DX11::Context->PSSetSamplers(3, 1, &lin);   // bilinear upsample of the half-res SSR
+		ctx.SetSampler(rhi::ShaderStage::Pixel, 1, myPointSampler);
+		ctx.SetSampler(rhi::ShaderStage::Pixel, 3, lin);   // bilinear upsample of the half-res SSR
 
 		BindFullscreen(mySsrApplyPs);
 		DX11::LogDrawCall();
@@ -1229,6 +1232,8 @@ void DeferredRenderer::BeginGeometryPass()
 
 void DeferredRenderer::BindGBufferSrvs()
 {
+	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
+
 	ID3D11ShaderResourceView* srvs[5] = {
 		myAlbedo.GetShaderResourceView(),
 		myNormal.GetShaderResourceView(),
@@ -1237,9 +1242,7 @@ void DeferredRenderer::BindGBufferSrvs()
 		DX11::DepthBuffer->GetShaderResourceView(),
 	};
 	DX11::Context->PSSetShaderResources(10, 5, srvs);
-	DX11::Context->PSSetSamplers(1, 1, myPointSampler.GetAddressOf());
-
-	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
+	ctx.SetSampler(rhi::ShaderStage::Pixel, 1, myPointSampler);
 
 	// Deferred structured light buffer (t15) + count (b6).
 	ID3D11ShaderResourceView* lightSrv = myLightSrv.Get();
@@ -1262,8 +1265,8 @@ void DeferredRenderer::BindGBufferSrvs()
 	// Shadow cascades (t19, cmp sampler s2, params b9). gShadowEnabled gates use.
 	ID3D11ShaderResourceView* shadowSrv = IsShadows() ? myShadowSrv.Get() : nullptr;
 	DX11::Context->PSSetShaderResources(19, 1, &shadowSrv);
-	if (myShadowCmpSampler)
-		DX11::Context->PSSetSamplers(2, 1, myShadowCmpSampler.GetAddressOf());
+	if (myShadowCmpSampler.IsValid())
+		ctx.SetSampler(rhi::ShaderStage::Pixel, 2, myShadowCmpSampler);
 	myShadowCb.Bind(ctx);   // b9
 
 	// Box-projected reflection probe (b12), read by EvaluateAmbiance.
@@ -1349,7 +1352,7 @@ void DeferredRenderer::PostFxFullscreen(const PixelShader* aPs, RenderTarget& aD
 	SetTargets(DX11::Rhi()->GetContext(), { aDst.GetRtv() }, {}, aDstSize);
 
 	DX11::Context->PSSetShaderResources(0, aSrvCount, aSrvs);
-	DX11::Context->PSSetSamplers(3, 1, myLinearSampler.GetAddressOf());
+	DX11::Rhi()->GetContext().SetSampler(rhi::ShaderStage::Pixel, 3, myLinearSampler);
 	myPostFxCb.Bind(DX11::Rhi()->GetContext());   // b10
 
 	BindFullscreen(aPs);
@@ -1460,7 +1463,7 @@ void DeferredRenderer::Composite()
 		myExposure[myExposureSrc].GetShaderResourceView(),
 	};
 	DX11::Context->PSSetShaderResources(0, 3, srvs);
-	DX11::Context->PSSetSamplers(3, 1, myLinearSampler.GetAddressOf());
+	DX11::Rhi()->GetContext().SetSampler(rhi::ShaderStage::Pixel, 3, myLinearSampler);
 	myPostFxCb.Bind(DX11::Rhi()->GetContext());   // b10
 
 	BindFullscreen(myCompositePs);
