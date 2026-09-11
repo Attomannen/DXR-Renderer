@@ -557,7 +557,7 @@ namespace Tga::rhi::dx12
 			rtvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;   // sRGB write view on the UNORM resource (flip-model requires the resource itself be non-sRGB)
 			rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
 			myDevice->CreateRenderTargetView(res.Get(), &rtvDesc, myRtvHeap.Cpu(slot));
-			myBackBufferRtv[i] = myRtvSlots.Alloc(RtvRec{ slot, Format::R8G8B8A8_UNorm_sRGB });
+			myBackBufferRtv[i] = myRtvSlots.Alloc(RtvRec{ slot, Format::R8G8B8A8_UNorm_sRGB, myBackBufferTex[i] });
 
 			// A second, non-sRGB (linear/UNORM write) view on the SAME resource --
 			// mirrors DX11::BackBufferNoSrgbConversion. ImGui's colors are already
@@ -569,7 +569,7 @@ namespace Tga::rhi::dx12
 			noSrgbDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 			noSrgbDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
 			myDevice->CreateRenderTargetView(res.Get(), &noSrgbDesc, myRtvHeap.Cpu(noSrgbSlot));
-			myBackBufferRtvNoSrgb[i] = myRtvSlots.Alloc(RtvRec{ noSrgbSlot, Format::R8G8B8A8_UNorm });
+			myBackBufferRtvNoSrgb[i] = myRtvSlots.Alloc(RtvRec{ noSrgbSlot, Format::R8G8B8A8_UNorm, myBackBufferTex[i] });
 		}
 	}
 
@@ -671,6 +671,11 @@ namespace Tga::rhi::dx12
 		HRESULT dr = myDevice->GetDeviceRemovedReason();
 		if (FAILED(dr))
 			ERROR_PRINT("Dx12Device: device removed at frame %llu, reason=0x%08X", (unsigned long long)sFrameNo, (unsigned)dr);
+
+		// Cheap no-op unless TGE_DX12_DEBUG_LAYER actually enabled the debug
+		// layer (see DX11::InitDx12): ID3D12InfoQueue is only queryable then,
+		// so this costs one failed QueryInterface per frame otherwise.
+		DrainDebugMessages("EndFrame");
 	}
 
 	ICommandContext& Dx12Device::GetContext() { return *myContext; }
@@ -759,7 +764,16 @@ namespace Tga::rhi::dx12
 			}
 		}
 
-		BufferRec rec; rec.res = res; rec.desc = d; rec.state = initState;
+		// UploadBufferData records (and synchronously retires) COPY_DEST ->
+		// GENERIC_READ.  Keep the CPU-side state tracker in lockstep with that
+		// one-off command list; otherwise a later explicit barrier uses
+		// COPY_DEST as StateBefore even though the GPU resource is already in
+		// GENERIC_READ.  D3D12 does not repair a mismatched StateBefore for us.
+		const D3D12_RESOURCE_STATES finalState =
+			(initialData && d.memory == MemoryType::Default)
+				? D3D12_RESOURCE_STATE_GENERIC_READ
+				: initState;
+		BufferRec rec; rec.res = res; rec.desc = d; rec.state = finalState;
 		return myBuffers.Alloc(std::move(rec));
 	}
 
@@ -827,7 +841,22 @@ namespace Tga::rhi::dx12
 		if (initial && initialCount)
 			UploadTextureData(res.Get(), d, initial, initialCount);
 
-		TextureRec rec; rec.res = res; rec.desc = d; rec.state = initState;
+		// UploadTextureData synchronously changes the resource's state before
+		// this record is published.  The tracked state must be the upload's
+		// StateAfter, not the creation state (COPY_DEST for ordinary loaded
+		// textures).  A stale COPY_DEST here made the next frame emit resource
+		// barriers with an invalid StateBefore, which is undefined GPU work and
+		// can manifest as DEVICE_HUNG rather than a CPU-side HRESULT.
+		D3D12_RESOURCE_STATES finalState = initState;
+		if (initial && initialCount)
+		{
+			finalState = HasBind(d.bind, TextureBind::RenderTarget)
+				? D3D12_RESOURCE_STATE_RENDER_TARGET
+				: HasBind(d.bind, TextureBind::DepthStencil)
+					? D3D12_RESOURCE_STATE_DEPTH_WRITE
+					: D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+		}
+		TextureRec rec; rec.res = res; rec.desc = d; rec.state = finalState;
 		return myTextures.Alloc(std::move(rec));
 	}
 
@@ -909,6 +938,25 @@ namespace Tga::rhi::dx12
 
 		myUploadAllocator->Reset();
 		myUploadCmdList->Reset(myUploadAllocator.Get(), nullptr);
+		// CreateTexture creates render/depth targets directly in their natural
+		// states so they are immediately usable when no initial data is supplied.
+		// If such a resource *does* carry initial data, transition it explicitly
+		// before CopyTextureRegion: copies require COPY_DEST, not RT/DEPTH_WRITE.
+		const bool rt = HasBind(d.bind, TextureBind::RenderTarget);
+		const bool ds = HasBind(d.bind, TextureBind::DepthStencil);
+		const D3D12_RESOURCE_STATES creationState = rt ? D3D12_RESOURCE_STATE_RENDER_TARGET
+			: ds ? D3D12_RESOURCE_STATE_DEPTH_WRITE
+			: D3D12_RESOURCE_STATE_COPY_DEST;
+		if (creationState != D3D12_RESOURCE_STATE_COPY_DEST)
+		{
+			D3D12_RESOURCE_BARRIER toCopyDest = {};
+			toCopyDest.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			toCopyDest.Transition.pResource = dst;
+			toCopyDest.Transition.StateBefore = creationState;
+			toCopyDest.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+			toCopyDest.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			myUploadCmdList->ResourceBarrier(1, &toCopyDest);
+		}
 		for (uint32_t i = 0; i < count; ++i)
 		{
 			D3D12_TEXTURE_COPY_LOCATION dstLoc = { dst, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {} };
@@ -917,8 +965,6 @@ namespace Tga::rhi::dx12
 			srcLoc.PlacedFootprint = footprints[i];
 			myUploadCmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
 		}
-		const bool rt = HasBind(d.bind, TextureBind::RenderTarget);
-		const bool ds = HasBind(d.bind, TextureBind::DepthStencil);
 		D3D12_RESOURCE_BARRIER b = {};
 		b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 		b.Transition.pResource = dst;
@@ -983,7 +1029,7 @@ namespace Tga::rhi::dx12
 
 		uint32_t slot = myCbvSrvUavHeap.Allocate();
 		myDevice->CreateShaderResourceView(t->res.Get(), &vd, myCbvSrvUavHeap.Cpu(slot));
-		return mySrvSlots.Alloc(std::move(slot));
+		return mySrvSlots.Alloc(SrvRec{ slot, h, {} });
 	}
 
 	SrvHandle Dx12Device::CreateSrv(BufferHandle h, const SrvDesc& d)
@@ -1001,7 +1047,7 @@ namespace Tga::rhi::dx12
 
 		uint32_t slot = myCbvSrvUavHeap.Allocate();
 		myDevice->CreateShaderResourceView(b->res.Get(), &vd, myCbvSrvUavHeap.Cpu(slot));
-		return mySrvSlots.Alloc(std::move(slot));
+		return mySrvSlots.Alloc(SrvRec{ slot, {}, h });
 	}
 
 	UavHandle Dx12Device::CreateUav(TextureHandle h, const UavDesc& d)
@@ -1026,7 +1072,7 @@ namespace Tga::rhi::dx12
 
 		uint32_t slot = myCbvSrvUavHeap.Allocate();
 		myDevice->CreateUnorderedAccessView(t->res.Get(), nullptr, &vd, myCbvSrvUavHeap.Cpu(slot));
-		return myUavSlots.Alloc(std::move(slot));
+		return myUavSlots.Alloc(UavRec{ slot, h, {} });
 	}
 
 	UavHandle Dx12Device::CreateUav(BufferHandle h, const UavDesc& d)
@@ -1043,7 +1089,7 @@ namespace Tga::rhi::dx12
 
 		uint32_t slot = myCbvSrvUavHeap.Allocate();
 		myDevice->CreateUnorderedAccessView(b->res.Get(), nullptr, &vd, myCbvSrvUavHeap.Cpu(slot));
-		return myUavSlots.Alloc(std::move(slot));
+		return myUavSlots.Alloc(UavRec{ slot, {}, h });
 	}
 
 	RtvHandle Dx12Device::CreateRtv(TextureHandle h, const RtvDesc& d)
@@ -1068,7 +1114,7 @@ namespace Tga::rhi::dx12
 		uint32_t slot = myRtvHeap.Allocate();
 		myDevice->CreateRenderTargetView(t->res.Get(), &vd, myRtvHeap.Cpu(slot));
 		const Format viewFormat = d.formatOverride != Format::Unknown ? d.formatOverride : t->desc.format;
-		return myRtvSlots.Alloc(RtvRec{ slot, viewFormat });
+		return myRtvSlots.Alloc(RtvRec{ slot, viewFormat, h });
 	}
 
 	DsvHandle Dx12Device::CreateDsv(TextureHandle h, const DsvDesc& d)
@@ -1084,7 +1130,7 @@ namespace Tga::rhi::dx12
 		uint32_t slot = myDsvHeap.Allocate();
 		myDevice->CreateDepthStencilView(t->res.Get(), &vd, myDsvHeap.Cpu(slot));
 		const Format viewFormat = d.formatOverride != Format::Unknown ? d.formatOverride : t->desc.format;
-		return myDsvSlots.Alloc(DsvRec{ slot, viewFormat });
+		return myDsvSlots.Alloc(DsvRec{ slot, viewFormat, h });
 	}
 
 	SamplerHandle Dx12Device::CreateSampler(const SamplerDesc& d)
@@ -1214,10 +1260,41 @@ namespace Tga::rhi::dx12
 	}
 
 	// ------------------------------------------------------------------ destroy
-	void Dx12Device::Destroy(BufferHandle h)  { myBuffers.Free(h); }
-	void Dx12Device::Destroy(TextureHandle h) { myTextures.Free(h); }
-	void Dx12Device::Destroy(SrvHandle h)     { if (uint32_t* s = mySrvSlots.Get(h)) { myCbvSrvUavHeap.Free(*s); mySrvSlots.Free(h); } }
-	void Dx12Device::Destroy(UavHandle h)     { if (uint32_t* s = myUavSlots.Get(h)) { myCbvSrvUavHeap.Free(*s); myUavSlots.Free(h); } }
+	void Dx12Device::Destroy(BufferHandle h)
+	{
+		// Pool::Free() overwrites the slot's BufferRec with a fresh default one
+		// right here, on the spot -- for a ComPtr<ID3D12Resource> that drops the
+		// GPU resource's last reference IMMEDIATELY, synchronously, regardless
+		// of whether any command list still references it. Every resource this
+		// engine destroys is destroyed from CPU-side game/engine code, which has
+		// no idea whether a command list recorded earlier THIS SAME frame (not
+		// yet submitted -- that happens at EndFrame) or a still-in-flight
+		// previous frame's submission still touches it. Route it through the
+		// same "keep alive until this frame-in-flight slot's fence retires"
+		// mechanism already used for one-off upload resources (see
+		// KeepAliveUntilFrameRetires's callers) instead of trusting the caller.
+		// Found 2026-09-11: CubemapPrefilter::CaptureSceneToCubemap re-populates
+		// the SAME CubemapData (and so calls CubemapData::Reset() -> this) many
+		// times in a row across a GI probe bake with no GPU flush in between --
+		// each Reset() was destroying the PREVIOUS capture's texture while its
+		// own render/copy/GenerateMips commands were still sitting unexecuted
+		// in the current command list, a real GPU-side use-after-free that
+		// reliably produced a DXGI_ERROR_DEVICE_HUNG a couple of frames later
+		// (confirmed via the D3D12 debug layer: "resource object ... was
+		// deleted prior to executing the command list").
+		if (BufferRec* b = myBuffers.Get(h))
+			if (b->res) KeepAliveUntilFrameRetires(b->res);
+		myBuffers.Free(h);
+	}
+	void Dx12Device::Destroy(TextureHandle h)
+	{
+		// See Destroy(BufferHandle)'s comment just above -- same hazard, same fix.
+		if (TextureRec* t = myTextures.Get(h))
+			if (t->res) KeepAliveUntilFrameRetires(t->res);
+		myTextures.Free(h);
+	}
+	void Dx12Device::Destroy(SrvHandle h)     { if (SrvRec* s = mySrvSlots.Get(h)) { myCbvSrvUavHeap.Free(s->slot); mySrvSlots.Free(h); } }
+	void Dx12Device::Destroy(UavHandle h)     { if (UavRec* s = myUavSlots.Get(h)) { myCbvSrvUavHeap.Free(s->slot); myUavSlots.Free(h); } }
 	void Dx12Device::Destroy(RtvHandle h)     { if (RtvRec* r = myRtvSlots.Get(h)) { myRtvHeap.Free(r->slot); myRtvSlots.Free(h); } }
 	void Dx12Device::Destroy(DsvHandle h)     { if (DsvRec* r = myDsvSlots.Get(h)) { myDsvHeap.Free(r->slot); myDsvSlots.Free(h); } }
 	void Dx12Device::Destroy(SamplerHandle h) { if (uint32_t* s = mySamplerSlots.Get(h)) { mySamplerHeap.Free(*s); mySamplerSlots.Free(h); } }
@@ -1265,7 +1342,7 @@ namespace Tga::rhi::dx12
 		// Unused so far (Viewport.cpp's ImGui::Image call is still raw DX11,
 		// a separately-documented gap) -- fix this alongside migrating that
 		// call site, not speculatively here. See Dx12Device.h's class comment.
-		uint32_t* slot = mySrvSlots.Get(h);
+		uint32_t* slot = GetSrvSlot(h);
 		assert(slot && "Dx12: ImGuiTextureId milestone 2");
 		return slot ? reinterpret_cast<void*>(myCbvSrvUavHeap.Gpu(*slot).ptr) : nullptr;
 	}

@@ -412,14 +412,32 @@ static void ImGui_ImplDX12_CreateFontsTexture()
         HANDLE event = CreateEvent(0, 0, 0, 0);
         IM_ASSERT(event != nullptr);
 
-        D3D12_COMMAND_QUEUE_DESC queueDesc = {};
-        queueDesc.Type     = D3D12_COMMAND_LIST_TYPE_DIRECT;
-        queueDesc.Flags    = D3D12_COMMAND_QUEUE_FLAG_NONE;
-        queueDesc.NodeMask = 1;
-
-        ID3D12CommandQueue* cmdQueue = nullptr;
-        hr = bd->pd3dDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&cmdQueue));
-        IM_ASSERT(SUCCEEDED(hr));
+        // Reuse the application's own command queue when it provided one
+        // (ImGui_ImplDX12_InitInfo::CommandQueue) instead of unconditionally
+        // spinning up a brand-new, independent ID3D12CommandQueue just for
+        // this one-off upload, as this function originally always did.
+        // Found 2026-09-11 (TGE/P5G3): on at least one real GPU/driver
+        // combination, a second fully independent queue submitting work
+        // concurrently with the application's own busy queue (e.g. while it
+        // is loading many other textures at startup) deadlocks -- this
+        // function's own WaitForSingleObject(event, INFINITE) below never
+        // returns, and Windows' TDR watchdog eventually resets the device
+        // out from under the whole application ~2 seconds later, which is
+        // otherwise silent and easy to mistake for an unrelated bug
+        // elsewhere. Reusing the app's own queue sidesteps the multi-queue
+        // scheduling interaction entirely. Falls back to creating its own
+        // queue (the original behavior) if the app didn't provide one.
+        ID3D12CommandQueue* cmdQueue = bd->InitInfo.CommandQueue;
+        const bool ownQueue = (cmdQueue == nullptr);
+        if (ownQueue)
+        {
+            D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+            queueDesc.Type     = D3D12_COMMAND_LIST_TYPE_DIRECT;
+            queueDesc.Flags    = D3D12_COMMAND_QUEUE_FLAG_NONE;
+            queueDesc.NodeMask = 1;
+            hr = bd->pd3dDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&cmdQueue));
+            IM_ASSERT(SUCCEEDED(hr));
+        }
 
         ID3D12CommandAllocator* cmdAlloc = nullptr;
         hr = bd->pd3dDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&cmdAlloc));
@@ -444,7 +462,8 @@ static void ImGui_ImplDX12_CreateFontsTexture()
 
         cmdList->Release();
         cmdAlloc->Release();
-        cmdQueue->Release();
+        if (ownQueue)
+            cmdQueue->Release();
         CloseHandle(event);
         fence->Release();
         uploadBuffer->Release();

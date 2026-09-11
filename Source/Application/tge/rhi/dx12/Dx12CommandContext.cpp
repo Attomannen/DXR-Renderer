@@ -82,6 +82,8 @@ namespace Tga::rhi::dx12
 		myBoundRtvCount = n;
 		for (uint32_t i = 0; i < n; ++i)
 		{
+			if (RtvRec* rtv = myDevice.GetRtv(rtvs[i]))
+				TransitionResource(rtv->texture, ResourceState::RenderTarget);
 			uint32_t* slot = myDevice.GetRtvSlot(rtvs[i]);
 			assert(slot && "SetRenderTargets: invalid RtvHandle");
 			rtvHandles[i] = myDevice.RtvCpuHandle(slot ? *slot : 0);
@@ -92,6 +94,8 @@ namespace Tga::rhi::dx12
 		myBoundDsvFormat = myDevice.GetDsvFormat(dsv);
 		if (uint32_t* dsvSlot = myDevice.GetDsvSlot(dsv))
 		{
+			if (DsvRec* dsvRec = myDevice.GetDsv(dsv))
+				TransitionResource(dsvRec->texture, ResourceState::DepthWrite);
 			dsvHandle = myDevice.DsvCpuHandle(*dsvSlot);
 			pDsv = &dsvHandle;
 		}
@@ -114,6 +118,8 @@ namespace Tga::rhi::dx12
 
 	void Dx12CommandContext::ClearRenderTarget(RtvHandle rtv, const float rgba[4])
 	{
+		if (RtvRec* rec = myDevice.GetRtv(rtv))
+			TransitionResource(rec->texture, ResourceState::RenderTarget);
 		uint32_t* slot = myDevice.GetRtvSlot(rtv);
 		if (!slot) return;
 		List()->ClearRenderTargetView(myDevice.RtvCpuHandle(*slot), rgba, 0, nullptr);
@@ -121,6 +127,8 @@ namespace Tga::rhi::dx12
 
 	void Dx12CommandContext::ClearDepthStencil(DsvHandle dsv, float depth, uint8_t stencil, bool clearDepth, bool clearStencil)
 	{
+		if (DsvRec* rec = myDevice.GetDsv(dsv))
+			TransitionResource(rec->texture, ResourceState::DepthWrite);
 		uint32_t* slot = myDevice.GetDsvSlot(dsv);
 		if (!slot) return;
 		D3D12_CLEAR_FLAGS flags = {};
@@ -228,6 +236,16 @@ namespace Tga::rhi::dx12
 	void Dx12CommandContext::SetShaderResource(ShaderStage stage, uint32_t slot, SrvHandle h)
 	{
 		if (slot >= kNumSrv) return;
+		if (SrvRec* rec = myDevice.GetSrv(h))
+		{
+			// A graphics SRV may be consumed by either VS or PS; use the legal
+			// combined read state so one descriptor-table binding is valid for both.
+			const ResourceState state = HasStage(stage, ShaderStage::Compute)
+				? ResourceState::NonPixelShaderResource
+				: ResourceState::PixelShaderResource | ResourceState::NonPixelShaderResource;
+			if (rec->texture) TransitionResource(rec->texture, state);
+			if (rec->buffer)  TransitionResource(rec->buffer, ResourceState::GenericRead);
+		}
 		myBoundSrv[slot] = h;
 		if (HasStage(stage, ShaderStage::Vertex) || HasStage(stage, ShaderStage::Pixel)) mySrvTableDirtyGraphics = true;
 		if (HasStage(stage, ShaderStage::Compute)) mySrvTableDirtyCompute = true;
@@ -235,22 +253,26 @@ namespace Tga::rhi::dx12
 
 	void Dx12CommandContext::SetShaderResources(ShaderStage stage, uint32_t firstSlot, uint32_t count, const SrvHandle* handles)
 	{
-		for (uint32_t i = 0; i < count && firstSlot + i < kNumSrv; ++i) myBoundSrv[firstSlot + i] = handles[i];
-		if (HasStage(stage, ShaderStage::Vertex) || HasStage(stage, ShaderStage::Pixel)) mySrvTableDirtyGraphics = true;
-		if (HasStage(stage, ShaderStage::Compute)) mySrvTableDirtyCompute = true;
+		for (uint32_t i = 0; i < count && firstSlot + i < kNumSrv; ++i)
+			SetShaderResource(stage, firstSlot + i, handles[i]);
 	}
 
 	void Dx12CommandContext::SetUnorderedAccess(uint32_t slot, UavHandle h)
 	{
 		if (slot >= kNumUav) return;
+		if (UavRec* rec = myDevice.GetUav(h))
+		{
+			if (rec->texture) TransitionResource(rec->texture, ResourceState::UnorderedAccess);
+			if (rec->buffer)  TransitionResource(rec->buffer, ResourceState::UnorderedAccess);
+		}
 		myBoundUav[slot] = h;
 		myUavTableDirtyCompute = true;
 	}
 
 	void Dx12CommandContext::SetUnorderedAccesses(uint32_t firstSlot, uint32_t count, const UavHandle* handles)
 	{
-		for (uint32_t i = 0; i < count && firstSlot + i < kNumUav; ++i) myBoundUav[firstSlot + i] = handles[i];
-		myUavTableDirtyCompute = true;
+		for (uint32_t i = 0; i < count && firstSlot + i < kNumUav; ++i)
+			SetUnorderedAccess(firstSlot + i, handles[i]);
 	}
 
 	void Dx12CommandContext::SetSampler(ShaderStage stage, uint32_t slot, SamplerHandle h)
@@ -657,14 +679,37 @@ namespace Tga::rhi::dx12
 				srvDesc.firstArraySlice = slice; srvDesc.arraySize = 1;   // single slice -- forces the Tex2DArray SRV path even on a TexCube
 				SrvHandle srcSrv = myDevice.CreateSrv(owner, srvDesc);
 
-				SetRenderTargets(1, &rtv, DsvHandle{});
+				// NOT SetRenderTargets()/SetShaderResource(): both would call
+				// TransitionResource(owner, ...), which reads/writes the single
+				// WHOLE-RESOURCE t->state this function is deliberately bypassing
+				// (see subState above) -- owner's destination mip is RENDER_TARGET
+				// while its source mip is simultaneously PIXEL_SHADER_RESOURCE, a
+				// state TransitionResource cannot represent. Letting either call
+				// through corrupts t->state for the rest of the resource's life
+				// (found 2026-09-11: it desyncs to whatever state the last such
+				// call happened to set, so every later bind of this texture
+				// anywhere else in the engine emits a StateBefore that doesn't
+				// match the resource's real state -- D3D12 debug layer flags it
+				// immediately, and it's a real, confirmed cause of a DEVICE_HUNG
+				// a few frames later). Bind directly instead; barrierOne() above
+				// already emits the correct per-subresource transition.
+				{
+					uint32_t* rtvSlot = myDevice.GetRtvSlot(rtv);
+					D3D12_CPU_DESCRIPTOR_HANDLE rtvCpu = myDevice.RtvCpuHandle(rtvSlot ? *rtvSlot : 0);
+					myBoundRtvCount = 1;
+					myBoundRtvFormats[0] = myDevice.GetRtvFormat(rtv);
+					myBoundDsvFormat = myDevice.GetDsvFormat(DsvHandle{});
+					SEH_OMSetRenderTargets(List(), 1, &rtvCpu, nullptr);
+				}
 				SetViewport(0.f, 0.f, static_cast<float>(w), static_cast<float>(h), 0.f, 1.f);
 				SetPrimitiveTopology(Topology::TriangleList);
 				SetVertexBuffer(0, {}, 0, 0);
 				SetIndexBuffer({}, Format::R32_UInt, 0);
 				SetVertexShader(vs->module);
 				SetPixelShader(ps->module);
-				SetShaderResource(ShaderStage::Pixel, 1, srcSrv);   // PostprocessCopyPS: FullscreenTexture1, register(t1)
+				// PostprocessCopyPS: FullscreenTexture1, register(t1) -- see comment above for why this isn't SetShaderResource().
+				myBoundSrv[1] = srcSrv;
+				mySrvTableDirtyGraphics = true;
 				SetSampler(ShaderStage::Pixel, 0, myMipGenSampler); // DefaultSampler, register(s0)
 				Draw(3, 0);
 

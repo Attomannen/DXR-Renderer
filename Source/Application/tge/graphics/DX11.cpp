@@ -4,6 +4,7 @@
 #include <tge/log/Log.h>
 
 #include <fstream>
+#include <cstdlib>
 #include <tge/windows/WindowsWindow.h>
 #include <nlohmann/json.hpp>
 #include <tge/util/StringCast.h>
@@ -321,21 +322,21 @@ bool DX11::InitDx12(WindowsWindow* aWindowHandler)
 	dd.height = height;
 	dd.framesInFlight = 2;
 #if defined(_DEBUG)
-	// Left OFF for DX12 specifically (2026-09-11): with it on, the app renders
-	// the first frame or two of real scene content correctly, then dies with
-	// no visible error a few frames later (process exit code 0x87D -- a
-	// DebugBreak()-raised exception with no debugger attached to catch it).
-	// Disabling ID3D12InfoQueue's/IDXGIInfoQueue's SetBreakOnSeverity for
-	// every severity (see Dx12Device::CreateDeviceAndQueue) did NOT stop it,
-	// meaning some class of detection in this SDK/driver combo forces a break
-	// regardless of that setting. With the layer off entirely, the exact same
-	// scene renders and the engine runs indefinitely (verified: 30-frame bench
-	// completes and exits cleanly, matching DX11's behavior). Real DX12
-	// validation is valuable and worth restoring once whatever the layer is
-	// objecting to is found -- until then, this trades away that diagnostics
-	// tool for actually being able to run the DX12 backend at all. DX11's own
-	// debug layer (a separate code path/flag, see Init() above) is unaffected.
-	dd.enableDebugLayer = false;
+	// OFF by default for DX12 specifically: it costs real perf (roughly
+	// halved frame rate observed on the Sponza bench) and an earlier attempt
+	// at enabling it appeared to crash outright (DebugBreak()-raised
+	// exception, no debugger attached to catch it). That turned out to be a
+	// red herring from Dx12Device::CreateDeviceAndQueue not yet disabling
+	// ID3D12InfoQueue's/IDXGIInfoQueue's SetBreakOnSeverity -- fixed there
+	// now, and the layer is confirmed safe to run (2026-09-11: found and
+	// fixed a real GPU-side use-after-free this way -- Dx12Device::Destroy
+	// wasn't deferring a resource's release until the GPU was actually done
+	// with it, which caused a DXGI_ERROR_DEVICE_HUNG a couple of frames
+	// later). Opt in via env var when diagnosing DX12-side resource/barrier
+	// issues; DX11's own debug layer (a separate code path/flag, see Init()
+	// above) is unaffected either way.
+	dd.enableDebugLayer = std::getenv("TGE_DX12_DEBUG_LAYER") != nullptr;
+	dd.enableGpuValidation = std::getenv("TGE_DX12_GPU_VALIDATION") != nullptr;
 #endif
 
 	ourRhiDevice = rhi::CreateDevice(rhi::Backend::DX12, dd);

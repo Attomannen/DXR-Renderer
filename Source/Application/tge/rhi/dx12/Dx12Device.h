@@ -30,8 +30,13 @@ namespace Tga::rhi::dx12
 	// a PSO must be created with -- CreateGraphicsPipelineState requires them
 	// to match whatever's actually bound, and RtvHandle/DsvHandle alone don't
 	// carry that back to the command context.
-	struct RtvRec { uint32_t slot = 0; Format format = Format::Unknown; };
-	struct DsvRec { uint32_t slot = 0; Format format = Format::Unknown; };
+	// D3D12 descriptors do not retain a resource reference or expose their
+	// owner.  Keep the owner alongside every view so bind-time usage can emit
+	// the mandatory resource-state transitions.
+	struct SrvRec { uint32_t slot = 0; TextureHandle texture; BufferHandle buffer; };
+	struct UavRec { uint32_t slot = 0; TextureHandle texture; BufferHandle buffer; };
+	struct RtvRec { uint32_t slot = 0; Format format = Format::Unknown; TextureHandle texture; };
+	struct DsvRec { uint32_t slot = 0; Format format = Format::Unknown; TextureHandle texture; };
 
 	// Stage 2 milestone 2: root signature + PSO cache + the full
 	// ICommandContext bind/draw/dispatch surface. Milestone 1's device/
@@ -154,8 +159,12 @@ namespace Tga::rhi::dx12
 		void DrainDebugMessages(const char* tag);
 		D3D12_CPU_DESCRIPTOR_HANDLE CbvSrvUavCpuHandle(uint32_t slot) { return myCbvSrvUavHeap.Cpu(slot); }
 		D3D12_CPU_DESCRIPTOR_HANDLE SamplerCpuHandle(uint32_t slot)   { return mySamplerHeap.Cpu(slot); }
-		uint32_t* GetSrvSlot(SrvHandle h)         { return mySrvSlots.Get(h); }
-		uint32_t* GetUavSlot(UavHandle h)         { return myUavSlots.Get(h); }
+		uint32_t* GetSrvSlot(SrvHandle h)         { SrvRec* r = mySrvSlots.Get(h); return r ? &r->slot : nullptr; }
+		uint32_t* GetUavSlot(UavHandle h)         { UavRec* r = myUavSlots.Get(h); return r ? &r->slot : nullptr; }
+		SrvRec* GetSrv(SrvHandle h)               { return mySrvSlots.Get(h); }
+		UavRec* GetUav(UavHandle h)               { return myUavSlots.Get(h); }
+		RtvRec* GetRtv(RtvHandle h)               { return myRtvSlots.Get(h); }
+		DsvRec* GetDsv(DsvHandle h)               { return myDsvSlots.Get(h); }
 		uint32_t* GetRtvSlot(RtvHandle h)          { RtvRec* r = myRtvSlots.Get(h); return r ? &r->slot : nullptr; }
 		uint32_t* GetDsvSlot(DsvHandle h)          { DsvRec* r = myDsvSlots.Get(h); return r ? &r->slot : nullptr; }
 		Format    GetRtvFormat(RtvHandle h)        { RtvRec* r = myRtvSlots.Get(h); return r ? r->format : Format::Unknown; }
@@ -289,8 +298,8 @@ namespace Tga::rhi::dx12
 
 		Pool<BufferRec,  BufferHandle>  myBuffers;
 		Pool<TextureRec, TextureHandle> myTextures;
-		Pool<uint32_t, SrvHandle>     mySrvSlots;
-		Pool<uint32_t, UavHandle>     myUavSlots;
+		Pool<SrvRec, SrvHandle>       mySrvSlots;
+		Pool<UavRec, UavHandle>       myUavSlots;
 		Pool<RtvRec, RtvHandle>       myRtvSlots;
 		Pool<DsvRec, DsvHandle>       myDsvSlots;
 		Pool<uint32_t, SamplerHandle> mySamplerSlots;

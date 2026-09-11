@@ -154,11 +154,26 @@ void ImGuiInterface::Init()
 	{
 		D3D12_CPU_DESCRIPTOR_HANDLE fontCpu{ reinterpret_cast<SIZE_T>(rhiDevice->ImGuiFontSrvCpuHandle()) };
 		D3D12_GPU_DESCRIPTOR_HANDLE fontGpu{ reinterpret_cast<UINT64>(rhiDevice->ImGuiFontSrvGpuHandle()) };
-		ImGui_ImplDX12_Init(static_cast<ID3D12Device*>(rhiDevice->GetNativeDevice()),
-		                    2,   // frames in flight -- matches Dx12Device::kFramesInFlight
-		                    DXGI_FORMAT_R8G8B8A8_UNORM,   // BackBufferNoSrgbConversion's format -- ImGui renders here, not the sRGB view (see Application::EndFrame)
-		                    static_cast<ID3D12DescriptorHeap*>(rhiDevice->GetImGuiSrvDescriptorHeap()),
-		                    fontCpu, fontGpu);
+		// The legacy 6-argument Init() (still supported, and what this used
+		// to call) has no way to pass the app's own command queue, so this
+		// vendored backend's font-texture upload always spun up a brand-new,
+		// independent ID3D12CommandQueue purely for that one-off copy. Found
+		// 2026-09-11: on this GPU/driver, that second queue submitting work
+		// concurrently with the engine's own busy queue (loading many other
+		// textures at startup) deadlocks -- silently, until Windows' TDR
+		// watchdog resets the device ~2 seconds later. Using the InitInfo
+		// struct form instead lets ImGui_ImplDX12_CreateFontsTexture reuse
+		// our real queue (see the matching comment in imgui_impl_dx12.cpp),
+		// sidestepping the second-queue interaction entirely.
+		ImGui_ImplDX12_InitInfo initInfo = {};
+		initInfo.Device = static_cast<ID3D12Device*>(rhiDevice->GetNativeDevice());
+		initInfo.CommandQueue = static_cast<ID3D12CommandQueue*>(rhiDevice->GetNativeCommandQueue());
+		initInfo.NumFramesInFlight = 2;   // matches Dx12Device::kFramesInFlight
+		initInfo.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;   // BackBufferNoSrgbConversion's format -- ImGui renders here, not the sRGB view (see Application::EndFrame)
+		initInfo.SrvDescriptorHeap = static_cast<ID3D12DescriptorHeap*>(rhiDevice->GetImGuiSrvDescriptorHeap());
+		initInfo.LegacySingleSrvCpuDescriptor = fontCpu;
+		initInfo.LegacySingleSrvGpuDescriptor = fontGpu;
+		ImGui_ImplDX12_Init(&initInfo);
 	}
 	else
 	{

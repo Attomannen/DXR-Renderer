@@ -724,6 +724,71 @@ subfolder. Four stages:
   environment doesn't have** — a PIX or NSight Graphics capture of the exact hanging frame would
   show which draw/dispatch never retires, which no amount of further CPU-side toggling will
   reveal.
+- **`DEVICE_HUNG`: actual root cause found and fixed** (2026-09-11, same day, continued further) —
+  a PIX capture (walked through interactively: Developer Mode + admin launch for timing data,
+  `TGE_RHI=dx12 BENCH_FRAMES=10 BENCH_WARMUP=0`, GPU crash dump capture on) showed
+  `DeviceRemovalDetected(DXGI_ERROR_DEVICE_HUNG)` as the literal last event, preceded only by
+  ordinary `SpriteDrawer` instanced-quad draws — nothing exotic. Found and fixed in passing:
+  ImGui's vendored `imgui_impl_dx12.cpp` unconditionally created its **own** independent
+  `ID3D12CommandQueue` for the one-off font-texture upload instead of reusing the app's queue (two
+  "Graphics Queue" rows visible in PIX); switched `ImGuiInterface.cpp` to the struct-based
+  `ImGui_ImplDX12_InitInfo::Init()` so the real queue can be passed through. Real progress came
+  from two of the user's own fixes: (1) `TextureRec`/`BufferRec::state` was left at its
+  creation-time value (typically `COPY_DEST`) after `CreateBuffer`/`CreateTexture` uploaded initial
+  data and internally transitioned the resource further — later barriers used this stale state as
+  `StateBefore`, which D3D12 does not repair; fixed by computing the real post-upload state up
+  front. (2) D3D12 views carry no reference to (or transition on behalf of) their owning resource,
+  unlike DX11 — `SrvRec`/`UavRec`/`RtvRec`/`DsvRec` gained `texture`/`buffer` owner fields so
+  `SetRenderTargets`/`ClearRenderTarget`/`ClearDepthStencil`/`SetShaderResource`/
+  `SetUnorderedAccess` can all now emit the resource-state transition D3D12 requires at bind time
+  (previously entirely absent engine-wide). Neither fix alone stopped the hang, but they made the
+  next step possible: `Dx12Device::DrainDebugMessages` (an `ID3D12InfoQueue` message pump, written
+  earlier but never actually wired up) was hooked into `EndFrame`, and the D3D12 debug layer was
+  re-enabled (`TGE_DX12_DEBUG_LAYER=1`; the layer's break-on-severity is disabled in
+  `CreateDeviceAndQueue`, so it now only logs instead of raising an uncatchable `DebugBreak()` —
+  the earlier "enabling it crashes outright" finding was this, not a fundamental incompatibility).
+  This surfaced two real, previously invisible bugs:
+  1. **`Dx12CommandContext::GenerateMips`** manages a cubemap's mip chain with its own
+     per-subresource state array (`subState`, local to the call) specifically because the mip
+     chain needs different subresources in different states at once (destination = RENDER_TARGET,
+     source = PIXEL_SHADER_RESOURCE) — something the single whole-resource `TextureRec::state`
+     can't represent. It assumed `SetRenderTargets`/`SetShaderResource` were state-tracking-inert,
+     true when it was written but no longer true once fix (2) above added owner-based
+     auto-transitions to those same functions: calling them from inside `GenerateMips` now *also*
+     transitions the WHOLE resource via `TransitionResource`, corrupting `TextureRec::state` for
+     the rest of that texture's life (confirmed via the debug layer: every subresource except each
+     face's mip 0 — i.e. exactly the mips `GenerateMips` touches — reported as being in the wrong
+     state for whatever it was used for next). Fixed by having `GenerateMips` bind its RTV/SRV
+     directly (`SEH_OMSetRenderTargets` + raw descriptor-table slot assignment) instead of going
+     through the auto-transitioning bind path, since `barrierOne` already emits fully correct
+     per-subresource barriers on its own.
+  2. **The actual `DEVICE_HUNG` cause**: `Dx12Device::Destroy(TextureHandle/BufferHandle)` freed
+     the underlying `ComPtr<ID3D12Resource>` **immediately** (`Pool::Free` overwrites the slot with
+     a fresh, empty record on the spot) with no regard for whether a command list still referenced
+     it — a real GPU-side use-after-free. `CubemapPrefilter::CaptureSceneToCubemap` re-populates
+     the *same* `CubemapData` many times in a row across a GI-probe bake (its own header comment:
+     "thousands of times per GI bake") with no GPU flush between captures; each capture starts
+     with `outCubemap.Reset()`, which destroyed the *previous* capture's texture while that
+     capture's own render/copy/`GenerateMips` commands were still sitting unexecuted in the
+     current frame's not-yet-submitted command list. Confirmed via the debug layer: "An
+     ID3D12Resource object ... referenced in a command list ... was deleted prior to
+     executing/closing the command list. This is invalid and can result in application
+     instability." Fixed at the architectural level rather than at this one call site: the engine
+     already has exactly the right mechanism for this (`Dx12Device::KeepAliveUntilFrameRetires`,
+     used for one-off `UpdateBuffer`/`UpdateTexture` upload resources) — `Destroy(BufferHandle)`/
+     `Destroy(TextureHandle)` now route the resource's `ComPtr` through it before freeing the pool
+     slot, so the real GPU object stays alive until that frame-in-flight's fence has actually
+     retired, regardless of what CPU-side code destroyed the handle or when.
+  **Verified**: DX12 now runs the full Sponza bench for 500 frames with **zero** `DEVICE_HUNG`
+  events (previously 100% reproducible by frame 2, invariant across every fix up to this point);
+  re-ran with the debug layer + GPU-based validation active for 60 frames — the resource-lifetime
+  and state-mismatch messages are completely gone (one unrelated, isolated, one-time swapchain
+  message remains, not a hang cause). `BENCH_SCREENSHOT` confirms DX12 renders the Sponza scene
+  correctly, pixel-equivalent to the DX11 reference (same geometry, same colored lights). DX11
+  regression-checked via the same screenshot path: unaffected. The DX12 debug layer is now a real,
+  usable diagnostic tool going forward — opt in via `TGE_DX12_DEBUG_LAYER=1`
+  (`TGE_DX12_GPU_VALIDATION=1` for GPU-based validation on top; both `_DEBUG`-only, off by default
+  since GPU-based validation alone roughly halves frame rate).
 - **Stage 3** — DXR inline `RayQuery` (SM 6.5) hardware-traced GI, replacing the Phase 6
   SH-volume software path with a real DDGI (BLAS/TLAS, per-probe ray tracing into the
   existing SH probe volume). Not started.
