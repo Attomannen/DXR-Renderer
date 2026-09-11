@@ -6,16 +6,45 @@ namespace Tga::rhi::dx12
 {
 	class Dx12Device;
 
-	// Stage 2 milestone 1: only the methods BeginFrame/EndFrame's clear-and-
-	// present loop needs are implemented (SetRenderTargets, SetViewport,
-	// SetScissor, ClearRenderTarget, ClearDepthStencil, TransitionResource,
-	// resource copy/update). Pipeline binding, draw/dispatch, and the bind-
-	// by-slot methods assert -- they need the root signature + PSO cache,
-	// which is milestone 2. See Dx12Device.h's class comment.
+	// Stage 2 milestone 2: the full bind/draw/dispatch surface.
+	//
+	// Design notes (see p5g3-dx12-port memory for the full reasoning):
+	// - Root CBVs (b0..b13) bind immediately via SetGraphicsRootConstantBufferView/
+	//   SetComputeRootConstantBufferView -- D3D12 root arguments are "sticky"
+	//   (persist across draws until overwritten), matching this engine's
+	//   D3D11-derived "bind once, draw many times" usage pattern exactly, so
+	//   there's no need to defer/re-resolve these at Draw time.
+	// - SRV/UAV/Sampler descriptor TABLES can't be bound the same way (a table
+	//   must be contiguous in the bound heap; this engine's arbitrary-slot
+	//   binding produces scattered permanent-heap locations) -- these are
+	//   tracked as pending CPU-side arrays and lazily copied into a fresh
+	//   contiguous region of the device's per-frame scratch heap, then bound,
+	//   right before the Draw/Dispatch that actually needs them. Whether that
+	//   copy is skippable (nothing changed since the last Draw/Dispatch) is
+	//   tracked per table via a dirty flag set on every Set*/cleared on use.
+	// - The engine's ShaderStage parameter (Vertex/Pixel/Compute/AllGraphics/
+	//   All) selects WHICH of the two root signatures (graphics vs compute --
+	//   see Dx12Device::CreateRootSignatures) a bind targets, rather than
+	//   selecting a D3D11-style per-stage independent slot: every root-
+	//   signature slot in this design has D3D12_SHADER_VISIBILITY_ALL within
+	//   its own root signature, matching the engine's free b/t/s/u register
+	//   convention. A bind with Vertex/Pixel/AllGraphics touches the graphics
+	//   side's pending state; Compute touches the compute side; All touches
+	//   both (harmless -- whichever pipeline runs next picks up the value it
+	//   needs).
+	// - Fixed-function state (SetBlendState/DepthStencilState/RasterizerState)
+	//   and shader/input-layout binds (SetVertexShader/PixelShader/
+	//   SetInputLayout) are recorded as pending state and lazily assembled
+	//   into a full GraphicsPipelineDesc -> CreateGraphicsPipeline (hash-
+	//   cached) right before each Draw* call, exactly as the Stage 1 plan
+	//   anticipated ("DX12 backend implements those by lazy-merging into its
+	//   PSO"). SetGraphicsPipeline/SetComputePipeline (an already-built
+	//   handle, the pattern DeferredRenderer's compute dispatch sites use)
+	//   bind directly instead.
 	class Dx12CommandContext final : public ICommandContext
 	{
 	public:
-		explicit Dx12CommandContext(Dx12Device& aDevice) : myDevice(aDevice) {}
+		explicit Dx12CommandContext(Dx12Device& aDevice);
 
 		void SetRenderTargets(uint32_t count, const RtvHandle* rtvs, DsvHandle dsv) override;
 		void SetViewport(float x, float y, float w, float h, float minZ, float maxZ) override;
@@ -66,8 +95,42 @@ namespace Tga::rhi::dx12
 		void PushMarker(const char*) override;
 		void PopMarker() override;
 
+		// Called once per frame by Dx12Device::BeginFrame (root signatures never
+		// change across the app's life, so binding them once/frame -- rather
+		// than tracking "did it change" -- is simplest and correct).
+		void OnBeginFrame();
+
 	private:
 		ID3D12GraphicsCommandList* List();
+		void ResolveGraphicsPipeline();     // lazily builds/looks up the PSO for pending state, binds it
+		void FlushGraphicsTables();         // copies dirty SRV/Sampler tables into scratch, binds them
+		void FlushComputeTables();          // copies dirty SRV/UAV/Sampler tables into scratch, binds them
+
 		Dx12Device& myDevice;
+
+		// ---- pending graphics fixed-function / shader state (lazily -> PSO) ----
+		ShaderModuleHandle myPendingVs, myPendingPs;
+		std::vector<InputElement> myPendingInputLayout;
+		BlendMode myPendingBlend = BlendMode::Disabled;
+		DepthMode myPendingDepth = DepthMode::WriteLess;
+		RasterMode myPendingRaster = RasterMode::BackfaceCulling;
+		Topology myPendingTopology = Topology::TriangleList;
+		Format myBoundRtvFormats[8] = {};
+		uint32_t myBoundRtvCount = 0;
+		Format myBoundDsvFormat = Format::Unknown;
+		GraphicsPipelineHandle myBoundGfxPipeline;   // last PSO actually bound (SetPipelineState skipped if unchanged)
+		D3D_PRIMITIVE_TOPOLOGY myBoundTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
+
+		// ---- bound resources, shared across graphics/compute (see class comment) ----
+		static constexpr uint32_t kNumCbv = 14, kNumSrv = 24, kNumUav = 4, kNumSampler = 6;
+		SrvHandle     myBoundSrv[kNumSrv] = {};
+		UavHandle     myBoundUav[kNumUav] = {};
+		SamplerHandle myBoundSampler[kNumSampler] = {};
+		bool mySrvTableDirtyGraphics = true, mySrvTableDirtyCompute = true;
+		bool myUavTableDirtyCompute = true;
+		bool mySamplerTableDirtyGraphics = true, mySamplerTableDirtyCompute = true;
+
+		BufferHandle myBoundVb[4] = {}; uint32_t myVbStride[4] = {}; uint32_t myVbOffset[4] = {};
+		BufferHandle myBoundIb; Format myIbFormat = Format::R32_UInt; uint32_t myIbOffset = 0;
 	};
 }

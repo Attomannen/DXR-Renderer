@@ -11,6 +11,116 @@
 
 namespace Tga::rhi::dx12
 {
+	// ------------------------------------------------------------------ hashing (mirrors Dx11Device's HashDesc)
+	static void HashCombine(uint64_t& h, uint64_t v)
+	{
+		h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+	}
+	static uint64_t HashGraphicsDesc(const GraphicsPipelineDesc& d)
+	{
+		uint64_t h = 1469598103934665603ull;
+		HashCombine(h, ((uint64_t)d.vs.index << 32) | d.vs.generation);
+		HashCombine(h, ((uint64_t)d.ps.index << 32) | d.ps.generation);
+		HashCombine(h, (uint64_t)d.blend | ((uint64_t)d.depth << 8) | ((uint64_t)d.raster << 16)
+		             | ((uint64_t)d.topology << 24) | ((uint64_t)d.alphaToCoverage << 32));
+		HashCombine(h, d.renderTargetCount);
+		for (uint32_t i = 0; i < 8; ++i) HashCombine(h, (uint64_t)d.rtvFormats[i]);
+		HashCombine(h, (uint64_t)d.dsvFormat);
+		HashCombine(h, d.inputLayoutCount);
+		for (uint32_t i = 0; i < d.inputLayoutCount; ++i)
+		{
+			const InputElement& e = d.inputLayout[i];
+			uint64_t eh = 1469598103934665603ull;
+			for (const char* p = e.semanticName; p && *p; ++p) HashCombine(eh, (uint8_t)*p);
+			HashCombine(eh, e.semanticIndex);
+			HashCombine(eh, (uint64_t)e.format);
+			HashCombine(eh, e.inputSlot);
+			HashCombine(eh, e.alignedByteOffset);
+			HashCombine(eh, (uint64_t)e.perInstance | ((uint64_t)e.instanceStepRate << 1));
+			HashCombine(h, eh);
+		}
+		return h;
+	}
+
+	// ------------------------------------------------------------------ fixed-function state translation
+	static D3D12_BLEND_DESC BlendFor(BlendMode m)
+	{
+		D3D12_BLEND_DESC bd = {};
+		D3D12_RENDER_TARGET_BLEND_DESC& rt = bd.RenderTarget[0];
+		rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+		rt.LogicOpEnable = FALSE;
+		rt.LogicOp = D3D12_LOGIC_OP_NOOP;
+		if (m == BlendMode::Disabled)
+		{
+			rt.BlendEnable = FALSE;
+			rt.SrcBlend = D3D12_BLEND_ONE; rt.DestBlend = D3D12_BLEND_ZERO; rt.BlendOp = D3D12_BLEND_OP_ADD;
+			rt.SrcBlendAlpha = D3D12_BLEND_ONE; rt.DestBlendAlpha = D3D12_BLEND_ZERO; rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+		}
+		else
+		{
+			rt.BlendEnable = TRUE;
+			rt.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+			rt.DestBlend = (m == BlendMode::AdditiveBlend) ? D3D12_BLEND_ONE : D3D12_BLEND_INV_SRC_ALPHA;
+			rt.BlendOp = D3D12_BLEND_OP_ADD;
+			rt.SrcBlendAlpha = D3D12_BLEND_ONE; rt.DestBlendAlpha = D3D12_BLEND_ONE; rt.BlendOpAlpha = D3D12_BLEND_OP_MAX;
+		}
+		return bd;
+	}
+	static D3D12_DEPTH_STENCIL_DESC DepthFor(DepthMode m)
+	{
+		D3D12_DEPTH_STENCIL_DESC dd = {};
+		dd.DepthEnable = TRUE;
+		dd.StencilEnable = FALSE;
+		switch (m)
+		{
+		case DepthMode::WriteLess:           dd.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;  dd.DepthFunc = D3D12_COMPARISON_FUNC_LESS; break;
+		case DepthMode::WriteLessOrEqual:    dd.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;  dd.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL; break;
+		case DepthMode::ReadOnlyLess:        dd.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO; dd.DepthFunc = D3D12_COMPARISON_FUNC_LESS; break;
+		case DepthMode::ReadOnlyLessOrEqual: dd.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO; dd.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL; break;
+		}
+		return dd;
+	}
+	static D3D12_RASTERIZER_DESC RasterFor(RasterMode m)
+	{
+		D3D12_RASTERIZER_DESC rd = {};
+		rd.FrontCounterClockwise = FALSE;
+		rd.DepthClipEnable = TRUE;
+		rd.FillMode = D3D12_FILL_MODE_SOLID;
+		rd.CullMode = D3D12_CULL_MODE_BACK;
+		rd.MultisampleEnable = FALSE;
+		switch (m)
+		{
+		case RasterMode::BackfaceCulling:     break;   // matches D3D11's implicit default state
+		case RasterMode::FrontFaceCulling:    rd.CullMode = D3D12_CULL_MODE_FRONT; rd.MultisampleEnable = TRUE; break;
+		case RasterMode::NoFaceCulling:       rd.CullMode = D3D12_CULL_MODE_NONE;  rd.MultisampleEnable = TRUE; break;
+		case RasterMode::Wireframe:           rd.FillMode = D3D12_FILL_MODE_WIREFRAME; rd.MultisampleEnable = TRUE; break;
+		case RasterMode::WireframeNoCulling:  rd.FillMode = D3D12_FILL_MODE_WIREFRAME; rd.CullMode = D3D12_CULL_MODE_NONE; rd.MultisampleEnable = TRUE; break;
+		}
+		return rd;
+	}
+	static D3D12_PRIMITIVE_TOPOLOGY_TYPE TopoTypeFor(Topology t)
+	{
+		switch (t)
+		{
+		case Topology::TriangleList: case Topology::TriangleStrip: return D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+		case Topology::LineList: case Topology::LineStrip:         return D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+		case Topology::PointList:                                  return D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
+		}
+		return D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+	}
+	D3D_PRIMITIVE_TOPOLOGY ToD3D12Topology(Topology t)
+	{
+		switch (t)
+		{
+		case Topology::TriangleList:  return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+		case Topology::TriangleStrip: return D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
+		case Topology::LineList:      return D3D_PRIMITIVE_TOPOLOGY_LINELIST;
+		case Topology::LineStrip:     return D3D_PRIMITIVE_TOPOLOGY_LINESTRIP;
+		case Topology::PointList:     return D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
+		}
+		return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+	}
+
 	// ------------------------------------------------------------------ ctor/dtor
 	Dx12Device::Dx12Device(const DeviceDesc& d)
 	{
@@ -19,7 +129,9 @@ namespace Tga::rhi::dx12
 
 		CreateDeviceAndQueue(d.enableDebugLayer, d.enableGpuValidation);
 		CreateHeaps();
+		CreateNullDescriptors();
 		CreateFrameResources();
+		CreateRootSignatures();
 		if (myHwnd) CreateSwapchain(myHwnd, d.width, d.height);
 
 		myContext = std::make_unique<Dx12CommandContext>(*this);
@@ -94,8 +206,16 @@ namespace Tga::rhi::dx12
 	{
 		myRtvHeap.Init(myDevice.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kRtvCapacity, false);
 		myDsvHeap.Init(myDevice.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_DSV, kDsvCapacity, false);
-		myCbvSrvUavHeap.Init(myDevice.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kCbvSrvUavCapacity, true);
-		mySamplerHeap.Init(myDevice.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, kSamplerCapacity, true);
+		// Permanent storage (CreateSrv/CreateUav/CreateSampler destinations) --
+		// non-shader-visible; see Dx12Device.h's class comment for why bind-
+		// time descriptor tables live in the separate scratch heaps instead.
+		myCbvSrvUavHeap.Init(myDevice.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kCbvSrvUavCapacity, false);
+		mySamplerHeap.Init(myDevice.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, kSamplerCapacity, false);
+		for (uint32_t i = 0; i < kFramesInFlight; ++i)
+		{
+			myCbvSrvUavScratch[i].Init(myDevice.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kCbvSrvUavScratchPerFrame, true);
+			mySamplerScratch[i].Init(myDevice.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, kSamplerScratchPerFrame, true);
+		}
 
 		D3D12_QUERY_HEAP_DESC qhd = {};
 		qhd.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
@@ -111,6 +231,30 @@ namespace Tga::rhi::dx12
 		readbackDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 		myDevice->CreateCommittedResource(&readbackHeap, D3D12_HEAP_FLAG_NONE, &readbackDesc,
 			D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(myTimestampReadback.GetAddressOf()));
+	}
+
+	void Dx12Device::CreateNullDescriptors()
+	{
+		D3D12_SHADER_RESOURCE_VIEW_DESC nullSrv = {};
+		nullSrv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+		nullSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+		nullSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		nullSrv.Texture2D.MipLevels = 1;
+		myNullSrvSlot = myCbvSrvUavHeap.Allocate();
+		myDevice->CreateShaderResourceView(nullptr, &nullSrv, myCbvSrvUavHeap.Cpu(myNullSrvSlot));
+
+		D3D12_UNORDERED_ACCESS_VIEW_DESC nullUav = {};
+		nullUav.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+		nullUav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+		myNullUavSlot = myCbvSrvUavHeap.Allocate();
+		myDevice->CreateUnorderedAccessView(nullptr, nullptr, &nullUav, myCbvSrvUavHeap.Cpu(myNullUavSlot));
+
+		D3D12_SAMPLER_DESC nullSampler = {};
+		nullSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+		nullSampler.AddressU = nullSampler.AddressV = nullSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+		nullSampler.MaxLOD = D3D12_FLOAT32_MAX;
+		myNullSamplerSlot = mySamplerHeap.Allocate();
+		myDevice->CreateSampler(&nullSampler, mySamplerHeap.Cpu(myNullSamplerSlot));
 	}
 
 	void Dx12Device::CreateFrameResources()
@@ -144,6 +288,126 @@ namespace Tga::rhi::dx12
 			assert(rec && rec->res);
 			D3D12_RANGE noRead{ 0, 0 };
 			rec->res->Map(0, &noRead, reinterpret_cast<void**>(&myDynRingCpu[i]));
+		}
+	}
+
+	// One root signature covers every graphics PSO, one covers every compute
+	// PSO -- mirrors the engine's existing free register convention (b0..b13,
+	// t0..t23, s0..s5, u0..u3, see EngineAssets/Shaders/*.hlsl*) instead of
+	// per-shader binding layouts, so HLSL register() declarations don't need
+	// to change at all. Root CBVs (not a descriptor table) for b0..b13: every
+	// constant buffer in this engine is either the per-frame dynamic-constant
+	// ring (AllocateDynamicConstants, already an UPLOAD-heap GPU address) or a
+	// persistent rhi::ConstantBuffer (also UPLOAD-heap) -- both have a GPU
+	// virtual address ready to bind directly via SetGraphicsRootConstantBufferView,
+	// no descriptor/table indirection needed. SRV/UAV/Sampler are descriptor
+	// tables since there are many distinct textures/buffers/samplers, unlike
+	// the small fixed set of cbuffer slots.
+	void Dx12Device::CreateRootSignatures()
+	{
+		D3D12_DESCRIPTOR_RANGE srvRange = {};
+		srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+		srvRange.NumDescriptors = kNumSrvRegisters;
+		srvRange.BaseShaderRegister = 0;
+		srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+		D3D12_DESCRIPTOR_RANGE uavRange = {};
+		uavRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+		uavRange.NumDescriptors = kNumUavRegisters;
+		uavRange.BaseShaderRegister = 0;
+		uavRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+		D3D12_DESCRIPTOR_RANGE samplerRange = {};
+		samplerRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+		samplerRange.NumDescriptors = kNumSamplerRegisters;
+		samplerRange.BaseShaderRegister = 0;
+		samplerRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+		auto buildRootCbvParams = [](std::vector<D3D12_ROOT_PARAMETER>& params)
+		{
+			for (uint32_t b = 0; b < kNumCbvRegisters; ++b)
+			{
+				D3D12_ROOT_PARAMETER p = {};
+				p.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+				p.Descriptor.ShaderRegister = b;
+				p.Descriptor.RegisterSpace = 0;
+				p.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+				params.push_back(p);
+			}
+		};
+
+		auto serializeAndCreate = [&](const D3D12_ROOT_SIGNATURE_DESC& desc, ComPtr<ID3D12RootSignature>& out, const char* debugName)
+		{
+			ComPtr<ID3DBlob> blob, error;
+			HRESULT hr = D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, blob.GetAddressOf(), error.GetAddressOf());
+			if (FAILED(hr))
+			{
+				ERROR_PRINT("Dx12Device::CreateRootSignatures: %s failed to serialize: %s", debugName,
+					error ? (const char*)error->GetBufferPointer() : "(no error blob)");
+				assert(false);
+				return;
+			}
+			hr = myDevice->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(out.GetAddressOf()));
+			assert(SUCCEEDED(hr)); (void)hr;
+		};
+
+		// ---- graphics: 14 root CBVs + SRV table + Sampler table ----
+		{
+			std::vector<D3D12_ROOT_PARAMETER> params;
+			buildRootCbvParams(params);
+
+			D3D12_ROOT_PARAMETER srvTable = {};
+			srvTable.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+			srvTable.DescriptorTable.NumDescriptorRanges = 1;
+			srvTable.DescriptorTable.pDescriptorRanges = &srvRange;
+			srvTable.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+			params.push_back(srvTable);
+
+			D3D12_ROOT_PARAMETER samplerTable = {};
+			samplerTable.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+			samplerTable.DescriptorTable.NumDescriptorRanges = 1;
+			samplerTable.DescriptorTable.pDescriptorRanges = &samplerRange;
+			samplerTable.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+			params.push_back(samplerTable);
+
+			D3D12_ROOT_SIGNATURE_DESC desc = {};
+			desc.NumParameters = (UINT)params.size();
+			desc.pParameters = params.data();
+			desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+			serializeAndCreate(desc, myGraphicsRootSig, "graphics root signature");
+		}
+
+		// ---- compute: 14 root CBVs + SRV table + UAV table + Sampler table ----
+		{
+			std::vector<D3D12_ROOT_PARAMETER> params;
+			buildRootCbvParams(params);
+
+			D3D12_ROOT_PARAMETER srvTable = {};
+			srvTable.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+			srvTable.DescriptorTable.NumDescriptorRanges = 1;
+			srvTable.DescriptorTable.pDescriptorRanges = &srvRange;
+			srvTable.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+			params.push_back(srvTable);
+
+			D3D12_ROOT_PARAMETER uavTable = {};
+			uavTable.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+			uavTable.DescriptorTable.NumDescriptorRanges = 1;
+			uavTable.DescriptorTable.pDescriptorRanges = &uavRange;
+			uavTable.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+			params.push_back(uavTable);
+
+			D3D12_ROOT_PARAMETER samplerTable = {};
+			samplerTable.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+			samplerTable.DescriptorTable.NumDescriptorRanges = 1;
+			samplerTable.DescriptorTable.pDescriptorRanges = &samplerRange;
+			samplerTable.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+			params.push_back(samplerTable);
+
+			D3D12_ROOT_SIGNATURE_DESC desc = {};
+			desc.NumParameters = (UINT)params.size();
+			desc.pParameters = params.data();
+			desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+			serializeAndCreate(desc, myComputeRootSig, "compute root signature");
 		}
 	}
 
@@ -201,7 +465,7 @@ namespace Tga::rhi::dx12
 			rtvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;   // sRGB write view on the UNORM resource (flip-model requires the resource itself be non-sRGB)
 			rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
 			myDevice->CreateRenderTargetView(res.Get(), &rtvDesc, myRtvHeap.Cpu(slot));
-			myBackBufferRtv[i] = myRtvSlots.Alloc(std::move(slot));
+			myBackBufferRtv[i] = myRtvSlots.Alloc(RtvRec{ slot, Format::R8G8B8A8_UNorm_sRGB });
 		}
 	}
 
@@ -229,12 +493,19 @@ namespace Tga::rhi::dx12
 		}
 
 		myDynCursor = 0;   // reset this frame's dynamic-constant ring
+		myCbvSrvUavScratch[myFrameIndex].ResetRange();
+		mySamplerScratch[myFrameIndex].ResetRange();
 
 		myAllocators[myFrameIndex]->Reset();
 		myCmdList->Reset(myAllocators[myFrameIndex].Get(), nullptr);
 
-		ID3D12DescriptorHeap* heaps[] = { myCbvSrvUavHeap.Heap(), mySamplerHeap.Heap() };
+		// Bind THIS frame's shader-visible scratch heaps (not the permanent,
+		// non-shader-visible CreateSrv/CreateSampler storage heaps) -- see
+		// Dx12Device.h's class comment.
+		ID3D12DescriptorHeap* heaps[] = { myCbvSrvUavScratch[myFrameIndex].Heap(), mySamplerScratch[myFrameIndex].Heap() };
 		myCmdList->SetDescriptorHeaps(2, heaps);
+
+		myContext->OnBeginFrame();
 
 		if (mySwapChain)
 			myContext->TransitionResource(myBackBufferTex[myFrameIndex], ResourceState::RenderTarget);
@@ -268,7 +539,7 @@ namespace Tga::rhi::dx12
 
 		for (uint32_t i = 0; i < kFramesInFlight; ++i)
 		{
-			if (uint32_t* slot = myRtvSlots.Get(myBackBufferRtv[i])) myRtvHeap.Free(*slot);
+			if (RtvRec* r = myRtvSlots.Get(myBackBufferRtv[i])) myRtvHeap.Free(r->slot);
 			myRtvSlots.Free(myBackBufferRtv[i]);
 			myTextures.Free(myBackBufferTex[i]);
 		}
@@ -601,7 +872,8 @@ namespace Tga::rhi::dx12
 
 		uint32_t slot = myRtvHeap.Allocate();
 		myDevice->CreateRenderTargetView(t->res.Get(), &vd, myRtvHeap.Cpu(slot));
-		return myRtvSlots.Alloc(std::move(slot));
+		const Format viewFormat = d.formatOverride != Format::Unknown ? d.formatOverride : t->desc.format;
+		return myRtvSlots.Alloc(RtvRec{ slot, viewFormat });
 	}
 
 	DsvHandle Dx12Device::CreateDsv(TextureHandle h, const DsvDesc& d)
@@ -616,7 +888,8 @@ namespace Tga::rhi::dx12
 
 		uint32_t slot = myDsvHeap.Allocate();
 		myDevice->CreateDepthStencilView(t->res.Get(), &vd, myDsvHeap.Cpu(slot));
-		return myDsvSlots.Alloc(std::move(slot));
+		const Format viewFormat = d.formatOverride != Format::Unknown ? d.formatOverride : t->desc.format;
+		return myDsvSlots.Alloc(DsvRec{ slot, viewFormat });
 	}
 
 	SamplerHandle Dx12Device::CreateSampler(const SamplerDesc& d)
@@ -662,16 +935,87 @@ namespace Tga::rhi::dx12
 		return myShaders.Alloc(std::move(rec));
 	}
 
-	GraphicsPipelineHandle Dx12Device::CreateGraphicsPipeline(const GraphicsPipelineDesc&)
+	GraphicsPipelineHandle Dx12Device::CreateGraphicsPipeline(const GraphicsPipelineDesc& d)
 	{
-		assert(false && "Dx12: milestone 2 (needs the shared root signature)");
-		return {};
+		const uint64_t key = HashGraphicsDesc(d);
+		if (auto it = myGfxCache.find(key); it != myGfxCache.end()) return it->second;
+
+		ShaderRec* vs = myShaders.Get(d.vs);
+		ShaderRec* ps = myShaders.Get(d.ps);
+		assert(vs && ps && "Dx12Device::CreateGraphicsPipeline: invalid vs/ps handle");
+
+		std::vector<D3D12_INPUT_ELEMENT_DESC> elems(d.inputLayoutCount);
+		for (uint32_t i = 0; i < d.inputLayoutCount; ++i)
+		{
+			const InputElement& e = d.inputLayout[i];
+			D3D12_INPUT_ELEMENT_DESC& o = elems[i];
+			o.SemanticName = e.semanticName;
+			o.SemanticIndex = e.semanticIndex;
+			o.Format = ToDxgi(e.format);
+			o.InputSlot = e.inputSlot;
+			o.AlignedByteOffset = (e.alignedByteOffset == ~0u) ? D3D12_APPEND_ALIGNED_ELEMENT : e.alignedByteOffset;
+			o.InputSlotClass = e.perInstance ? D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA : D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+			o.InstanceDataStepRate = e.perInstance ? e.instanceStepRate : 0;
+		}
+
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+		pso.pRootSignature = myGraphicsRootSig.Get();
+		pso.VS = { vs->bytecode.data(), vs->bytecode.size() };
+		pso.PS = { ps->bytecode.data(), ps->bytecode.size() };
+		pso.BlendState = BlendFor(d.blend);
+		pso.SampleMask = UINT_MAX;
+		pso.RasterizerState = RasterFor(d.raster);
+		pso.DepthStencilState = DepthFor(d.depth);
+		pso.DepthStencilState.DepthEnable = (d.dsvFormat != Format::Unknown);
+		pso.InputLayout = { elems.empty() ? nullptr : elems.data(), (UINT)elems.size() };
+		pso.IBStripCutValue = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED;
+		pso.PrimitiveTopologyType = TopoTypeFor(d.topology);
+		pso.NumRenderTargets = d.renderTargetCount;
+		for (uint32_t i = 0; i < d.renderTargetCount && i < 8; ++i) pso.RTVFormats[i] = ToDxgi(d.rtvFormats[i]);
+		pso.DSVFormat = (d.dsvFormat != Format::Unknown) ? ToDsvFormat(d.dsvFormat) : DXGI_FORMAT_UNKNOWN;
+		pso.SampleDesc.Count = 1;
+
+		ComPtr<ID3D12PipelineState> state;
+		HRESULT hr = myDevice->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(state.GetAddressOf()));
+		if (FAILED(hr))
+		{
+			ERROR_PRINT("Dx12Device::CreateGraphicsPipeline: CreateGraphicsPipelineState failed 0x%08X", (unsigned)hr);
+			return {};
+		}
+
+		GfxPipelineRec rec;
+		rec.pso = state;
+		rec.topo = ToD3D12Topology(d.topology);
+		GraphicsPipelineHandle h = myGfxPipelines.Alloc(std::move(rec));
+		myGfxCache.emplace(key, h);
+		return h;
 	}
 
-	ComputePipelineHandle Dx12Device::CreateComputePipeline(const ComputePipelineDesc&)
+	ComputePipelineHandle Dx12Device::CreateComputePipeline(const ComputePipelineDesc& d)
 	{
-		assert(false && "Dx12: milestone 2 (needs the shared root signature)");
-		return {};
+		const uint64_t key = ((uint64_t)d.cs.index << 32) | d.cs.generation;
+		if (auto it = myComputeCache.find(key); it != myComputeCache.end()) return it->second;
+
+		ShaderRec* cs = myShaders.Get(d.cs);
+		assert(cs && "Dx12Device::CreateComputePipeline: invalid cs handle");
+
+		D3D12_COMPUTE_PIPELINE_STATE_DESC pso = {};
+		pso.pRootSignature = myComputeRootSig.Get();
+		pso.CS = { cs->bytecode.data(), cs->bytecode.size() };
+
+		ComPtr<ID3D12PipelineState> state;
+		HRESULT hr = myDevice->CreateComputePipelineState(&pso, IID_PPV_ARGS(state.GetAddressOf()));
+		if (FAILED(hr))
+		{
+			ERROR_PRINT("Dx12Device::CreateComputePipeline: CreateComputePipelineState failed 0x%08X", (unsigned)hr);
+			return {};
+		}
+
+		ComputePipelineRec rec;
+		rec.pso = state;
+		ComputePipelineHandle h = myComputePipelines.Alloc(std::move(rec));
+		myComputeCache.emplace(key, h);
+		return h;
 	}
 
 	// ------------------------------------------------------------------ destroy
@@ -679,8 +1023,8 @@ namespace Tga::rhi::dx12
 	void Dx12Device::Destroy(TextureHandle h) { myTextures.Free(h); }
 	void Dx12Device::Destroy(SrvHandle h)     { if (uint32_t* s = mySrvSlots.Get(h)) { myCbvSrvUavHeap.Free(*s); mySrvSlots.Free(h); } }
 	void Dx12Device::Destroy(UavHandle h)     { if (uint32_t* s = myUavSlots.Get(h)) { myCbvSrvUavHeap.Free(*s); myUavSlots.Free(h); } }
-	void Dx12Device::Destroy(RtvHandle h)     { if (uint32_t* s = myRtvSlots.Get(h)) { myRtvHeap.Free(*s); myRtvSlots.Free(h); } }
-	void Dx12Device::Destroy(DsvHandle h)     { if (uint32_t* s = myDsvSlots.Get(h)) { myDsvHeap.Free(*s); myDsvSlots.Free(h); } }
+	void Dx12Device::Destroy(RtvHandle h)     { if (RtvRec* r = myRtvSlots.Get(h)) { myRtvHeap.Free(r->slot); myRtvSlots.Free(h); } }
+	void Dx12Device::Destroy(DsvHandle h)     { if (DsvRec* r = myDsvSlots.Get(h)) { myDsvHeap.Free(r->slot); myDsvSlots.Free(h); } }
 	void Dx12Device::Destroy(SamplerHandle h) { if (uint32_t* s = mySamplerSlots.Get(h)) { mySamplerHeap.Free(*s); mySamplerSlots.Free(h); } }
 	void Dx12Device::Destroy(ShaderModuleHandle h) { myShaders.Free(h); }
 

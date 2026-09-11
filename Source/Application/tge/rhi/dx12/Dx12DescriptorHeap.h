@@ -53,6 +53,26 @@ namespace Tga::rhi::dx12
 			myFreeList.push_back(aSlot);
 		}
 
+		// Bump-allocate `count` CONSECUTIVE slots (needed for a descriptor
+		// table, which must be contiguous in the bound heap). Only meant for
+		// a heap used purely as a per-frame scratch ring: never Free()'d
+		// individually, just bulk-reset via ResetRange() once the frame that
+		// wrote them has finished (i.e. at that frame-in-flight's next
+		// BeginFrame). Does not touch the free-list Allocate()/Free() above --
+		// keep scratch heaps and permanent (freelist) heaps as separate
+		// Dx12DescriptorHeap instances, never mix the two allocation styles
+		// on the same instance.
+		uint32_t AllocateRange(uint32_t count)
+		{
+			if (!myReservedSlotZero) { myReservedSlotZero = true; myNextFree = 1; }
+			assert(myNextFree + count <= myCapacity && "Dx12DescriptorHeap: scratch range exhausted -- raise its Init() capacity");
+			uint32_t start = myNextFree;
+			myNextFree += count;
+			return start;
+		}
+
+		void ResetRange() { myNextFree = 1; myReservedSlotZero = true; }
+
 		D3D12_CPU_DESCRIPTOR_HANDLE Cpu(uint32_t aSlot) const
 		{
 			D3D12_CPU_DESCRIPTOR_HANDLE h = myCpuStart;
