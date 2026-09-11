@@ -665,6 +665,65 @@ subfolder. Four stages:
   not-yet-debugged issue in that as-yet-unexercised code path, out of this fix's scope.
   Checkpoint (unchanged): `-rhi=dx12` visually identical to `-rhi=dx11` on every scene +
   editor + Tutorials, PIX-clean, perf parity or better.
+- **DX12 crash-after-a-few-frames + a real fix for the post-GI hang** (2026-09-11, later same
+  day) — the hang above turned out to be masking (and be masked by) two more real bugs:
+  1. **The D3D12 debug layer itself was fatal.** `ID3D12InfoQueue`/`IDXGIInfoQueue` default to
+     `DebugBreak()` on CORRUPTION/ERROR-severity messages; with no debugger attached that's an
+     unhandled exception silently killing the process a few frames later (bare exit code `0x87D`,
+     no WER event, no visible error at all). Disabling `SetBreakOnSeverity` for every severity on
+     both info queues did not stop it. Left the debug layer off entirely for DX12 (DX11's own
+     separate debug layer is unaffected) — documented in `DX11::InitDx12`.
+  2. **The `SetRenderTargets` SEH containment was dropping real work, not just a crash.** Turned
+     it from "catch and drop the frame" into "catch and retry" (the same call always succeeds on
+     a second attempt) — when the fault landed on `BeginGeometryPass`'s own G-buffer bind (the
+     single most frequent `SetRenderTargets` call in the engine), the dropped frame meant that
+     frame's model draws went nowhere, visibly showing only the skybox/ambient with no geometry.
+  **Verified live** (not just via automated bench): the real Sponza scene renders correctly under
+  DX12 for the first time, matching the DX11 reference, and the process no longer crashes or hangs
+  in the first several frames from either of these two causes.
+- **The actual root cause of the "hangs after a couple of frames" symptom, part 1: found and
+  fixed** (2026-09-11, same day, continued) — added a per-`EndFrame` `GetDeviceRemovedReason()`
+  check (kept permanently: without it, a dead D3D12 device is invisible until something else
+  happens to call an HRESULT-returning device method) and discovered the device was being marked
+  `DXGI_ERROR_DEVICE_HUNG` (not a crash Windows reports) as early as the frame-2/3 boundary, in
+  *every* configuration tried — not something the earlier fixes above actually touched. Re-enabled
+  the D3D12 debug layer **with GPU-based validation** just long enough to get one real diagnostic
+  (accepting its "several minutes per frame" slowdown) and it found a genuine bug: *"GPU-BASED
+  VALIDATION: Draw, SRV resource dimensions differs from that expected by shader: SRV Dimension
+  Expected: D3D12_SRV_DIMENSION_TEXTURECUBE, SRV Dimension In Descriptor: D3D12_SRV_DIMENSION_
+  TEXTURE2D"*. Root cause: `TextureManager (DX12)`'s DDS loader correctly rejects cubemap files
+  (cubemap loading isn't implemented for DX12 yet — a known, separately-tracked gap) but the
+  generic "load failed" fallback path in `TextureManager::GetTexture` always built a flat 2D
+  checkerboard texture regardless of what shape the caller actually needed. `GraphicsStateStack`'s
+  default/horizon ambient cubemaps (`whiteCubeMap.dds`/`horizonCubeMap.dds`, both DX12-unloadable)
+  hit exactly this path, handing a `TextureCube`-typed shader slot a `Texture2D` descriptor —
+  undefined behavior at the hardware level, not merely a cosmetic wrong-texture bug. Fixed by
+  probing the failed asset's own DDS header (cheap, metadata-only) and building a proper 6-face
+  `TextureCube` fallback (`CreateSolidCubeTexture`, mirroring the existing `CreateSolidTexture`
+  2D helper) when it was actually a cubemap. **Verified via GPU-based validation**: the SRV-
+  dimension-mismatch message is completely gone after this fix (was present on every single frame
+  before it). Also added `IDevice::CaptureBackBufferPng` (DX12-only; DX11 already has its own
+  working screenshot path) as a permanent diagnostic tool, since `BENCH_SCREENSHOT` was previously
+  silently non-functional under DX12 (it reaches into `DX11::SwapChain`/`DX11::Context` directly,
+  both null there) — a self-contained BMP writer, no DirectXTex dependency needed.
+  **Not fixed, still open**: fixing the SRV-dimension bug did **not** stop the `DEVICE_HUNG`.
+  Exhaustive bisection with the fix in place — `BENCH_CLUSTERED/SSAO/SHADOWS/SSR/POSTFX/
+  LOCAL_SHADOWS/DEFERRED/PROBE/GI=0` individually and **all nine disabled simultaneously**
+  (leaving only the bare G-buffer geometry pass + lighting resolve + composite, the absolute
+  minimum needed to see anything at all) — still hits `DEVICE_HUNG` at the same frame-2/3
+  boundary, every time, regardless of which scene or camera mode. Re-running with the debug layer
+  + GPU-based validation active a second time (after the cubemap fix) produced **zero** further
+  validation messages of any kind before the hang — meaning this is a class of GPU-side fault
+  (most likely a genuine shader hang/infinite loop, or something GPU-based validation's resource-
+  access checking doesn't cover) that CPU-side bisection and the validation layer's current
+  checks can't localize any further. `0x887A0006` (`DXGI_ERROR_DEVICE_HUNG`, not `DEVICE_REMOVED`
+  as earlier logs from before this check existed had assumed) means Windows' TDR watchdog killed
+  the device after ~2s of the GPU appearing stuck — consistent with the fixed "frame 2" timing
+  regardless of workload (it's plausibly frame 0 or 1's GPU work that never finishes, only
+  *noticed* when frame 2's fence-wait blocks on it). **Next step needs GPU-side tooling this
+  environment doesn't have** — a PIX or NSight Graphics capture of the exact hanging frame would
+  show which draw/dispatch never retires, which no amount of further CPU-side toggling will
+  reveal.
 - **Stage 3** — DXR inline `RayQuery` (SM 6.5) hardware-traced GI, replacing the Phase 6
   SH-volume software path with a real DDGI (BLAS/TLAS, per-probe ray tracing into the
   existing SH probe volume). Not started.

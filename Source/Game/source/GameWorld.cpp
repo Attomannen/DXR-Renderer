@@ -1849,6 +1849,26 @@ void GameWorld::Render()
 	GraphicsEngine& ge = *GraphicsEngine::GetInstance();
 	GraphicsStateStack& gss = ge.GetGraphicsStateStack();
 
+	// DX12 screenshot capture: DX11's own path (further down, in the
+	// screenshotPath block) reaches into DX11::SwapChain/DX11::Context
+	// directly, both null under DX12 -- CaptureBackBufferPng is the DX12-only
+	// equivalent. Must run at the very START of the frame, before anything
+	// touches this frame-in-flight slot's backbuffer texture: it reads the
+	// LAST FULLY PRESENTED contents of that slot, which BeginFrame (called by
+	// the main loop right before this) has already fence-waited to be idle.
+	if (rhi::IDevice* dev = DX11::Rhi(); dev && dev->GetBackend() == rhi::Backend::DX12 &&
+		!s.screenshotPath.empty() && !s.screenshotTaken)
+	{
+		const int shotFrame = s.benchFrames > 3 ? s.benchFrames - 2 : 120;
+		if (s.frame >= shotFrame)
+		{
+			s.screenshotTaken = true;
+			const std::wstring wpath(s.screenshotPath.begin(), s.screenshotPath.end());
+			bool ok = dev->CaptureBackBufferPng(wpath.c_str());
+			INFO_PRINT("Sponza bench: screenshot (DX12) -> %s (%s)", s.screenshotPath.c_str(), ok ? "ok" : "failed");
+		}
+	}
+
 	// Interactive tuning panel (free-fly runs only) — updates s.* live.
 	if (s.benchFrames == 0)
 	{

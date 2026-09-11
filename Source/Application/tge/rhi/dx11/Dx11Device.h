@@ -102,6 +102,7 @@ namespace Tga::rhi::dx11
 		void* GetNativeCommandList() override { return nullptr; }
 		void* GetImGuiSrvDescriptorHeap() override { return nullptr; }
 		void* ImGuiFontSrvCpuHandle() override { return nullptr; }
+		bool CaptureBackBufferPng(const wchar_t*) override { return false; }   // DX11 has its own path, see Device.h's comment
 		void* ImGuiFontSrvGpuHandle() override { return nullptr; }
 
 		SrvHandle WrapNativeSrv(void* nativeSrv) override;

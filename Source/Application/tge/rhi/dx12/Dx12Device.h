@@ -131,6 +131,7 @@ namespace Tga::rhi::dx12
 		RtvHandle WrapNativeRtv(void*) override;
 		DsvHandle WrapNativeDsv(void*) override;
 		void* CreateInputLayoutNative(const InputElement*, uint32_t, const void*, uint32_t) override;
+		bool CaptureBackBufferPng(const wchar_t* utf16Path) override;
 
 		// ---- backend-internal accessors used by Dx12CommandContext ----
 		ID3D12Device*        Raw() { return myDevice.Get(); }

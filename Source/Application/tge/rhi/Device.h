@@ -105,6 +105,17 @@ namespace Tga::rhi
 		virtual void* GetNativeCommandList() = 0;       // ID3D12GraphicsCommandList*
 		virtual void* GetImGuiSrvDescriptorHeap() = 0;  // ID3D12DescriptorHeap*
 		virtual void* ImGuiFontSrvCpuHandle() = 0;
+
+		// ---- DX12-only debugging aid: saves the LAST FULLY PRESENTED backbuffer
+		// (i.e. the previous frame's, not whatever is mid-recording right now) to
+		// a PNG. Call at the very start of a frame, before any drawing -- by then
+		// EndFrame's fence wait for that frame-in-flight slot has already
+		// guaranteed the GPU is done with it. DX11 has its own working
+		// SaveWICTextureToFile-based screenshot path in GameWorld.cpp already;
+		// this exists only because that path is unusable under DX12 (it reaches
+		// into DX11::SwapChain/DX11::Context directly, both null there). No-op
+		// (returns false) on DX11.
+		virtual bool CaptureBackBufferPng(const wchar_t* utf16Path) = 0;
 		virtual void* ImGuiFontSrvGpuHandle() = 0;
 
 		// ---- Stage-1 migration bridge: adopt a view created by legacy raw-D3D11

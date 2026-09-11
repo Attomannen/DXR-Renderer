@@ -94,6 +94,8 @@ bool IsTarga(const char* path)
 static bool CreateSolidTexture(Texture& aTexture, rhi::IDevice& aDevice, int aWidth, int aHeight,
                                 const std::vector<int>& aPixels, rhi::Format aFormat,
                                 const char* aDebugName);
+static bool CreateSolidCubeTexture(Texture& aTexture, rhi::IDevice& aDevice, int aSize,
+                                    int aPixel, const char* aDebugName);
 
 static StringId BuildTextureStringId(const char* aTexturePath, TextureSrgbMode aSrgbMode, FixedStream<256>& outStream)
 	{
@@ -127,16 +129,49 @@ Texture* TextureManager::GetTexture(const char* aTexturePath, TextureSrgbMode aS
 	rhi::IDevice* dev = DX11::Rhi();
 	if (dev && dev->GetBackend() == rhi::Backend::DX12)
 	{
-		// See ReleaseTexture's comment: no cheap way to alias one owned DX12
-		// texture across independently-owned Texture wrappers (unlike a
-		// D3D11 SRV's natural COM ref-counting), so each distinct failed
-		// lookup gets its own tiny checkerboard instead.
-		const int h = 16, w = 16;
-		std::vector<int> buf(h * w);
-		for (int i = 0; i < h; i++)
-			for (int j = 0; j < w; j++)
-				buf[i * w + j] = ((i + j) % 2 == 0) ? 0xff000000 : 0xffff00ff;
-		CreateSolidTexture(*result, *dev, w, h, buf, rhi::Format::R8G8B8A8_UNorm, "ErrorSquareTexture(missing)");
+		// Was the asset that failed to load actually a cubemap (the DX12 DDS
+		// loader above rejects cubemap/volume textures outright -- a known,
+		// separate gap)? If so, a flat 2D checkerboard fallback is worse than
+		// merely wrong: a caller that unconditionally binds this SRV to a
+		// TextureCube-typed shader slot (e.g. GraphicsStateStack's default/
+		// horizon ambient cubemap) hands the GPU a Texture2D descriptor where
+		// the shader's Sample/SampleLevel instruction expects 6 cube faces.
+        // That dimension mismatch is undefined behavior at the hardware
+		// level -- confirmed via GPU-based validation (2026-09-11) to be the
+		// actual root cause of a `DXGI_ERROR_DRIVER_INTERNAL_ERROR` device
+		// removal within the first couple of frames on this GPU/driver, not
+		// merely a cosmetic wrong-texture bug. A cheap re-probe of the DDS
+		// header (metadata only, no pixel data) tells us which fallback shape
+		// is actually safe to hand back.
+		bool isCubemap = false;
+		{
+			FilePathStream asset_path;
+			if (Settings::ResolveAssetPath(aTexturePath, asset_path))
+			{
+				const std::wstring pathW = string_cast<std::wstring>(std::string(asset_path.GetStringView()));
+				DirectX::TexMetadata probeMeta;
+				if (SUCCEEDED(DirectX::GetMetadataFromDDSFile(pathW.c_str(), DirectX::DDS_FLAGS_NONE, probeMeta)))
+					isCubemap = probeMeta.IsCubemap();
+			}
+		}
+
+		if (isCubemap)
+		{
+			CreateSolidCubeTexture(*result, *dev, 4, 0xffffffff, "ErrorCubeTexture(missing)");
+		}
+		else
+		{
+			// See ReleaseTexture's comment: no cheap way to alias one owned DX12
+			// texture across independently-owned Texture wrappers (unlike a
+			// D3D11 SRV's natural COM ref-counting), so each distinct failed
+			// lookup gets its own tiny checkerboard instead.
+			const int h = 16, w = 16;
+			std::vector<int> buf(h * w);
+			for (int i = 0; i < h; i++)
+				for (int j = 0; j < w; j++)
+					buf[i * w + j] = ((i + j) % 2 == 0) ? 0xff000000 : 0xffff00ff;
+			CreateSolidTexture(*result, *dev, w, h, buf, rhi::Format::R8G8B8A8_UNorm, "ErrorSquareTexture(missing)");
+		}
 	}
 	else
 	{
@@ -643,6 +678,62 @@ static bool CreateSolidTexture(Texture& aTexture, rhi::IDevice& aDevice, int aWi
 	initial.slicePitch = aWidth * aHeight * 4;
 
 	rhi::TextureHandle texHandle = aDevice.CreateTexture(tdesc, &initial, 1);
+	if (!texHandle.IsValid())
+		return false;
+	rhi::SrvHandle srvHandle = aDevice.CreateSrv(texHandle, {});
+	if (!srvHandle.IsValid())
+		return false;
+
+	if (aDevice.GetBackend() == rhi::Backend::DX12)
+	{
+		aTexture.SetRhiTexture(texHandle, srvHandle);
+	}
+	else
+	{
+		ID3D11ShaderResourceView* resource = static_cast<ID3D11ShaderResourceView*>(aDevice.GetNativeSrv(srvHandle));
+		if (!resource)
+			return false;
+		aTexture.SetShaderResourceView(resource);
+		aDevice.Destroy(srvHandle);
+		aDevice.Destroy(texHandle);
+	}
+	return true;
+}
+
+// Same idea as CreateSolidTexture, but a proper 6-face TextureCube instead of
+// a flat 2D texture -- for the DX12-only case where the asset that actually
+// failed to load (TextureManager (DX12) doesn't support the DDS cubemap
+// loader yet) was itself a cubemap. A Texture2D fallback bound to a
+// TextureCube-typed shader slot is a genuine SRV-dimension mismatch, not
+// just a wrong-looking texture -- confirmed via GPU-based validation
+// (2026-09-11) to cause real GPU-side corruption (a DXGI_ERROR_DRIVER_
+// INTERNAL_ERROR device removal within the first couple of frames) on this
+// hardware. All 6 faces get the same solid color; only used as a fallback
+// for GraphicsStateStack's default/horizon ambient cubemaps when their real
+// DDS files can't be loaded under DX12.
+static bool CreateSolidCubeTexture(Texture& aTexture, rhi::IDevice& aDevice, int aSize,
+                                    int aPixel, const char* aDebugName)
+{
+	rhi::TextureDesc tdesc = {};
+	tdesc.width = aSize;
+	tdesc.height = aSize;
+	tdesc.depthOrArraySize = 1;   // one cubemap -- TexCube dimension implies the 6 faces
+	tdesc.mipLevels = 1;
+	tdesc.dimension = rhi::TextureDimension::TexCube;
+	tdesc.format = rhi::Format::R8G8B8A8_UNorm;
+	tdesc.bind = rhi::TextureBind::ShaderResource;
+	tdesc.debugName = aDebugName;
+
+	std::vector<int> facePixels(static_cast<size_t>(aSize) * aSize, aPixel);
+	rhi::SubresourceData initial[6];
+	for (int face = 0; face < 6; ++face)
+	{
+		initial[face].data = facePixels.data();
+		initial[face].rowPitch = aSize * 4;
+		initial[face].slicePitch = aSize * aSize * 4;
+	}
+
+	rhi::TextureHandle texHandle = aDevice.CreateTexture(tdesc, initial, 6);
 	if (!texHandle.IsValid())
 		return false;
 	rhi::SrvHandle srvHandle = aDevice.CreateSrv(texHandle, {});

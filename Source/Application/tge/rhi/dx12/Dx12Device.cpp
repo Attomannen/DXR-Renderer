@@ -6,6 +6,7 @@
 #include <d3dcompiler.h>
 #include <dxgidebug.h>
 #include <cassert>
+#include <cstdio>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -658,6 +659,18 @@ namespace Tga::rhi::dx12
 		const uint64_t v = myNextFenceValue++;
 		myQueue->Signal(myFence.Get(), v);
 		myFenceValues[myFrameIndex] = v;
+
+		// Cheap (no wait, no message drain -- just the one HRESULT-returning
+		// call every other per-frame API here lacks) but load-bearing: without
+		// this, a dead device is invisible until something else happens to
+		// call a device method that returns HRESULT (found 2026-09-11 --
+		// GameMain ran for many frames looking fine, rendering nothing but the
+		// clear color, with a device that had actually been DEVICE_HUNG since
+		// frame 2). Kept permanently now that it's known this backend needs it.
+		static uint64_t sFrameNo = 0; ++sFrameNo;
+		HRESULT dr = myDevice->GetDeviceRemovedReason();
+		if (FAILED(dr))
+			ERROR_PRINT("Dx12Device: device removed at frame %llu, reason=0x%08X", (unsigned long long)sFrameNo, (unsigned)dr);
 	}
 
 	ICommandContext& Dx12Device::GetContext() { return *myContext; }
@@ -1271,5 +1284,112 @@ namespace Tga::rhi::dx12
 		// back, unlike DX11's ID3D11InputLayout bridge.
 		assert(false && "Dx12: input layout is part of CreateGraphicsPipeline, not a separate bridge");
 		return nullptr;
+	}
+
+	bool Dx12Device::CaptureBackBufferPng(const wchar_t* utf16Path)
+	{
+		if (!mySwapChain) return false;
+		// The frame this refers to as "current" (myFrameIndex) is the one about
+		// to be recorded into -- its LAST use was as a backbuffer several frames
+		// ago and it's long since idle. Reading it now (before this frame's own
+		// BeginFrame has transitioned/touched it) is always safe.
+		TextureRec* t = myTextures.Get(myBackBufferTex[myFrameIndex]);
+		if (!t || !t->res) return false;
+
+		D3D12_RESOURCE_DESC desc = t->res->GetDesc();
+		D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
+		UINT numRows = 0; UINT64 rowSizeBytes = 0, totalBytes = 0;
+		myDevice->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, &numRows, &rowSizeBytes, &totalBytes);
+
+		D3D12_HEAP_PROPERTIES heapProps = { D3D12_HEAP_TYPE_READBACK };
+		D3D12_RESOURCE_DESC bufDesc = {};
+		bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		bufDesc.Width = totalBytes;
+		bufDesc.Height = 1; bufDesc.DepthOrArraySize = 1; bufDesc.MipLevels = 1;
+		bufDesc.SampleDesc.Count = 1;
+		bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+		ComPtr<ID3D12Resource> readback;
+		HRESULT rbhr = myDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
+			D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(readback.GetAddressOf()));
+		if (FAILED(rbhr)) { ERROR_PRINT("Dx12Device::CaptureBackBufferPng: readback CreateCommittedResource failed 0x%08X", (unsigned)rbhr); return false; }
+
+		myUploadAllocator->Reset();
+		myUploadCmdList->Reset(myUploadAllocator.Get(), nullptr);
+
+		// NOT t->state here: BeginFrame (called earlier this same frame, before
+		// GameWorld::Render()) already flipped that CPU-side bookkeeping to
+		// RENDER_TARGET as part of recording this frame's PRESENT->RENDER_TARGET
+		// transition into the MAIN command list -- but that list hasn't been
+		// submitted yet (it only runs at EndFrame). This capture's own one-off
+		// command list gets submitted and executed synchronously RIGHT NOW,
+		// before the main list, so on the actual GPU timeline the resource is
+		// still physically in PRESENT. Assuming t->state here would record a
+		// transition that doesn't match the resource's real state and misbehave.
+		D3D12_RESOURCE_BARRIER toSrc = {};
+		toSrc.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		toSrc.Transition.pResource = t->res.Get();
+		toSrc.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+		toSrc.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+		myUploadCmdList->ResourceBarrier(1, &toSrc);
+
+		D3D12_TEXTURE_COPY_LOCATION dstLoc = { readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {} };
+		dstLoc.PlacedFootprint = footprint;
+		D3D12_TEXTURE_COPY_LOCATION srcLoc = { t->res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {} };
+		srcLoc.SubresourceIndex = 0;
+		myUploadCmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+
+		D3D12_RESOURCE_BARRIER toOrig = toSrc;
+		std::swap(toOrig.Transition.StateBefore, toOrig.Transition.StateAfter);
+		myUploadCmdList->ResourceBarrier(1, &toOrig);
+
+		myUploadCmdList->Close();
+		ID3D12CommandList* lists[] = { myUploadCmdList.Get() };
+		myQueue->ExecuteCommandLists(1, lists);
+		WaitForGpuIdle();
+
+		void* mapped = nullptr;
+		if (FAILED(readback->Map(0, nullptr, &mapped))) return false;
+
+		// Minimal, dependency-free BMP writer (uncompressed BGRA -> BGR, top-down
+		// via negative height) -- avoids pulling DirectXTex into this backend-
+		// agnostic-until-now file just for a debugging screenshot. Whatever
+		// extension the caller's path has, the bytes written are BMP.
+		const uint32_t w = (uint32_t)desc.Width, h = (uint32_t)desc.Height;
+		const uint32_t rowBytes = w * 3;
+		const uint32_t rowPadded = (rowBytes + 3) & ~3u;
+		const uint32_t pixelDataSize = rowPadded * h;
+		const uint32_t fileSize = 14 + 40 + pixelDataSize;
+		std::vector<uint8_t> bmp(fileSize, 0);
+		bmp[0] = 'B'; bmp[1] = 'M';
+		*reinterpret_cast<uint32_t*>(&bmp[2]) = fileSize;
+		*reinterpret_cast<uint32_t*>(&bmp[10]) = 14 + 40;
+		*reinterpret_cast<uint32_t*>(&bmp[14]) = 40;
+		*reinterpret_cast<int32_t*>(&bmp[18]) = (int32_t)w;
+		*reinterpret_cast<int32_t*>(&bmp[22]) = -(int32_t)h;   // negative = top-down
+		*reinterpret_cast<uint16_t*>(&bmp[26]) = 1;
+		*reinterpret_cast<uint16_t*>(&bmp[28]) = 24;
+		*reinterpret_cast<uint32_t*>(&bmp[34]) = pixelDataSize;
+
+		const uint8_t* src = static_cast<const uint8_t*>(mapped);
+		for (uint32_t y = 0; y < h; ++y)
+		{
+			const uint8_t* srow = src + (size_t)y * footprint.Footprint.RowPitch;
+			uint8_t* drow = bmp.data() + 54 + (size_t)y * rowPadded;
+			for (uint32_t x = 0; x < w; ++x)
+			{
+				// Resource is R8G8B8A8 -- BMP wants B,G,R.
+				drow[x * 3 + 0] = srow[x * 4 + 2];
+				drow[x * 3 + 1] = srow[x * 4 + 1];
+				drow[x * 3 + 2] = srow[x * 4 + 0];
+			}
+		}
+		readback->Unmap(0, nullptr);
+
+		FILE* f = nullptr;
+		errno_t werr = _wfopen_s(&f, utf16Path, L"wb");
+		if (werr != 0 || !f) { ERROR_PRINT("Dx12Device::CaptureBackBufferPng: fopen failed errno=%d", (int)werr); return false; }
+		fwrite(bmp.data(), 1, bmp.size(), f);
+		fclose(f);
+		return true;
 	}
 }
