@@ -161,10 +161,10 @@ namespace Tga
 		static constexpr int kLocalTileCount = kLocalTilesRow * kLocalTilesRow; // 64
 		static constexpr int kMaxShadowLights = 8;
 		void SetLocalShadows(bool aOn) { myLocalShadowsWanted = aOn; }
-		bool IsLocalShadows() const { return myLocalShadowsWanted && myShadowShader && myLocalAtlasSrv; }
+		bool IsLocalShadows() const { return myLocalShadowsWanted && myShadowShader && myLocalAtlasSrv.IsValid(); }
 
 		void SetShadows(bool aOn) { myShadowsWanted = aOn; }
-		bool IsShadows() const { return myShadowsWanted && myShadowShader != nullptr && myShadowDsvs[0]; }
+		bool IsShadows() const { return myShadowsWanted && myShadowShader != nullptr && myShadowDsvs[0].IsValid(); }
 
 		// Live-tweakable knobs (debug UI). Read each frame by RenderSSAO / RenderShadows.
 		struct Tunables
@@ -310,9 +310,9 @@ namespace Tga
 		// --- cascaded shadow maps (directional) ---
 		static constexpr int kShadowRes = 3072;
 		std::unique_ptr<ModelShader> myShadowShader;         // PbrModelShaderVS + ShadowPS
-		Microsoft::WRL::ComPtr<ID3D11Texture2D> myShadowTex; // R32_TYPELESS, kNumCascades array slices
-		Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> myShadowSrv;                 // t19, array
-		std::array<Microsoft::WRL::ComPtr<ID3D11DepthStencilView>, kNumCascades> myShadowDsvs;
+		rhi::TextureHandle myShadowTex; // D32_Float (typeless resource), kNumCascades array slices
+		rhi::SrvHandle myShadowSrv;                 // t19, array
+		std::array<rhi::DsvHandle, kNumCascades> myShadowDsvs;
 		rhi::SamplerHandle myShadowCmpSampler;                // s2
 		rhi::ConstantBuffer myShadowCb;     // b9
 		std::array<Camera, kNumCascades> myCascadeCam;
@@ -324,9 +324,9 @@ namespace Tga
 		bool myShadowsWanted = true;
 
 		// --- point / spot light shadow atlas ---
-		Microsoft::WRL::ComPtr<ID3D11Texture2D> myLocalAtlasTex;              // R32_TYPELESS
-		Microsoft::WRL::ComPtr<ID3D11DepthStencilView> myLocalAtlasDsv;      // D32_FLOAT, whole atlas
-		Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> myLocalAtlasSrv;    // t21, R32_FLOAT
+		rhi::TextureHandle myLocalAtlasTex;              // D32_Float (typeless resource)
+		rhi::DsvHandle myLocalAtlasDsv;      // whole atlas
+		rhi::SrvHandle myLocalAtlasSrv;    // t21
 		rhi::StructuredBuffer myLocalShadowBuffer;            // structured, t20 (CPU-updated)
 		std::vector<DeferredLight> myLights;   // CPU copy (UploadLights); shadowSlot patched per frame
 		Vector3f myCameraPos{ 0.f, 0.f, 0.f };

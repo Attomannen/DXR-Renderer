@@ -303,7 +303,7 @@ bool DeferredRenderer::Init(Vector2ui aResolution)
 	// --- point / spot light shadow atlas (reuses myShadowShader + s2 cmp sampler) ---
 	if (myShadowShader && !CreateLocalShadowAtlas())
 	{
-		myLocalAtlasSrv.Reset();
+		if (myLocalAtlasSrv.IsValid()) { DX11::Rhi()->Destroy(myLocalAtlasSrv); myLocalAtlasSrv = {}; }
 		ERROR_PRINT("DeferredRenderer: local shadow atlas failed; point/spot shadows disabled");
 	}
 
@@ -618,36 +618,34 @@ bool DeferredRenderer::CreateClusterBuffers(Vector2ui aResolution)
 
 bool DeferredRenderer::CreateShadowMaps()
 {
-	D3D11_TEXTURE2D_DESC td{};
-	td.Width = td.Height = kShadowRes;
-	td.MipLevels = 1;
-	td.ArraySize = kNumCascades;
-	td.Format = DXGI_FORMAT_R32_TYPELESS;
-	td.SampleDesc.Count = 1;
-	td.Usage = D3D11_USAGE_DEFAULT;
-	td.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
-	if (FAILED(DX11::Device->CreateTexture2D(&td, nullptr, myShadowTex.GetAddressOf())))
+	rhi::IDevice* dev = DX11::Rhi();
+
+	rhi::TextureDesc td = {};
+	td.width = td.height = kShadowRes;
+	td.mipLevels = 1;
+	td.depthOrArraySize = kNumCascades;
+	td.dimension = rhi::TextureDimension::Tex2DArray;
+	td.format = rhi::Format::D32_Float;   // typeless resource; DSV=D32_Float, SRV=R32_Float
+	td.bind = rhi::TextureBind::DepthStencil | rhi::TextureBind::ShaderResource;
+	td.debugName = "ShadowCascadeTex";
+	myShadowTex = dev->CreateTexture(td);
+	if (!myShadowTex.IsValid())
 	{
 		ERROR_PRINT("DeferredRenderer: shadow texture creation failed");
 		return false;
 	}
 
-	D3D11_SHADER_RESOURCE_VIEW_DESC sv{};
-	sv.Format = DXGI_FORMAT_R32_FLOAT;
-	sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
-	sv.Texture2DArray.MipLevels = 1;
-	sv.Texture2DArray.ArraySize = kNumCascades;
-	if (FAILED(DX11::Device->CreateShaderResourceView(myShadowTex.Get(), &sv, myShadowSrv.GetAddressOf())))
+	myShadowSrv = dev->CreateSrv(myShadowTex, rhi::SrvDesc{});
+	if (!myShadowSrv.IsValid())
 		return false;
 
 	for (int i = 0; i < kNumCascades; ++i)
 	{
-		D3D11_DEPTH_STENCIL_VIEW_DESC dv{};
-		dv.Format = DXGI_FORMAT_D32_FLOAT;
-		dv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
-		dv.Texture2DArray.FirstArraySlice = i;
-		dv.Texture2DArray.ArraySize = 1;
-		if (FAILED(DX11::Device->CreateDepthStencilView(myShadowTex.Get(), &dv, myShadowDsvs[i].GetAddressOf())))
+		rhi::DsvDesc dd = {};
+		dd.firstArraySlice = i;
+		dd.arraySize = 1;
+		myShadowDsvs[i] = dev->CreateDsv(myShadowTex, dd);
+		if (!myShadowDsvs[i].IsValid())
 			return false;
 	}
 	return true;
@@ -655,31 +653,28 @@ bool DeferredRenderer::CreateShadowMaps()
 
 bool DeferredRenderer::CreateLocalShadowAtlas()
 {
-	D3D11_TEXTURE2D_DESC td{};
-	td.Width = td.Height = kLocalAtlasRes;
-	td.MipLevels = 1;
-	td.ArraySize = 1;
-	td.Format = DXGI_FORMAT_R32_TYPELESS;
-	td.SampleDesc.Count = 1;
-	td.Usage = D3D11_USAGE_DEFAULT;
-	td.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
-	if (FAILED(DX11::Device->CreateTexture2D(&td, nullptr, myLocalAtlasTex.GetAddressOf())))
+	rhi::IDevice* dev = DX11::Rhi();
+
+	rhi::TextureDesc td = {};
+	td.width = td.height = kLocalAtlasRes;
+	td.mipLevels = 1;
+	td.dimension = rhi::TextureDimension::Tex2D;
+	td.format = rhi::Format::D32_Float;   // typeless resource; DSV=D32_Float, SRV=R32_Float
+	td.bind = rhi::TextureBind::DepthStencil | rhi::TextureBind::ShaderResource;
+	td.debugName = "LocalShadowAtlasTex";
+	myLocalAtlasTex = dev->CreateTexture(td);
+	if (!myLocalAtlasTex.IsValid())
 	{
 		ERROR_PRINT("DeferredRenderer: local shadow atlas texture failed");
 		return false;
 	}
 
-	D3D11_DEPTH_STENCIL_VIEW_DESC dv{};
-	dv.Format = DXGI_FORMAT_D32_FLOAT;
-	dv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
-	if (FAILED(DX11::Device->CreateDepthStencilView(myLocalAtlasTex.Get(), &dv, myLocalAtlasDsv.GetAddressOf())))
+	myLocalAtlasDsv = dev->CreateDsv(myLocalAtlasTex, rhi::DsvDesc{});
+	if (!myLocalAtlasDsv.IsValid())
 		return false;
 
-	D3D11_SHADER_RESOURCE_VIEW_DESC sv{};
-	sv.Format = DXGI_FORMAT_R32_FLOAT;
-	sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-	sv.Texture2D.MipLevels = 1;
-	if (FAILED(DX11::Device->CreateShaderResourceView(myLocalAtlasTex.Get(), &sv, myLocalAtlasSrv.GetAddressOf())))
+	myLocalAtlasSrv = dev->CreateSrv(myLocalAtlasTex, rhi::SrvDesc{});
+	if (!myLocalAtlasSrv.IsValid())
 		return false;
 
 	myLocalShadowBuffer.Create(*DX11::Rhi(), sizeof(LocalShadowGpu), kLocalTileCount,
@@ -727,6 +722,7 @@ void DeferredRenderer::RenderShadows(const std::function<void(const Camera&)>& a
 {
 	if (!IsShadows() || !aDrawShadowCasters) return;
 
+	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
 	auto& gss = GraphicsEngine::GetInstance()->GetGraphicsStateStack();
 	const Camera savedCam = gss.GetCamera();
 
@@ -838,11 +834,8 @@ void DeferredRenderer::RenderShadows(const std::function<void(const Camera&)>& a
 		cb.cascadeDepthRange[c] = orthoDepth;
 
 		// --- render this cascade ---
-		DX11::Context->ClearDepthStencilView(myShadowDsvs[c].Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
-		ID3D11RenderTargetView* noRtv = nullptr;
-		DX11::Context->OMSetRenderTargets(1, &noRtv, myShadowDsvs[c].Get());
-		D3D11_VIEWPORT vp{ 0.f, 0.f, (float)kShadowRes, (float)kShadowRes, 0.f, 1.f };
-		DX11::Context->RSSetViewports(1, &vp);
+		ctx.ClearDepthStencil(myShadowDsvs[c], 1.0f, 0);
+		SetTargets(ctx, {}, myShadowDsvs[c], Vector2ui{ (uint32_t)kShadowRes, (uint32_t)kShadowRes });
 
 		gss.SetCamera(myCascadeCam[c]);
 		gss.UpdateGpuStates(true);
@@ -904,9 +897,9 @@ void DeferredRenderer::RenderLocalShadows(const std::function<void(const Camera&
 	auto& gss = GraphicsEngine::GetInstance()->GetGraphicsStateStack();
 	const Camera savedCam = gss.GetCamera();
 
-	ID3D11RenderTargetView* noRtv = nullptr;
-	DX11::Context->ClearDepthStencilView(myLocalAtlasDsv.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
-	DX11::Context->OMSetRenderTargets(1, &noRtv, myLocalAtlasDsv.Get());
+	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
+	ctx.ClearDepthStencil(myLocalAtlasDsv, 1.0f, 0);
+	ctx.SetRenderTargets(0, nullptr, myLocalAtlasDsv);
 
 	// Render one atlas tile: fill its transform entry + draw the casters into its viewport.
 	auto renderTile = [&](int tile, const Vector3f& pos, const Vector3f& fwd,
@@ -931,9 +924,8 @@ void DeferredRenderer::RenderLocalShadows(const std::function<void(const Camera&
 		e.misc[2] = 0.0022f;
 		e.misc[3] = 0.0f;
 
-		D3D11_VIEWPORT vpr{ (float)(tx * kLocalTilePx), (float)(ty * kLocalTilePx),
-		                    (float)kLocalTilePx, (float)kLocalTilePx, 0.0f, 1.0f };
-		DX11::Context->RSSetViewports(1, &vpr);
+		ctx.SetViewport((float)(tx * kLocalTilePx), (float)(ty * kLocalTilePx),
+		               (float)kLocalTilePx, (float)kLocalTilePx);
 		gss.SetCamera(cam);
 		gss.UpdateGpuStates(true);
 		// The callback frustum-culls sub-meshes to this tile's light view --
@@ -1173,8 +1165,7 @@ void DeferredRenderer::BindGBufferSrvs()
 	DX11::Context->PSSetShaderResources(18, 1, &aoSrv);
 
 	// Shadow cascades (t19, cmp sampler s2, params b9). gShadowEnabled gates use.
-	ID3D11ShaderResourceView* shadowSrv = IsShadows() ? myShadowSrv.Get() : nullptr;
-	DX11::Context->PSSetShaderResources(19, 1, &shadowSrv);
+	ctx.SetShaderResource(rhi::ShaderStage::Pixel, 19, IsShadows() ? myShadowSrv : rhi::SrvHandle{});
 	if (myShadowCmpSampler.IsValid())
 		ctx.SetSampler(rhi::ShaderStage::Pixel, 2, myShadowCmpSampler);
 	myShadowCb.Bind(ctx);   // b9
@@ -1189,8 +1180,7 @@ void DeferredRenderer::BindGBufferSrvs()
 	// Point / spot shadow atlas (t20 transforms, t21 depth). Shared s2 cmp sampler.
 	const bool localSh = IsLocalShadows();
 	ctx.SetShaderResource(rhi::ShaderStage::Pixel, 20, localSh ? myLocalShadowBuffer.Srv() : rhi::SrvHandle{});
-	ID3D11ShaderResourceView* atlasSrv = localSh ? myLocalAtlasSrv.Get() : nullptr;
-	DX11::Context->PSSetShaderResources(21, 1, &atlasSrv);
+	ctx.SetShaderResource(rhi::ShaderStage::Pixel, 21, localSh ? myLocalAtlasSrv : rhi::SrvHandle{});
 }
 
 void DeferredRenderer::UnbindGBufferSrvs()
