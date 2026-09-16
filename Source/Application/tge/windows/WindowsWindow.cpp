@@ -19,6 +19,11 @@ WindowsWindow::~WindowsWindow(void)
 bool WindowsWindow::Init(const ApplicationConfiguration &aWindowConfig, HINSTANCE &aHInstanceToFill, HWND*& aHwnd)
 {
 	myWndProcCallback = aWindowConfig.winProcCallback;
+	myKeepAspectRatio = aWindowConfig.keepAspectRatio && !aWindowConfig.borderless &&
+		!aWindowConfig.startInFullScreen && aWindowConfig.windowSize.y != 0;
+	myClientAspectRatio = myKeepAspectRatio
+		? static_cast<float>(aWindowConfig.windowSize.x) / static_cast<float>(aWindowConfig.windowSize.y)
+		: 1.0f;
 	HINSTANCE instance = GetModuleHandle(NULL);
 	aHInstanceToFill = instance;
 
@@ -133,6 +138,44 @@ LRESULT CALLBACK WindowsWindow::WindowProc(HWND hWnd, UINT message, WPARAM wPara
 
 	switch(message)
 	{
+		case WM_SIZING:
+		{
+			if (windowsClass && windowsClass->myKeepAspectRatio)
+			{
+				RECT* const rect = reinterpret_cast<RECT*>(lParam);
+				const long borderWidth = static_cast<long>(windowsClass->myResolutionWithBorderDifference.x - windowsClass->myResolution.x);
+				const long borderHeight = static_cast<long>(windowsClass->myResolutionWithBorderDifference.y - windowsClass->myResolution.y);
+				const long outerWidth = rect->right - rect->left;
+				const long outerHeight = rect->bottom - rect->top;
+				const long clientWidth = std::max(1L, outerWidth - borderWidth);
+				const long clientHeight = std::max(1L, outerHeight - borderHeight);
+
+				// Horizontal edges (and corners) drive width; vertical edges drive
+				// height.  The opposite edge remains anchored under the cursor.
+				const bool verticalEdge = wParam == WMSZ_TOP || wParam == WMSZ_BOTTOM;
+				const long constrainedClientWidth = verticalEdge
+					? static_cast<long>(std::lround(clientHeight * windowsClass->myClientAspectRatio))
+					: clientWidth;
+				const long constrainedClientHeight = verticalEdge
+					? clientHeight
+					: static_cast<long>(std::lround(clientWidth / windowsClass->myClientAspectRatio));
+				const long constrainedOuterWidth = constrainedClientWidth + borderWidth;
+				const long constrainedOuterHeight = constrainedClientHeight + borderHeight;
+
+				if (wParam == WMSZ_LEFT || wParam == WMSZ_TOPLEFT || wParam == WMSZ_BOTTOMLEFT)
+					rect->left = rect->right - constrainedOuterWidth;
+				else
+					rect->right = rect->left + constrainedOuterWidth;
+
+				if (wParam == WMSZ_TOP || wParam == WMSZ_TOPLEFT || wParam == WMSZ_TOPRIGHT)
+					rect->top = rect->bottom - constrainedOuterHeight;
+				else
+					rect->bottom = rect->top + constrainedOuterHeight;
+				return TRUE;
+			}
+			break;
+		}
+
 		case WM_DESTROY:
 			{
 				PostQuitMessage(0);
@@ -141,6 +184,14 @@ LRESULT CALLBACK WindowsWindow::WindowProc(HWND hWnd, UINT message, WPARAM wPara
 
 		case WM_SIZE:
 		{
+			if (windowsClass)
+			{
+				const unsigned int width = LOWORD(lParam), height = HIWORD(lParam);
+				// Preserve the last valid size while minimized; DX11/DX12 both reject
+				// zero-sized backbuffers and resize again on the restore WM_SIZE.
+				if (width != 0 && height != 0)
+					windowsClass->myResolution = { width, height };
+			}
 			if (Application::GetInstance())
 				Application::GetInstance()->SetWantToUpdateSize();
 			break;
@@ -154,6 +205,35 @@ LRESULT CALLBACK WindowsWindow::WindowProc(HWND hWnd, UINT message, WPARAM wPara
 void Tga::WindowsWindow::SetResolution(Vector2ui aResolution)
 {
 	::SetWindowPos(myWindowHandle, 0, 0, 0, aResolution.x, aResolution.y, SWP_NOMOVE | SWP_NOOWNERZORDER | SWP_NOZORDER);
+	RECT client{};
+	if (::GetClientRect(myWindowHandle, &client))
+	{
+		const unsigned int width = std::max(0L, client.right - client.left);
+		const unsigned int height = std::max(0L, client.bottom - client.top);
+		if (width != 0 && height != 0) myResolution = { width, height };
+	}
+}
+
+unsigned int Tga::WindowsWindow::GetWidth() const
+{
+	RECT client{};
+	if (myWindowHandle && ::GetClientRect(myWindowHandle, &client))
+	{
+		const long width = client.right - client.left;
+		if (width > 0) return static_cast<unsigned int>(width);
+	}
+	return myResolution.x;
+}
+
+unsigned int Tga::WindowsWindow::GetHeight() const
+{
+	RECT client{};
+	if (myWindowHandle && ::GetClientRect(myWindowHandle, &client))
+	{
+		const long height = client.bottom - client.top;
+		if (height > 0) return static_cast<unsigned int>(height);
+	}
+	return myResolution.y;
 }
 
 void Tga::WindowsWindow::Close()

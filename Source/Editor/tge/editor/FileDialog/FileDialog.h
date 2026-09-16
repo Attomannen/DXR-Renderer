@@ -13,11 +13,12 @@ namespace FileDialog {
 		tgo,
 		tgac,
 		tgmat,
+		tgm,
 		Count
 	};
 
 	extern void OpenFile(Callback callback);
-	extern void SaveFile(FileType aFileType = FileType::na, Callback callback = [](const char*) {});
+	extern void SaveFile(FileType aFileType = FileType::na, Callback callback = [](const char*) {}, const char* initialFolder = nullptr);
 	extern void OpenProjectFolder(Callback callback);
 
 }

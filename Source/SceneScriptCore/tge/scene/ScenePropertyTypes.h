@@ -30,7 +30,9 @@ namespace Tga
 	struct SceneModel
 	{
 		StringId path;
-		StringId textures[MAX_MESHES_PER_MODEL][4] = {};
+		// One authored .tgmat asset per model mesh. Texture-map paths belong to
+		// the material asset, keeping model definitions small and reusable.
+		StringId materials[MAX_MESHES_PER_MODEL] = {};
 	};
 
 	struct SceneSprite

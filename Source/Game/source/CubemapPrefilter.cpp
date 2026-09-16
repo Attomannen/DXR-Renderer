@@ -2,6 +2,7 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include "CubemapPrefilter.h"
+#include <tge/graphics/DepthBuffer.h>
 
 #include <tge/graphics/DX11.h>
 #include <tge/graphics/RenderTarget.h>
@@ -212,6 +213,41 @@ namespace Tga
         outCubemap.texture = cubemapTex;
         outCubemap.size = resolution;
         outCubemap.mipLevels = mipCount;
+        return true;
+    }
+
+    bool CubemapPrefilter::CreateDepthCubemap(uint32_t resolution, CubemapData& outCubemap)
+    {
+        outCubemap.Reset();
+        if (rhi::IDevice* dev = DX11::Rhi(); dev && dev->GetBackend() == rhi::Backend::DX12)
+        {
+            rhi::TextureDesc desc{};
+            desc.width = desc.height = resolution;
+            desc.depthOrArraySize = 1;
+            desc.mipLevels = 1;
+            desc.dimension = rhi::TextureDimension::TexCube;
+            desc.format = rhi::Format::D32_Float; // creates R32_TYPELESS storage + R32_FLOAT SRV
+            desc.bind = rhi::TextureBind::ShaderResource | rhi::TextureBind::DepthStencil;
+            desc.debugName = "ProbeDepthCubemap";
+            outCubemap.myRhiTexture.handle = dev->CreateTexture(desc);
+            if (!outCubemap.myRhiTexture.handle.IsValid()) return false;
+            outCubemap.myRhiSrv.handle = dev->CreateSrv(outCubemap.myRhiTexture.handle, { .asCube = true });
+            outCubemap.size = resolution; outCubemap.mipLevels = 1;
+            return outCubemap.myRhiSrv.handle.IsValid();
+        }
+
+        D3D11_TEXTURE2D_DESC desc{};
+        desc.Width = desc.Height = resolution; desc.MipLevels = 1; desc.ArraySize = 6;
+        desc.Format = DXGI_FORMAT_R32_TYPELESS; desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_DEPTH_STENCIL;
+        desc.MiscFlags = D3D11_RESOURCE_MISC_TEXTURECUBE;
+        if (FAILED(DX11::Device->CreateTexture2D(&desc, nullptr, outCubemap.texture.ReleaseAndGetAddressOf()))) return false;
+        D3D11_SHADER_RESOURCE_VIEW_DESC srv{};
+        srv.Format = DXGI_FORMAT_R32_FLOAT; srv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
+        srv.TextureCube.MipLevels = 1;
+        if (FAILED(DX11::Device->CreateShaderResourceView(outCubemap.texture.Get(), &srv, outCubemap.srv.ReleaseAndGetAddressOf()))) return false;
+        outCubemap.size = resolution; outCubemap.mipLevels = 1;
         return true;
     }
 
@@ -583,10 +619,12 @@ namespace Tga
 
     bool CubemapPrefilter::CaptureSceneToCubemap(
         RenderTarget& renderTarget,
+        DepthBuffer* depthBuffer,
         std::function<void(uint32_t faceIndex)> renderFaceCallback,
-        CubemapData& outCubemap)
+        CubemapData& outCubemap, CubemapData* outDepthCubemap)
     {
         outCubemap.Reset();
+		if (outDepthCubemap) outDepthCubemap->Reset();
 
         Vector2ui res = renderTarget.GetResolution();
         if (res.X == 0 || res.Y == 0 || res.X != res.Y)
@@ -602,6 +640,7 @@ namespace Tga
         if (dev && dev->GetBackend() == rhi::Backend::DX12)
         {
             rhi::TextureHandle rtTexHandle = renderTarget.GetTextureHandle();
+			rhi::TextureHandle depthTexHandle = depthBuffer ? depthBuffer->GetTextureHandle() : rhi::TextureHandle{};
             if (!rtTexHandle.IsValid())
             {
                 ERROR_PRINT("CubemapPrefilter::CaptureSceneToCubemap (DX12): RenderTarget has no texture handle.");
@@ -617,6 +656,7 @@ namespace Tga
             {
                 return false;
             }
+			if (outDepthCubemap && (!depthTexHandle.IsValid() || !CreateDepthCubemap(resolution, *outDepthCubemap))) return false;
 
             rhi::ICommandContext& ctx = dev->GetContext();
             for (uint32_t face = 0; face < 6; ++face)
@@ -626,6 +666,7 @@ namespace Tga
                 // Unbind active render target before copying out of it.
                 ctx.SetRenderTargets(0, nullptr, {});
                 ctx.CopyTextureRegion(outCubemap.myRhiTexture.handle, 0, face, rtTexHandle, 0, 0);
+				if (outDepthCubemap) ctx.CopyTextureRegion(outDepthCubemap->myRhiTexture.handle, 0, face, depthTexHandle, 0, 0);
             }
 
             ctx.GenerateMips(outCubemap.GetSrv(), outCubemap.myRhiTexture.handle);
@@ -651,6 +692,13 @@ namespace Tga
 
         D3D11_TEXTURE2D_DESC rtDesc;
         rtTexture->GetDesc(&rtDesc);
+		ComPtr<ID3D11Texture2D> depthTexture;
+		if (outDepthCubemap)
+		{
+			if (!depthBuffer || !depthBuffer->GetShaderResourceView()) return false;
+			ComPtr<ID3D11Resource> depthResource; depthBuffer->GetShaderResourceView()->GetResource(depthResource.GetAddressOf());
+			if (FAILED(depthResource.As(&depthTexture)) || !CreateDepthCubemap(resolution, *outDepthCubemap)) return false;
+		}
 
         if (!CreateCubemapTexture(
             resolution, mipCount, rtDesc.Format,
@@ -670,6 +718,7 @@ namespace Tga
 
             uint32_t dstSubresource = D3D11CalcSubresource(0, face, mipCount);
             DX11::Context->CopySubresourceRegion(outCubemap.texture.Get(), dstSubresource, 0, 0, 0, rtTexture.Get(), 0, nullptr);
+			if (outDepthCubemap) DX11::Context->CopySubresourceRegion(outDepthCubemap->texture.Get(), dstSubresource, 0, 0, 0, depthTexture.Get(), 0, nullptr);
         }
 
         DX11::Context->GenerateMips(outCubemap.srv.Get());

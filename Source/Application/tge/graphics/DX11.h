@@ -65,6 +65,9 @@ public:
 	static const PixelShader* LoadPixelShader(const char* aShaderPath);
 	static const VertexShader* LoadVertexShader(const char* aShaderPath);
 	static const ComputeShader* LoadComputeShader(const char* aShaderPath);
+	// DX12-only SM6/DXIL path. Kept separate from LoadComputeShader so DX11
+	// never attempts to create an ID3D11ComputeShader from DXIL bytes.
+	static const ComputeShader* LoadComputeShaderDxil(const char* aShaderPath);
 
 	// The RHI device wrapping this DX11 context (created at the end of Init).
 	// During the migration the raw statics above stay valid alongside it.
@@ -86,6 +89,7 @@ private:
 	static const PixelShader* ForceLoadPixelShader(const char* aShaderPath, bool addToFileWatcher = true);
 	static const VertexShader* ForceLoadVertexShader(const char* aShaderPath, bool addToFileWatcher = true);
 	static const ComputeShader* ForceLoadComputeShader(const char* aShaderPath, bool addToFileWatcher = true);
+	static const ComputeShader* ForceLoadComputeShaderDxil(const char* aShaderPath, bool addToFileWatcher = true);
 
 	static int ourDrawCallCount;
 	static int ourPreviousDrawCallCount;
@@ -104,6 +108,7 @@ private:
 	static std::unordered_map<StringId, PixelShader> ourLoadedPixelShaders;
 	static std::unordered_map<StringId, VertexShader> ourLoadedVertexShaders;
 	static std::unordered_map<StringId, ComputeShader> ourLoadedComputeShaders;
+	static std::unordered_map<StringId, ComputeShader> ourLoadedDxilComputeShaders;
 
 	static std::unique_ptr<rhi::IDevice> ourRhiDevice;
 };

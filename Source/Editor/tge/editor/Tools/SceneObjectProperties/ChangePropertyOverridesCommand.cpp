@@ -66,7 +66,7 @@ void ChangePropertyOverridesCommand::Undo()
 	{
 		if (property.name == myOldValue.name)
 		{
-			property = myNewValue;
+			property = myOldValue;
 			return;
 		}
 	}

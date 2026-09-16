@@ -3,11 +3,14 @@
 
 #include "SceneUtil.h"
 
+#include <filesystem>
+
 #include <tge/Application.h>
 #include <tge/scene/Scene.h>
 #include <tge/scene/ScenePropertyTypes.h>
 
 #include <tge/editor/Editor.h>
+#include <tge/editor/Material/MaterialAsset.h>
 #include <tge/editor/Tools/Viewport/Viewport.h>
 
 #include <tge/script/BaseProperties.h>
@@ -32,11 +35,56 @@
 
 #include <tge/editor/p4/p4.h>
 #include <tge/log/Log.h>
+#include <tge/settings/settings.h>
 #include "tge/shaders/SpriteShader.h"
 #include "tge/shaders/ModelShader.h"
 #include "tge/sprite/sprite.h"
 
 using namespace Tga;
+
+namespace
+{
+	// Model assets reference .tgmat files; DDS paths are intentionally private to
+	// MaterialAsset. Keep the editor preview on the same authored-data path as
+	// the game runtime.
+	template <typename Instance>
+	void ApplyModelMaterials(const SceneModel& modelValue, Instance& instance, SceneCache& cache)
+	{
+		const int meshCount = std::min((int)instance.GetModel()->GetMeshCount(), MAX_MESHES_PER_MODEL);
+		for (int mesh = 0; mesh < meshCount; ++mesh)
+		{
+			// FBX traversal order is exporter-dependent. Prefer the material asset
+			// whose filename matches the imported mesh material name, falling back
+			// to the legacy row index for assets without names.
+			StringId materialPath = modelValue.materials[mesh];
+			const std::string_view meshMaterial = instance.GetModel()->GetMaterialName(mesh).GetStringView();
+			if (!meshMaterial.empty())
+			{
+				for (const StringId candidate : modelValue.materials)
+				{
+					if (candidate.IsEmpty()) continue;
+					const std::string stem = std::filesystem::path(candidate.GetString()).stem().string();
+					if (_stricmp(stem.c_str(), std::string(meshMaterial).c_str()) == 0) { materialPath = candidate; break; }
+				}
+			}
+			if (materialPath.IsEmpty()) continue;
+			MaterialAsset material;
+			const std::filesystem::path absoluteMaterialPath = std::filesystem::path(Settings::GameAssetRoot()) / materialPath.GetString();
+			if (!material.Load(absoluteMaterialPath.string()))
+			{
+				ERROR_PRINT("Model material could not be loaded: %s", materialPath.GetString());
+				continue;
+			}
+			for (int slot = 0; slot < 4; ++slot)
+			{
+				if (material.maps[slot].empty()) continue;
+				const TextureSrgbMode srgbMode = slot == 0 ? TextureSrgbMode::ForceSrgbFormat : TextureSrgbMode::ForceNoSrgbFormat;
+				if (Texture* texture = cache.GetTextureUsingCache(StringRegistry::RegisterOrGetString(material.maps[slot]), srgbMode))
+					instance.SetTexture(mesh, slot, texture);
+			}
+		}
+	}
+}
 
 
 struct RenderData
@@ -177,7 +225,17 @@ std::shared_ptr<Model> Tga::SceneCache::GetModelUsingCache(StringId path)
 	}
 	else
 	{
-		model = ModelFactory::GetInstance().GetModel(path.GetString());
+		// Do not let a first-time FBX parse freeze the editor's render/UI frame.
+		// The factory adopts completed CPU work on this render thread, then this
+		// cache sees the model on a subsequent frame.
+		ModelFactory& factory = ModelFactory::GetInstance();
+		factory.PumpAsyncImports();
+		model = factory.GetLoadedModel(path);
+		if (!model)
+		{
+			factory.RequestAsyncImport(path);
+			return nullptr;
+		}
 		myModelCache[path] = model;
 	}
 
@@ -405,25 +463,7 @@ bool Tga::DrawSceneProperty(const ScenePropertyDefinition& property, float maxSc
 					instance.Init(model);
 					instance.SetPose(*pose);
 
-					int meshCount = (int)instance.GetModel()->GetMeshCount();
-					if (meshCount > MAX_MESHES_PER_MODEL)
-						meshCount = MAX_MESHES_PER_MODEL;
-
-					for (int i = 0; i < meshCount; i++)
-					{
-						for (int j = 0; j < 4; j++)
-						{
-							if (!value.textures[i][j].IsEmpty())
-							{
-								// diffuse texture should be srgb, the rest not
-								TextureSrgbMode srgbMode = (j == 0) ? TextureSrgbMode::ForceSrgbFormat : TextureSrgbMode::ForceNoSrgbFormat;
-								Texture* texture = drawParameters.cache.GetTextureUsingCache(value.textures[i][j], srgbMode);
-
-								if (texture != nullptr)
-									instance.SetTexture(i, j, texture);
-							}
-						}
-					}
+					ApplyModelMaterials(value, instance, drawParameters.cache);
 
 					// todo override shader
 					Tga::GraphicsEngine::GetInstance()->GetModelDrawer().Draw(instance);
@@ -433,25 +473,7 @@ bool Tga::DrawSceneProperty(const ScenePropertyDefinition& property, float maxSc
 					ModelInstance instance;
 					instance.Init(model);
 
-					int meshCount = (int)instance.GetModel()->GetMeshCount();
-					if (meshCount > MAX_MESHES_PER_MODEL)
-						meshCount = MAX_MESHES_PER_MODEL;
-
-					for (int i = 0; i < meshCount; i++)
-					{
-						for (int j = 0; j < 4; j++)
-						{
-							if (!value.textures[i][j].IsEmpty())
-							{
-								// diffuse texture should be srgb, the rest not
-								TextureSrgbMode srgbMode = (j == 0) ? TextureSrgbMode::ForceSrgbFormat : TextureSrgbMode::ForceNoSrgbFormat;
-								Texture* texture = drawParameters.cache.GetTextureUsingCache(value.textures[i][j], srgbMode);
-
-								if (texture != nullptr)
-									instance.SetTexture(i, j, texture);
-							}
-						}
-					}
+					ApplyModelMaterials(value, instance, drawParameters.cache);
 
 					if (drawParameters.overrideModelShader)
 					{

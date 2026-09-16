@@ -1,8 +1,10 @@
 # Sponza benchmark harness
 
-`GameMain` (the `Game.sln` runtime) is wired as a Sponza render benchmark.
-`Source/Game/source/GameWorld.cpp` loads `sponza/Sponza.fbx`, sets up lights + a
-camera and, when asked, runs a deterministic fly-through and writes a JSON report.
+`GameMain` (the `Game.sln` runtime) is scene-driven: it loads a `.tgs` scene and
+the `.tgo` object definitions it references. If `BENCH_SCENE` is not set, it
+uses the first `.tgs` found under the game asset root, so no particular FBX is
+required. It then sets up lights + a camera and, when asked, runs a deterministic
+fly-through and writes a JSON report.
 
 ## Running
 
@@ -32,8 +34,7 @@ Env vars (all optional):
 | `BENCH_ROT_X` | `0` | rotate the model about X (deg) — e.g. `-90` to bring Z-up content to Y-up |
 | `BENCH_WARMUP` | `60` | leading frames excluded from stats |
 | `BENCH_SPONZA_COPIES` | `1` | grid of Sponza copies — raises sub-mesh / draw-call load |
-| `BENCH_LIGHTS` | `8` | procedural-rig point-light count (capped at `NUMBER_OF_LIGHTS_ALLOWED` = 8). Ignored when an authored light file is loaded. |
-| `BENCH_LIGHTFILE` | `bench_lights_<scene>.json` | authored point lights: `{ "lights": [ { "pos":[x,y,z], "color":[r,g,b] (0..1), "intensity":N, "range":<world>, "radius":N } ] }`. Final RGB = `color * intensity * BENCH_EXPOSURE`. Absent/empty → procedural hue-wheel rig. `bench_lights_TEST.json` ships 6 coloured pool lights. |
+| Local lights | selected `.tgs` only | Author `{ "lighting": { "lights": [ { "pos":[x,y,z], "color":[r,g,b] (0..1), "intensity":N, "range":<world>, "radius":N } ] } }` in the scene itself. Final RGB = `color * intensity * BENCH_EXPOSURE`. An absent/empty array means no local lights; the runtime never loads `bench_lights_*.json` or creates a fallback rig. |
 | `BENCH_DEFERRED` | `1` | `1` = deferred G-buffer path, `0` = forward |
 | `BENCH_CLUSTERED` | `1` | `1` = froxel-clustered light culling (compute), `0` = brute-force loop over all lights per pixel (A/B). Deferred path only. |
 | `BENCH_SSAO` | `1` | `1` = screen-space AO pass (folded into ambient), `0` = off. Deferred path only. `BENCH_GBUF=8` shows the AO buffer. |
@@ -49,7 +50,6 @@ Env vars (all optional):
 | _(probe box)_ | `sceneExtents*1.35` | box-parallax influence half-extents. Override per scene with `bench_probes_<scene>.json` = `{ "probes": [ { "pos":[x,y,z], "box":[hx,hy,hz] } ] }`, or drag in the Ambient/IBL panel. |
 | `BENCH_MATBALL` | `0` | `1` = show the material-preview debug sphere (`Sphere/Sphere.fbx`). Live base-colour / roughness / metalness / AO / emissive sliders in the "Material preview" panel; renders with a texture-free constant-value G-buffer shader. A **Load .tgmat** button imports a material authored in the GameEditor. |
 | `BENCH_ORBITBALLS` | `0` | `N` = orbit N spheres (max 24) around the scene centre, all sharing the debug-sphere material. `BENCH_ORBIT_RADIUS` / `BENCH_ORBIT_SPEED` / `BENCH_ORBIT_BALLRAD` tune the ring. Emissive spheres each spawn a (non-shadow) area-light proxy. Live controls under *Material preview → Orbiting spheres*. |
-| `BENCH_SCENE=<BuiltinRoom>` | – | procedural engine room: floor + ceiling + 4 walls from built-in primitives, each surface an editable fixed-param material (default: white 0-roughness floor, grey 1-roughness walls). Size + per-surface material + **Load .tgmat** in the *Built-in room* panel. Always available in the Scene combo — no `.tgs` on disk. |
 | `BENCH_GI` | `1` | `1` = emissive-GI irradiance volume (lazy SH probes; primes over ~1 s at load then near-free). `0` = off. Deferred only. |
 | `BENCH_GI_PRIME` | `8` | probes captured per frame while priming the volume (higher = faster prime, bigger load spike). |
 | `BENCH_GI_VIZ` | `0` | `1` = show the raw GI irradiance term instead of the lit scene. |
@@ -60,8 +60,7 @@ Env vars (all optional):
 | `BENCH_NOCULL` | – | non-zero disables the whole-model frustum cull |
 | `BENCH_SCREENSHOT` | – | path — writes a PNG of the backbuffer near the end of the run |
 | `BENCH_REPORT` | `bench_report.json` | report path (relative to `Bin/`) |
-| `BENCH_MODEL` | `sponza/Sponza.fbx` | model asset path (used only when `BENCH_SCENE=` is explicitly empty). May be a `.fbx` (auto-resolved textures) **or a `.tgo`**. |
-| `BENCH_SCENE` | **`TEST`** | load `<name>.tgs` + its `<name>.leveldata/` folder: every object file (Model property inline, `path` to a `.tgo`, or `object-definition: <name>` resolved under the data root) is instantiated with its translation/rotation/scale (degrees). **Default is the `TEST` scene** (Spaceship + New Sponza). Set `BENCH_SCENE=` (empty) for the raw `BENCH_MODEL` path. |
+| `BENCH_SCENE` | first `.tgs` found | load `<name>.tgs` + its `<name>.leveldata/` folder: every object file (Model property inline, `path` to a `.tgo`, or `object-definition: <name>` resolved under the data root) is instantiated with its translation/rotation/scale (degrees). Set this only to choose a particular scene; when unset or empty, the first scene found is used. |
 | `BENCH_CAMFILE` | `bench_camera_<scene>.json` | artist-placed camera for the scene (F5 in `scene.bat <scene>`). For `TEST` → `bench_camera_TEST.json`. |
 | `BENCH_CAM` (scene) | **`fixed`** | a scene run holds the placed camera dead-still by default (repeatable benchmark, matches the framing). Raw model runs still default to `spin`. |
 | `BENCH_NOVSYNC` | – | set non-zero to disable vsync in interactive mode too |

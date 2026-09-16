@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "DefaultEditorGraphics.h"
 
+#include <filesystem>
 #include <imgui.h>
 #include <tge/editor/p4/p4.h>
 #include <tge/editor/Scene/ActiveScene.h>
@@ -19,6 +20,8 @@
 #include "tge/model/ModelFactory.h"
 #include "tge/primitives/LinePrimitive.h"
 #include "tge/render/RenderCommon.h"
+#include "tge/render/RenderGraph.h"
+#include "tge/render/DeferredRenderer.h"
 #include "tge/settings/settings.h"
 #include "tge/texture/TextureManager.h"
 #include "tge/texture/texture.h"
@@ -29,6 +32,7 @@
 #include <tge/imgui/ImGuiPropertyEditor.h>
 #include <tge/editor/Editor.h>
 #include <tge/editor/Material/MaterialAsset.h>
+#include <tge/editor/imgui_widgets/imgui_widgets.h>
 #include <tge/graphics/DX11.h>
 #include <tge/rhi/Device.h>
 #include <tge/model/ModelInstance.h>
@@ -96,6 +100,21 @@ namespace Tga
 
 	private:
 		SceneCache myCache;
+
+		// Routes the color pass through the real deferred pipeline (G-buffer,
+		// cascaded shadows, PBR resolve, tonemap) instead of a flat forward
+		// draw, so the editor viewport matches what the game actually looks
+		// like -- see the Draw()'s color-pass block for the DX11::BackBuffer/
+		// DepthBuffer global-swap this requires (DeferredRenderer assumes
+		// those globals rather than taking an explicit render target).
+		// Point/spot lights aren't included yet: the scene format has no
+		// light scene-object type to source them from. The single directional
+		// sun + ambient (with real cascaded shadows) now live on Scene itself
+		// (see Scene::GetSunYaw() etc.) instead of here, so the hierarchy
+		// panel's Sun/Ambient pseudo-entries (SceneLightSelection) can expose
+		// and edit the same state this reads.
+		std::unique_ptr<DeferredRenderer> myDeferredRenderer;
+		Vector2ui myDeferredResolution{ 0, 0 };
 	};
 
 	class  DefaultAnimationClipEditorGraphics : public AnimationClipEditorGraphicsBase
@@ -679,31 +698,35 @@ void DefaultMaterialEditorGraphics::Draw(const MaterialEditorDrawParameters& par
 
 void DefaultMaterialEditorGraphics::DrawPreviewSettings()
 {
-	if (PropertyEditor::PropertyHeader("Preview Lighting") && PropertyEditor::BeginPropertyTable())
 	{
-		PropertyEditor::PropertyLabel(); ImGui::Text("Key Light Yaw");
-		PropertyEditor::PropertyValue(); ImGui::DragFloat("##ly", &myLightYaw);
-		PropertyEditor::PropertyLabel(); ImGui::Text("Key Light Pitch");
-		PropertyEditor::PropertyValue(); ImGui::DragFloat("##lp", &myLightPitch);
-		PropertyEditor::PropertyLabel(); ImGui::Text("Key Light Colour");
-		PropertyEditor::PropertyValue(); ImGui::ColorEdit3("##lc", &myLightColor.r, ImGuiColorEditFlags_Float);
-		PropertyEditor::PropertyLabel(); ImGui::Text("Key Light Intensity");
-		PropertyEditor::PropertyValue(); ImGui::DragFloat("##li", &myLightIntensity, 0.02f, 0.f, 50.f);
-		PropertyEditor::PropertyLabel(); ImGui::Text("Ambient Colour");
-		PropertyEditor::PropertyValue(); ImGui::ColorEdit3("##ac", &myAmbientColor.r, ImGuiColorEditFlags_Float);
-		PropertyEditor::PropertyLabel(); ImGui::Text("Ambient Intensity");
-		PropertyEditor::PropertyValue(); ImGui::DragFloat("##ai", &myAmbientIntensity, 0.02f, 0.f, 10.f);
-		PropertyEditor::EndPropertyTable();
+	InspectorSection lighting("Preview Lighting", true, "A fast, local lighting rig used only by the material preview.");
+	if (lighting.IsOpen() && BeginInspectorPropertyTable("MaterialPreviewLighting"))
+	{
+		InspectorPropertyLabel("Actions"); InspectorPropertyValue();
+		if (ImGui::SmallButton("Reset Lighting"))
+		{
+			myLightYaw = 45.f; myLightPitch = -40.f; myLightColor = { 1.f, .98f, .95f }; myLightIntensity = 2.2f;
+			myAmbientColor = { .25f, .30f, .38f }; myAmbientIntensity = 1.f;
+		}
+		InspectorPropertyLabel("Key Light Yaw"); InspectorPropertyValue(); ImGui::DragFloat("##ly", &myLightYaw);
+		InspectorPropertyLabel("Key Light Pitch"); InspectorPropertyValue(); ImGui::DragFloat("##lp", &myLightPitch);
+		InspectorPropertyLabel("Key Light Colour"); InspectorPropertyValue(); ImGui::ColorEdit3("##lc", &myLightColor.r, ImGuiColorEditFlags_Float);
+		InspectorPropertyLabel("Key Light Intensity"); InspectorPropertyValue(); ImGui::DragFloat("##li", &myLightIntensity, 0.02f, 0.f, 50.f);
+		InspectorPropertyLabel("Ambient Colour"); InspectorPropertyValue(); ImGui::ColorEdit3("##ac", &myAmbientColor.r, ImGuiColorEditFlags_Float);
+		InspectorPropertyLabel("Ambient Intensity"); InspectorPropertyValue(); ImGui::DragFloat("##ai", &myAmbientIntensity, 0.02f, 0.f, 10.f);
+		EndInspectorPropertyTable();
+	}
 	}
 
-	if (PropertyEditor::PropertyHeader("Ambient Cube Map") && PropertyEditor::BeginPropertyTable())
 	{
-		PropertyEditor::PropertyLabel(); ImGui::Text("Cube Map");
-		PropertyEditor::PropertyValue(); ImGui::Text(myCubeMapPath.IsEmpty() ? "(uniform)" : myCubeMapPath.GetString());
-		if (ImGui::Button("Set From AssetBrowser"))
+	InspectorSection environment("Environment", true, "Assign a DDS cubemap from Asset Browser or use uniform ambient light.");
+	if (environment.IsOpen() && BeginInspectorPropertyTable("MaterialPreviewEnvironment"))
+	{
+		InspectorPropertyLabel("Cube Map"); InspectorPropertyValue();
+		if (ImGui::Button(myCubeMapPath.IsEmpty() ? "None (Cubemap)" : myCubeMapPath.GetString(), ImVec2(-58.f, 0.f)))
 		{
 			std::string sel = Editor::GetEditor()->GetAssetBrowser().GetSelectedAsset().GetString();
-			if (sel.find(".dds") != std::string::npos)
+			if (sel.ends_with(".dds"))
 			{
 				myCubeMapPath = StringRegistry::RegisterOrGetString(sel);
 				myAmbient.type = AmbientLightType::Custom;
@@ -711,13 +734,14 @@ void DefaultMaterialEditorGraphics::DrawPreviewSettings()
 			}
 		}
 		ImGui::SameLine();
-		if (ImGui::Button("Clear"))
+		if (InspectorResetButton("X", "Clear the cubemap and return to uniform ambient light."))
 		{
 			myCubeMapPath = {};
 			myAmbient.type = AmbientLightType::Uniform;
 			myAmbient.cubemap = nullptr;
 		}
-		PropertyEditor::EndPropertyTable();
+		EndInspectorPropertyTable();
+	}
 	}
 }
 
@@ -731,10 +755,17 @@ DefaultEditorGraphics::DefaultEditorGraphics()
 		if (!GraphicsEngine::GetInstance())
 			GraphicsEngine::Start();
 
-		std::shared_ptr<Model> fbxModel = ModelFactory::GetInstance().GetModel(modelPath.GetString());
+		// The property inspector asks for mesh names as soon as a model field is
+		// focused. Never synchronously parse a large FBX (such as Sponza) from an
+		// ImGui callback: it can stall or crash the editor's UI/render frame.
+		ModelFactory& factory = ModelFactory::GetInstance();
+		factory.PumpAsyncImports();
+		std::shared_ptr<Model> fbxModel = factory.GetLoadedModel(modelPath);
 		if (!fbxModel)
+		{
+			factory.RequestAsyncImport(modelPath);
 			return false;
-
+		}
 		outMeshInfo.meshCount = (int)fbxModel->GetMeshCount();
 		if (outMeshInfo.meshCount > MAX_MESHES_PER_MODEL)
 			outMeshInfo.meshCount = MAX_MESHES_PER_MODEL;

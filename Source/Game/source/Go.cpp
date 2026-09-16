@@ -10,7 +10,6 @@
 #include <tge/application.h>
 
 #include "tge/graphics/GraphicsEngine.h"
-#include <tge/windows/BackendChooser.h>
 #include <tge/windows/CrashHandler.h>
 
 #include <cstdlib>
@@ -52,14 +51,11 @@ void Go()
 {
 	Tga::InstallCrashHandler();
 
-	// Only for a plain interactive launch -- every scripted/bench run already
-	// sets TGE_RHI itself (BENCH_* env vars, CI, etc.) and must keep running
-	// headless with no popup, so this is skipped whenever that's already set.
+	// DX12 is the engine's default backend. Only set it when a scripted/bench
+	// run hasn't already picked one itself (BENCH_* env vars, CI, etc.) --
+	// DX11 stays fully supported for backporting via an explicit TGE_RHI=dx11.
 	if (!std::getenv("TGE_RHI"))
-	{
-		if (Tga::ShowBackendChooser(L"TGE - Choose Backend") == Tga::RhiBackendChoice::Cancelled)
-			return;
-	}
+		_putenv_s("TGE_RHI", "dx12");
 
 	Tga::EnsureStaticInitializedTypesAreLoaded();
 
@@ -69,9 +65,9 @@ void Go()
 
 	cfg.winProcCallback = [](HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {return WinProc(hWnd, message, wParam, lParam); };
 #ifdef _DEBUG
-	cfg.activateDebugSystems = Tga::DebugFeature::Fps | Tga::DebugFeature::Mem | Tga::DebugFeature::Filewatcher | Tga::DebugFeature::Cpu | Tga::DebugFeature::Drawcalls | Tga::DebugFeature::OptimizeWarnings | Tga::DebugFeature::Log;
+	cfg.activateDebugSystems = Tga::DebugFeature::Fps | Tga::DebugFeature::Mem | Tga::DebugFeature::Cpu | Tga::DebugFeature::Drawcalls | Tga::DebugFeature::OptimizeWarnings | Tga::DebugFeature::Log;
 #else
-	cfg.activateDebugSystems = Tga::DebugFeature::Filewatcher;
+	cfg.activateDebugSystems = Tga::DebugFeature::None;
 #endif
 
 	// A timed benchmark run (BENCH_FRAMES>0) must not be vsync-locked.
@@ -79,6 +75,8 @@ void Go()
 		cfg.enableVSync = false;
 	if (const char* nv = std::getenv("BENCH_NOVSYNC"); nv && std::atoi(nv) != 0)
 		cfg.enableVSync = false;
+	
+	cfg.enableVSync = false; // Forced off for testing
 
 	if (!Tga::Application::Start() || !Tga::GraphicsEngine::Start())
 	{

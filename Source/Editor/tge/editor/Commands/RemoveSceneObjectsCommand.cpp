@@ -24,16 +24,23 @@ void RemoveSceneObjectsCommand::Execute()
 		{
 			p.second = GetActiveScene()->GetSceneObjectSharedPtr(p.first);
 		}
-
-		GetActiveScene()->DeleteSceneObject(p.first);
+		if (p.second)
+			GetActiveScene()->DeleteSceneObject(p.first);
 	}
+
+	// CommandManager snapshots selection after Execute(). Clearing here keeps
+	// subsequent hierarchy/properties frames from using deleted IDs; undo
+	// restores the selection state that existed before this command.
+	if (SceneSelection::GetActiveSceneSelection())
+		SceneSelection::GetActiveSceneSelection()->ClearSelection();
 }
 
 void RemoveSceneObjectsCommand::Undo()
 {
 	for (auto& p : myObjects)
 	{
-		GetActiveScene()->AddSceneObject(p.first, p.second);
+		if (p.second)
+			GetActiveScene()->AddSceneObject(p.first, p.second);
 	}
 }
 

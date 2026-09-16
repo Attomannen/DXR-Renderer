@@ -1027,15 +1027,11 @@ subfolder. Four stages:
   (Sphere/Cube/Cylinder/Cone/Torus/Plane), Unreal-style properties panel (base colour, metallic, roughness,
   AO, normal strength, emissive colour+strength, 4 texture-map slots w/ drag-drop `.dds` + AssetBrowser
   "Set"), and a Preview-Lighting panel (key-light dir/colour/intensity, ambient, cubemap). `.tgmat` = flat
-  JSON (`MaterialAsset`), read back at runtime by the game (`GameWorld::LoadTgmat`) for the built-in room
   surfaces and the debug sphere. New forward shader `PbrConstModelShaderPS.hlsl` (b11 `ConstMaterial`
   cbuffer) drives the no-textures preview; textured `.tgmat` fall back to the stock PBR shader.
 - [x] **Primitive pack** — engine built-ins grew from Cube/Plane to
   **Cube / Plane / Sphere / Cylinder / Cone / Torus** (procedural in `ModelFactory::InitPrimitives`,
   `GetModelInstance("Sphere")` …). Draggable `.fbx` + `.tgo` copies with a checker map in
   `Source/Game/data/Primitives/` (`PrimCube` … — stem-prefixed to dodge the editor's unique-`.tgo` rule).
-- [x] **Built-in procedural room** — `Scene ▸ <BuiltinRoom>` in the tune panel (and `BENCH_SCENE=<BuiltinRoom>`):
-  6 primitive-plane surfaces, per-surface fixed-param material via `GBufferDebugMatPS`, 4 neutral ceiling
-  lamps, no-face-cull. Size + per-surface PBR + Load-.tgmat in the *Built-in room* panel.
 - [ ] TextureCooker `--audit` mode (Cross-cutting) — FBX vs cooked coverage report, no cook
 - [ ] Standalone: AO baker, (later) asset cooker CLI

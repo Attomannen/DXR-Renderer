@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include <tge/graphics/DX11.h>
 #include <tge/rhi/Device.h>
+#include <tge/rhi/DxcCompiler.h>
 #include <tge/log/Log.h>
 
 #include <fstream>
@@ -40,6 +41,7 @@ int DX11::ourPreviousDrawCallCount = 0;
 std::unordered_map<StringId, PixelShader> DX11::ourLoadedPixelShaders;
 std::unordered_map<StringId, VertexShader> DX11::ourLoadedVertexShaders;
 std::unordered_map<StringId, ComputeShader> DX11::ourLoadedComputeShaders;
+std::unordered_map<StringId, ComputeShader> DX11::ourLoadedDxilComputeShaders;
 
 std::unique_ptr<rhi::IDevice> DX11::ourRhiDevice;
 
@@ -346,6 +348,27 @@ bool DX11::InitDx12(WindowsWindow* aWindowHandler)
 		return false;
 	}
 
+	// Phase 0: validate the entire DXIL path before any DXR resource work.
+	// This does not dispatch work or alter renderer state; pipeline creation is
+	// sufficient for the driver to validate the cs_6_5 DXIL container against
+	// our existing compute root signature.
+	if (ourRhiDevice->SupportsRaytracingTier11())
+	{
+		if (const ComputeShader* smoke = LoadComputeShaderDxil("Shaders/DxilSmokeCS"))
+		{
+			rhi::ComputePipelineDesc smokeDesc = {};
+			smokeDesc.cs = smoke->module;
+			if (ourRhiDevice->CreateComputePipeline(smokeDesc).IsValid())
+				INFO_PRINT("DX12 Phase 0: SM 6.5 DXIL compute smoke test passed");
+			else
+				ERROR_PRINT("DX12 Phase 0: DXIL compiled but compute PSO creation failed");
+		}
+		else
+		{
+			ERROR_PRINT("DX12 Phase 0: SM 6.5 DXIL smoke shader failed to load");
+		}
+	}
+
 	// No raw D3D11 device/context/swapchain under DX12 -- every remaining
 	// caller of these statics must go through the RHI (DX11::Rhi()) instead.
 	Device = nullptr;
@@ -441,6 +464,11 @@ bool DX11::ResizeToWindowSizeDx12()
 
 	uint32_t width = ourWindowHandler->GetWidth();
 	uint32_t height = ourWindowHandler->GetHeight();
+	// WM_SIZE also fires while minimized.  Do not tear down valid swapchain/
+	// depth resources for a 0x0 client area; WM_SIZE on restore will request a
+	// real resize again.
+	if (width == 0 || height == 0)
+		return false;
 
 	// The backbuffer wrappers hold no owned DX12 resources -- myIsDx12BackBuffer
 	// mode re-resolves the device's *current* backbuffer view every call (see
@@ -620,6 +648,62 @@ const char* GetShaderModel(DX11::ShaderType aShaderType)
 	default:
 		return "";
 	}
+}
+
+// DXC's default include handler receives source-relative paths.  Record the
+// resolved include graph ourselves for cache invalidation and hot reload;
+// this avoids tying the new DXIL path to FXC's ID3DInclude implementation.
+static void CollectDxilDependencies(const std::filesystem::path& file,
+	std::set<std::filesystem::path>& out)
+{
+	const auto canonical = std::filesystem::weakly_canonical(file);
+	if (!out.insert(canonical).second) return;
+	std::ifstream in(canonical);
+	std::string line;
+	while (std::getline(in, line))
+	{
+		const size_t include = line.find("#include");
+		const size_t firstQuote = line.find('"', include);
+		const size_t lastQuote = firstQuote == std::string::npos ? std::string::npos : line.find('"', firstQuote + 1);
+		if (include == std::string::npos || firstQuote == std::string::npos || lastQuote == std::string::npos) continue;
+		const auto dependency = canonical.parent_path() / line.substr(firstQuote + 1, lastQuote - firstQuote - 1);
+		if (std::filesystem::exists(dependency)) CollectDxilDependencies(dependency, out);
+	}
+}
+
+static bool CompileDxilIfChanged(std::string_view sourcePath,
+	std::string_view outputPath, std::string_view buildInfoPath)
+{
+	std::set<std::filesystem::path> dependencies;
+	CollectDxilDependencies(std::filesystem::path(sourcePath), dependencies);
+	bool rebuild = !std::filesystem::exists(outputPath) || !std::filesystem::exists(buildInfoPath);
+	nlohmann::json previous;
+	if (!rebuild)
+	{
+		std::ifstream input{ std::string(buildInfoPath) };
+		input >> previous;
+		rebuild = previous.value("compiler", "") != "dxc-sm6.5";
+		for (const auto& dependency : dependencies)
+		{
+			const std::string key = dependency.string();
+			if (!previous.contains("dependencies") || !previous["dependencies"].contains(key) ||
+				HasFileChanged(key, previous["dependencies"][key])) { rebuild = true; break; }
+		}
+		if (!rebuild && previous.contains("dependencies"))
+			for (auto it = previous["dependencies"].begin(); it != previous["dependencies"].end(); ++it)
+				if (!dependencies.contains(std::filesystem::path(it.key()))) { rebuild = true; break; }
+	}
+	if (!rebuild) return true;
+	rhi::DxcCompileResult compiled;
+	rhi::DxcCompileDesc desc{ string_cast<std::wstring>(std::string(sourcePath)), L"main", L"cs_6_5", true };
+	if (!rhi::DxcCompiler::Compile(desc, compiled)) { ERROR_PRINT("DXIL shader compilation error: %s", compiled.diagnostics.c_str()); return false; }
+	std::filesystem::create_directories(std::filesystem::path(outputPath).parent_path());
+	std::ofstream output{ std::string(outputPath), std::ios::binary };
+	output.write(reinterpret_cast<const char*>(compiled.dxil.data()), (std::streamsize)compiled.dxil.size());
+	nlohmann::json current; current["compiler"] = "dxc-sm6.5";
+	for (const auto& dependency : dependencies) current["dependencies"][dependency.string()] = GetFileTimestamp(dependency.string());
+	std::ofstream info{ std::string(buildInfoPath) }; info << current.dump(4);
+	return true;
 }
 
 
@@ -804,6 +888,43 @@ const ComputeShader* DX11::LoadComputeShader(const char* aShaderPath)
 	if (it != ourLoadedComputeShaders.end())
 		return &(it->second);
 	return ForceLoadComputeShader(aShaderPath);
+}
+
+const ComputeShader* DX11::LoadComputeShaderDxil(const char* aShaderPath)
+{
+	StringId id = StringRegistry::RegisterOrGetString(aShaderPath);
+	if (auto it = ourLoadedDxilComputeShaders.find(id); it != ourLoadedDxilComputeShaders.end()) return &it->second;
+	return ForceLoadComputeShaderDxil(aShaderPath);
+}
+
+const ComputeShader* DX11::ForceLoadComputeShaderDxil(const char* aShaderPath, bool addToFileWatcher)
+{
+	rhi::IDevice* r = Rhi();
+	if (!r || r->GetBackend() != rhi::Backend::DX12) { ERROR_PRINT("DXIL compute shader requested without DX12: %s", aShaderPath); return nullptr; }
+	FilePathStream output; output << Settings::CookedAssetRoot() << "/" << aShaderPath << ".dxil"; output.NormalizePath();
+#ifndef _RETAIL
+	FilePathStream relative; relative << aShaderPath << ".hlsl";
+	FilePathStream source;
+	if (!Settings::ResolveAssetPath(relative.GetStringView(), source)) return nullptr;
+	FilePathStream info; info << Settings::CookedAssetRoot() << "/" << aShaderPath << "_dxil_buildInfo.json"; info.NormalizePath();
+	if (!CompileDxilIfChanged(source.GetStringView(), output.GetStringView(), info.GetStringView())) return nullptr;
+	if (addToFileWatcher)
+	{
+		std::set<std::filesystem::path> dependencies;
+		CollectDxilDependencies(std::filesystem::path(std::string(source.GetStringView())), dependencies);
+		for (const auto& dependency : dependencies)
+			Application::GetInstance()->GetFileWatcher()->WatchFileChange(dependency.string(),
+				[id = StringRegistry::RegisterOrGetString(aShaderPath)]() { DX11::ForceLoadComputeShaderDxil(id.GetString(), false); });
+	}
+#endif
+	std::ifstream file(output.GetData(), std::ios::binary);
+	std::vector<uint8_t> bytes{ std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>() };
+	if (bytes.empty()) return nullptr;
+	StringId id = StringRegistry::RegisterOrGetString(aShaderPath);
+	ComputeShader& shader = ourLoadedDxilComputeShaders[id];
+	if (shader.module) r->Destroy(shader.module);
+	shader.module = r->CreateShaderModule(rhi::ShaderKind::Compute, bytes.data(), bytes.size());
+	return shader.module.IsValid() ? &shader : nullptr;
 }
 
 const PixelShader* DX11::ForceLoadPixelShader(const char* aShaderPath, bool addToFileWatcher)

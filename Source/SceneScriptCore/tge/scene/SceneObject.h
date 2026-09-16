@@ -25,6 +25,11 @@ namespace Tga
 		Vector3f scale = { 1.0f };
 	};
 
+	// Lights are regular scene objects. Keeping the authored light data here
+	// means hierarchy selection, transforms, undo/delete and serialization use
+	// the same path as every other TGO.
+	enum class SceneObjectType { GameObject, PointLight, SpotLight };
+
 	class SceneObject
 	{
 	public:
@@ -154,6 +159,19 @@ namespace Tga
 
 		void SetSceneObjectDefinitionName(StringId aSceneObjectDefinitionName) { mySceneObjectDefinitionName = aSceneObjectDefinitionName; }
 		StringId GetSceneObjectDefinitionName() const { return mySceneObjectDefinitionName; };
+		SceneObjectType GetType() const { return myType; }
+		void SetType(SceneObjectType aType) { myType = aType; }
+		bool IsLight() const { return myType == SceneObjectType::PointLight || myType == SceneObjectType::SpotLight; }
+		float* GetLightColor() { return myLightColor; }
+		const float* GetLightColor() const { return myLightColor; }
+		float& GetLightRange() { return myLightRange; }
+		float& GetLightRadius() { return myLightRadius; }
+		float& GetLightInnerAngle() { return myLightInnerAngle; }
+		float& GetLightOuterAngle() { return myLightOuterAngle; }
+		float GetLightRange() const { return myLightRange; }
+		float GetLightRadius() const { return myLightRadius; }
+		float GetLightInnerAngle() const { return myLightInnerAngle; }
+		float GetLightOuterAngle() const { return myLightOuterAngle; }
 
 		std::span<const SceneProperty> GetPropertyOverrides() const { return myPropertyOverrides; };
 		std::vector<SceneProperty>& EditPropertyOverrides() { return myPropertyOverrides; };
@@ -169,6 +187,12 @@ namespace Tga
 
 	private:
 		StringId mySceneObjectDefinitionName;
+		SceneObjectType myType = SceneObjectType::GameObject;
+		float myLightColor[3] = { 1.f, 1.f, 1.f };
+		float myLightRange = 1000.f;
+		float myLightRadius = 0.f;
+		float myLightInnerAngle = 20.f;
+		float myLightOuterAngle = 35.f;
 		std::vector<SceneProperty> myPropertyOverrides;
 
 		TRS myTRS = { { 0.0f }, { 0.0f }, { 1.0f } };

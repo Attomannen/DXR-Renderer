@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <unordered_map>
 #include <nlohmann/json.hpp>
 #include <tge/application.h>
@@ -17,6 +18,7 @@
 #include <tge/graphics/GraphicsEngine.h>
 #include <tge/model/Model.h>
 #include <tge/model/ModelInstance.h>
+#include <tge/render/RayTracingMaterialTable.h>
 #include <tge/graphics/Vertex.h>
 #include <tge/math/matrix4x4.h>
 #include <tge/texture/texture.h>
@@ -24,7 +26,7 @@
 #include <tge/filewatcher/FileWatcher.h>
 #include <tge/util/FixedStream.h>
 
-//#define TGA_USE_UFBX
+#define TGA_USE_UFBX
 #ifdef TGA_USE_UFBX
 #include <ufbx/ufbx.h>
 #else
@@ -323,7 +325,7 @@ bool ModelFactory::InitUnitCube()
 	rhi::BufferDesc vertexBufferDesc{};
 	vertexBufferDesc.byteSize = static_cast<UINT>(meshData.vertices.size()) * static_cast<UINT>(sizeof(Vertex));
 	vertexBufferDesc.stride = sizeof(Vertex);
-	vertexBufferDesc.usage = rhi::BufferUsage::Vertex;
+	vertexBufferDesc.usage = rhi::BufferUsage::Vertex | rhi::BufferUsage::ByteAddress;
 	vertexBufferDesc.memory = rhi::MemoryType::Default;
 	vertexBufferDesc.debugName = "Cube_VB";
 
@@ -336,7 +338,7 @@ bool ModelFactory::InitUnitCube()
 	rhi::BufferDesc indexBufferDesc{};
 	indexBufferDesc.byteSize = static_cast<UINT>(meshData.indices.size()) * static_cast<UINT>(sizeof(unsigned int));
 	indexBufferDesc.stride = sizeof(unsigned int);
-	indexBufferDesc.usage = rhi::BufferUsage::Index;
+	indexBufferDesc.usage = rhi::BufferUsage::Index | rhi::BufferUsage::ByteAddress;
 	indexBufferDesc.memory = rhi::MemoryType::Default;
 	indexBufferDesc.debugName = "Cube_IB";
 
@@ -414,7 +416,7 @@ bool ModelFactory::InitUnitPlane()
 	rhi::BufferDesc vertexBufferDesc{};
 	vertexBufferDesc.byteSize = static_cast<UINT>(meshData.vertices.size()) * static_cast<UINT>(sizeof(Vertex));
 	vertexBufferDesc.stride = sizeof(Vertex);
-	vertexBufferDesc.usage = rhi::BufferUsage::Vertex;
+	vertexBufferDesc.usage = rhi::BufferUsage::Vertex | rhi::BufferUsage::ByteAddress;
 	vertexBufferDesc.memory = rhi::MemoryType::Default;
 	vertexBufferDesc.debugName = "Plane_VB";
 
@@ -427,7 +429,7 @@ bool ModelFactory::InitUnitPlane()
 	rhi::BufferDesc indexBufferDesc{};
 	indexBufferDesc.byteSize = static_cast<UINT>(meshData.indices.size()) * static_cast<UINT>(sizeof(unsigned int));
 	indexBufferDesc.stride = sizeof(unsigned int);
-	indexBufferDesc.usage = rhi::BufferUsage::Index;
+	indexBufferDesc.usage = rhi::BufferUsage::Index | rhi::BufferUsage::ByteAddress;
 	indexBufferDesc.memory = rhi::MemoryType::Default;
 	indexBufferDesc.debugName = "Plane_IB";
 
@@ -462,7 +464,7 @@ static bool FinalizePrimitive(Model::MeshData& meshData, const char* aName, Stri
 	rhi::BufferDesc vbDesc{};
 	vbDesc.byteSize = static_cast<UINT>(meshData.vertices.size()) * static_cast<UINT>(sizeof(Vertex));
 	vbDesc.stride = sizeof(Vertex);
-	vbDesc.usage = rhi::BufferUsage::Vertex;
+	vbDesc.usage = rhi::BufferUsage::Vertex | rhi::BufferUsage::ByteAddress;
 	vbDesc.memory = rhi::MemoryType::Default;
 	vbDesc.debugName = "Primitive_VB";
 	rhi::BufferHandle vertexBuffer = DX11::Rhi()->CreateBuffer(vbDesc, meshData.vertices.data());
@@ -472,7 +474,7 @@ static bool FinalizePrimitive(Model::MeshData& meshData, const char* aName, Stri
 	rhi::BufferDesc ibDesc{};
 	ibDesc.byteSize = static_cast<UINT>(meshData.indices.size()) * static_cast<UINT>(sizeof(unsigned int));
 	ibDesc.stride = sizeof(unsigned int);
-	ibDesc.usage = rhi::BufferUsage::Index;
+	ibDesc.usage = rhi::BufferUsage::Index | rhi::BufferUsage::ByteAddress;
 	ibDesc.memory = rhi::MemoryType::Default;
 	ibDesc.debugName = "Primitive_IB";
 	rhi::BufferHandle indexBuffer = DX11::Rhi()->CreateBuffer(ibDesc, meshData.indices.data());
@@ -723,7 +725,20 @@ ModelFactory::~ModelFactory()
 
 }
 
-static TextureResource *AssignAlbedoTexture(std::string_view baseFileName, std::string_view materialFileName) 
+// Some assets (e.g. Spaceship.fbx) name their textures
+// "<modelBaseName>_<materialNameWITHitsExporterSuffix>_<map>.dds" -- a
+// different, coexisting convention from Sponza's bare "<materialName>_<map>.dds"
+// (which needs that suffix stripped, see StripDuplicateSuffix). Every
+// Assign*Texture below tries this candidate too before giving up to the
+// default, so both conventions resolve without either being able to shadow
+// the other.
+static void AppendModelMaterialCandidate(FixedStream<512>& aStream, std::string_view aBaseFileName,
+                                          std::string_view aRawMaterialName, std::string_view aSuffix)
+{
+	aStream << aBaseFileName << "_" << aRawMaterialName << aSuffix;
+}
+
+static TextureResource *AssignAlbedoTexture(std::string_view baseFileName, std::string_view materialFileName, std::string_view rawMaterialName)
 {
 	FixedStream<512> stream;
 	stream << materialFileName << "_C.dds";
@@ -752,12 +767,19 @@ static TextureResource *AssignAlbedoTexture(std::string_view baseFileName, std::
 
 	if (albedoTexture == nullptr)
 	{
+		FixedStream<512> streamMC;
+		AppendModelMaterialCandidate(streamMC, baseFileName, rawMaterialName, "_C.dds");
+		albedoTexture = GraphicsEngine::GetInstance()->GetTextureManager().TryGetTexture(streamMC.GetData());
+	}
+
+	if (albedoTexture == nullptr)
+	{
 		albedoTexture = GraphicsEngine::GetInstance()->GetTextureManager().GetTexture("Textures/T_Default_c.dds");
 	}
 	return albedoTexture;
 }
 
-static TextureResource *AssignNormalTexture(std::string_view baseFileName, std::string_view materialFileName) 
+static TextureResource *AssignNormalTexture(std::string_view baseFileName, std::string_view materialFileName, std::string_view rawMaterialName)
 {
 	FixedStream<512> streamN;
 	streamN << materialFileName << "_N.dds";
@@ -771,12 +793,19 @@ static TextureResource *AssignNormalTexture(std::string_view baseFileName, std::
 	}
 
 	if (normalTexture == nullptr)
+	{
+		FixedStream<512> streamMN;
+		AppendModelMaterialCandidate(streamMN, baseFileName, rawMaterialName, "_N.dds");
+		normalTexture = GraphicsEngine::GetInstance()->GetTextureManager().TryGetTexture(streamMN.GetData(), TextureSrgbMode::ForceNoSrgbFormat);
+	}
+
+	if (normalTexture == nullptr)
 		normalTexture = GraphicsEngine::GetInstance()->GetTextureManager().GetTexture("Textures/T_Default_n.dds", TextureSrgbMode::ForceNoSrgbFormat);
 
 	return normalTexture;
 }
 
-static TextureResource *AssignMaterialTexture(std::string_view baseFileName, std::string_view materialFileName) 
+static TextureResource *AssignMaterialTexture(std::string_view baseFileName, std::string_view materialFileName, std::string_view rawMaterialName)
 {
 	FixedStream<512> streamM;
 	streamM << materialFileName << "_M.dds";
@@ -790,12 +819,19 @@ static TextureResource *AssignMaterialTexture(std::string_view baseFileName, std
 	}
 
 	if (materialTexture == nullptr)
+	{
+		FixedStream<512> streamMM;
+		AppendModelMaterialCandidate(streamMM, baseFileName, rawMaterialName, "_M.dds");
+		materialTexture = GraphicsEngine::GetInstance()->GetTextureManager().TryGetTexture(streamMM.GetData(), TextureSrgbMode::ForceNoSrgbFormat);
+	}
+
+	if (materialTexture == nullptr)
 		materialTexture = GraphicsEngine::GetInstance()->GetTextureManager().GetTexture("Textures/T_Default_m.dds", TextureSrgbMode::ForceNoSrgbFormat);
 
 	return materialTexture;
 }
 
-static TextureResource *AssignFxTexture(std::string_view baseFileName, std::string_view materialFileName) 
+static TextureResource *AssignFxTexture(std::string_view baseFileName, std::string_view materialFileName, std::string_view rawMaterialName)
 {
 	FixedStream<512> streamFX;
 	streamFX << materialFileName << "_FX.dds";
@@ -809,8 +845,30 @@ static TextureResource *AssignFxTexture(std::string_view baseFileName, std::stri
 	}
 
 	if (fxTexture == nullptr)
+	{
+		FixedStream<512> streamMFX;
+		AppendModelMaterialCandidate(streamMFX, baseFileName, rawMaterialName, "_FX.dds");
+		fxTexture = GraphicsEngine::GetInstance()->GetTextureManager().TryGetTexture(streamMFX.GetData(), TextureSrgbMode::ForceNoSrgbFormat);
+	}
+
+	if (fxTexture == nullptr)
 		fxTexture = GraphicsEngine::GetInstance()->GetTextureManager().GetTexture("Textures/T_Default_fx.dds", TextureSrgbMode::ForceNoSrgbFormat);
 	return fxTexture;
+}
+
+// Blender's FBX exporter (and others) uniquify colliding material names by
+// appending ".001", ".002", etc. -- that suffix has nothing to do with the
+// texture files on disk (always named after the bare material, e.g.
+// "arch_stone_wall_01_C.dds"), so every lookup built from the raw name
+// fails and silently falls back to the default texture for every material.
+// Strip a trailing ".<digits>" before it ever reaches a texture path.
+std::string_view StripDuplicateSuffix(std::string_view aMaterialName)
+{
+	const size_t dot = aMaterialName.find_last_of('.');
+	if (dot == std::string_view::npos) return aMaterialName;
+	for (size_t i = dot + 1; i < aMaterialName.size(); ++i)
+		if (!std::isdigit(static_cast<unsigned char>(aMaterialName[i]))) return aMaterialName;
+	return dot + 1 < aMaterialName.size() ? aMaterialName.substr(0, dot) : aMaterialName;
 }
 
 void AssignDefaultMaterials(std::string_view someFilePath, Model* aModel)
@@ -822,8 +880,9 @@ void AssignDefaultMaterials(std::string_view someFilePath, Model* aModel)
 
 	for (int i = 0; i < aModel->GetMeshCount(); i++)
 	{
+		const std::string_view rawMaterialName = aModel->GetMaterialName(i).GetStringView();
 		FixedStream<512> materialFileNameStream;
-		materialFileNameStream << path << aModel->GetMaterialName(i);
+		materialFileNameStream << path << StripDuplicateSuffix(rawMaterialName);
 
 		if (std::getenv("TGE_LOG_MATERIALS"))
 		{
@@ -837,17 +896,30 @@ void AssignDefaultMaterials(std::string_view someFilePath, Model* aModel)
 				tm.TryGetTexture(pm.GetData(), TextureSrgbMode::ForceNoSrgbFormat) ? "ok" : "--");
 		}
 
-		TextureResource* albedoTexture = AssignAlbedoTexture(baseFileName, materialFileNameStream.GetStringView());
+		TextureResource* albedoTexture = AssignAlbedoTexture(baseFileName, materialFileNameStream.GetStringView(), rawMaterialName);
 		aModel->SetDefaultTexture(i, 0, albedoTexture);
 
-		TextureResource* normalTexture = AssignNormalTexture(baseFileName, materialFileNameStream.GetStringView());
+		TextureResource* normalTexture = AssignNormalTexture(baseFileName, materialFileNameStream.GetStringView(), rawMaterialName);
 		aModel->SetDefaultTexture(i, 1, normalTexture);
 
-		TextureResource* materialTexture = AssignMaterialTexture(baseFileName, materialFileNameStream.GetStringView());
+		TextureResource* materialTexture = AssignMaterialTexture(baseFileName, materialFileNameStream.GetStringView(), rawMaterialName);
 		aModel->SetDefaultTexture(i, 2, materialTexture);
 
-		TextureResource* fxTexture = AssignFxTexture(baseFileName, materialFileNameStream.GetStringView());
+		TextureResource* fxTexture = AssignFxTexture(baseFileName, materialFileNameStream.GetStringView(), rawMaterialName);
 		aModel->SetDefaultTexture(i, 3, fxTexture);
+
+		// Same material identity Model::Init will assign to mesh.rayGeometry.materialIndex
+		// (both key off GetMaterialName(i) through the same append-only StringId map) --
+		// registering here, where the textures are actually resolved, means the DXR
+		// material record and the raster path can never see two different texture sets
+		// for what is supposedly the same material.
+		const uint32_t rtMatIndex = RayTracingMaterialTable::GetOrAssignMaterialIndex(aModel->GetMaterialName(i));
+		RayTracingMaterialTable::SetMaterialTextures(rtMatIndex, {
+			albedoTexture   ? albedoTexture->GetSrv()   : rhi::SrvHandle{},
+			normalTexture   ? normalTexture->GetSrv()   : rhi::SrvHandle{},
+			materialTexture ? materialTexture->GetSrv() : rhi::SrvHandle{},
+			fxTexture       ? fxTexture->GetSrv()       : rhi::SrvHandle{},
+		});
 	}
 }
 
@@ -890,497 +962,14 @@ ModelInstance ModelFactory::GetUnitPlane()
 	return GetModelInstance("Plane"_tgaid);
 }
 
-#ifdef TGA_USE_UFBX
-static Matrix4x4f ConvertMatrix(const ufbx_matrix& m)
-{
-	Matrix4x4f mat;
-
-	mat(1, 1) = (float)m.m00; mat(1, 2) = (float)m.m10; mat(1, 3) = (float)m.m20; mat(1, 4) = 0.f;
-	mat(2, 1) = (float)m.m01; mat(2, 2) = (float)m.m11; mat(2, 3) = (float)m.m21; mat(2, 4) = 0.f;
-	mat(3, 1) = (float)m.m02; mat(3, 2) = (float)m.m12; mat(3, 3) = (float)m.m22; mat(3, 4) = 0.f;
-	mat(4, 1) = (float)m.m03; mat(4, 2) = (float)m.m13; mat(4, 3) = (float)m.m23; mat(4, 4) = 1.f;
-
-	return mat;
-}
-
-static constexpr ufbx_coordinate_axes FBX_AXIS = {
-	UFBX_COORDINATE_AXIS_POSITIVE_X, UFBX_COORDINATE_AXIS_POSITIVE_Y, UFBX_COORDINATE_AXIS_POSITIVE_Z,
-};
-
-static void GenerateTangents(std::vector<Vertex>& verts, const std::vector<uint32_t>& indices)
-{
-	// Quick implementation of tangent computation in cases they are missing
-	// Verified to match imported tangent orientation on particle_chest
-
-	for (auto& v : verts)
-	{
-		v.tangent = { 0,0,0 };
-		v.binormal = { 0,0,0 };
-	}
-
-	// Accumulation across triangles
-	// TODO: should probably have some kind of angle based weighting?
-	for (size_t i = 0; i < indices.size(); i += 3)
-	{
-		uint32_t i0 = indices[i + 0];
-		uint32_t i1 = indices[i + 1];
-		uint32_t i2 = indices[i + 2];
-
-		Vertex& v0 = verts[i0];
-		Vertex& v1 = verts[i1];
-		Vertex& v2 = verts[i2];
-
-		const auto& p0 = v0.position;
-		const auto& p1 = v1.position;
-		const auto& p2 = v2.position;
-
-		const auto& uv0 = v0.uvs[0];
-		const auto& uv1 = v1.uvs[0];
-		const auto& uv2 = v2.uvs[0];
-
-		Tga::Vector3f dp1 = p1 - p0;
-		Tga::Vector3f dp2 = p2 - p0;
-
-		Tga::Vector2f duv1 = uv1 - uv0;
-		Tga::Vector2f duv2 = uv2 - uv0;
-
-		float denom = duv1.x * duv2.y - duv1.y * duv2.x;
-		if (fabs(denom) < 1e-6f)	continue;
-
-		float r = 1.0f / denom;
-
-		Tga::Vector3f tangent = (dp1 * duv2.y - dp2 * duv1.y) * r;
-		Tga::Vector3f bitangent = (dp2 * duv1.x - dp1 * duv2.x) * r;
-
-		v0.tangent += tangent;
-		v1.tangent += tangent;
-		v2.tangent += tangent;
-
-		v0.binormal += bitangent;
-		v1.binormal += bitangent;
-		v2.binormal += bitangent;
-	}
-
-	for (auto& v : verts)
-	{
-		Tga::Vector3f n = v.normal;
-		Tga::Vector3f t = v.tangent;
-
-		if (t.LengthSqr() < 1e-6f)
-		{
-			// fallback: build arbitrary tangent to avoid broken meshes
-			Tga::Vector3f up = fabs(n.z) < 0.999f ? Tga::Vector3f{ 0,0,1 } : Tga::Vector3f{ 0,1,0 };
-			t = n.Cross(up).GetNormalized();
-		}
-		else
-		{
-			// Gram-Schmidt
-			t = (t - n * n.Dot(t)).GetNormalized();
-		}
-
-		// compute handedness:
-		Tga::Vector3f b = v.binormal;
-		float w = (n.Cross(t).Dot(b) < 0.0f) ? 1.0f : -1.0f;
-
-		v.tangent = t;
-		v.binormal = n.Cross(t) * w;
-	}
-}
-
-
-
-std::shared_ptr<Model> ModelFactory::LoadModel(StringId someFilePath)
-{
-	if (someFilePath.IsEmpty())
-		return nullptr;
-	FilePathStream resolved_path;
-	if (!Tga::Settings::ResolveAssetPath(someFilePath, resolved_path))
-		return nullptr;
-
-	ufbx_load_opts opts = 
-	{
-		.generate_missing_normals = true,
-		.target_axes = FBX_AXIS,
-	};
-
-
-	ufbx_error error;
-	ufbx_scene* scene = ufbx_load_file(resolved_path.GetData(), &opts, &error);
-
-	if (!scene)
-	{
-		ERROR_PRINT("ufbx load failed: %s", someFilePath.GetString());
-		return nullptr;
-	}
-
-	std::vector<Model::MeshData> mdlMeshData;
-
-	Skeleton mdlSkeleton;
-
-	std::unordered_map<const ufbx_node*, int> nodeToJoint;
-	std::vector<const ufbx_node*> jointNodes;
-
-	// Skeleton
-	for (size_t mesh_i = 0; mesh_i < scene->meshes.count; mesh_i++)
-	{
-		ufbx_mesh* mesh = scene->meshes.data[mesh_i];
-
-		if (mesh->skin_deformers.count == 0)
-			continue;
-
-		ufbx_skin_deformer* skin = mesh->skin_deformers.data[0];
-
-		for (size_t c = 0; c < skin->clusters.count; c++)
-		{
-			ufbx_skin_cluster* cluster = skin->clusters.data[c];
-			if (!cluster->bone_node) continue;
-
-			const ufbx_node* node = cluster->bone_node;
-
-			if (nodeToJoint.contains(node))
-				continue;
-
-			int index = (int)mdlSkeleton.joints.size();
-			nodeToJoint[node] = index;
-
-			Skeleton::Joint& joint = mdlSkeleton.joints.emplace_back();
-			jointNodes.push_back(node);
-
-			joint.name = node->name.data ? node->name.data : "";
-
-			if (node->parent && nodeToJoint.contains(node->parent))
-				joint.parent = nodeToJoint[node->parent];
-			else
-				joint.parent = -1;
-
-			mdlSkeleton.jointNameToIndex[joint.name] = index;
-		}
-	}
-
-	ufbx_matrix skeletonParent = ufbx_identity_matrix;
-
-	if (jointNodes.size() > 1)
-	{
-		const ufbx_node* skeletonRoot = jointNodes[0];
-		if (skeletonRoot && skeletonRoot->parent)
-		{
-			skeletonParent = skeletonRoot->parent->node_to_world;
-		}
-
-		for (size_t mesh_i = 0; mesh_i < scene->meshes.count; mesh_i++)
-		{
-			ufbx_mesh* mesh = scene->meshes.data[mesh_i];
-			if (mesh->skin_deformers.count == 0) continue;
-
-			ufbx_skin_deformer* skin = mesh->skin_deformers.data[0];
-
-			for (size_t c = 0; c < skin->clusters.count; c++)
-			{
-				ufbx_skin_cluster* cluster = skin->clusters.data[c];
-				if (!cluster->bone_node) continue;
-
-				int jointIndex = nodeToJoint[cluster->bone_node];
-
-				ufbx_matrix geomToBone = cluster->geometry_to_bone;
-				
-				// Apply transform above the skeleton root (blender tends to add this)
-				ufbx_matrix fixed = ufbx_matrix_mul(&skeletonParent, &geomToBone);
-
-				mdlSkeleton.joints[jointIndex].bindPoseInverse = ConvertMatrix(fixed);
-
-				mdlSkeleton.modelBindPose.jointTransforms[jointIndex] =
-					mdlSkeleton.joints[jointIndex].bindPoseInverse.GetInverse();
-			}
-		}
-
-		assert(MAX_ANIMATION_BONES >= mdlSkeleton.joints.size() && "More joints in animation than defined in EngineDefines.h");
-
-		mdlSkeleton.ConvertPoseToLocalSpace(mdlSkeleton.modelBindPose, mdlSkeleton.localBindPose);
-	}
-
-	// Build hierarchy
-	for (size_t i = 0; i < mdlSkeleton.joints.size(); i++)
-	{
-		int parent = mdlSkeleton.joints[i].parent;
-		if (parent >= 0)
-			mdlSkeleton.joints[parent].children.push_back((unsigned)i);
-	}
-
-	// Meshes
-	for (size_t mesh_i = 0; mesh_i < scene->meshes.count; mesh_i++)
-	{
-		ufbx_mesh* mesh = scene->meshes.data[mesh_i];
-
-		Model::MeshData meshData;
-
-		std::vector<Vertex> vertices;
-		std::vector<uint32_t> indices;
-
-		std::vector<VertexBoneData> boneData(mesh->num_vertices);
-
-		// Skinning
-		if (mesh->skin_deformers.count > 0)
-		{
-			ufbx_skin_deformer* skin = mesh->skin_deformers.data[0];
-
-			for (size_t v = 0; v < skin->vertices.count; v++)
-			{
-				const ufbx_skin_vertex& sv = skin->vertices.data[v];
-
-				for (uint32_t w = 0; w < sv.num_weights; w++)
-				{
-					const ufbx_skin_weight& weight =
-						skin->weights.data[sv.weight_begin + w];
-
-					ufbx_skin_cluster* cluster =
-						skin->clusters.data[weight.cluster_index];
-
-					if (!cluster->bone_node) continue;
-					if (!nodeToJoint.count(cluster->bone_node)) continue;
-
-					unsigned int boneIndex = nodeToJoint[cluster->bone_node];
-					boneData[v].AddBoneData(boneIndex, (float)weight.weight);
-				}
-			}
-		}
-
-		// Triangulation
-		std::vector<uint32_t> triBuf(mesh->max_face_triangles * 3);
-
-		for (size_t f = 0; f < mesh->faces.count; f++)
-		{
-			ufbx_face face = mesh->faces.data[f];
-
-			uint32_t numTris = ufbx_triangulate_face(
-				triBuf.data(),
-				triBuf.size(),
-				mesh,
-				face
-			);
-
-			for (uint32_t t = 0; t < numTris * 3; t++)
-			{
-				uint32_t ix = triBuf[t];
-
-				Vertex vert{};
-
-				auto pos = ufbx_get_vertex_vec3(&mesh->vertex_position, ix);
-				vert.position = { (float)pos.x,(float)pos.y,(float)pos.z,1 };
-
-				if (mesh->vertex_normal.exists)
-				{
-					auto n = ufbx_get_vertex_vec3(&mesh->vertex_normal, ix);
-					vert.normal = { (float)n.x,(float)n.y,(float)n.z };
-				}
-
-				if (mesh->vertex_tangent.exists)
-				{
-					auto v = ufbx_get_vertex_vec3(&mesh->vertex_tangent, ix);
-					vert.tangent = { (float)v.x,(float)v.y,(float)v.z };
-				}
-
-				if (mesh->vertex_bitangent.exists)
-				{
-					auto b = ufbx_get_vertex_vec3(&mesh->vertex_bitangent, ix);
-					vert.binormal = { (float)b.x,(float)b.y,(float)b.z };
-				}
-
-				if (mesh->vertex_uv.exists)
-				{
-					auto uv = ufbx_get_vertex_vec2(&mesh->vertex_uv, ix);
-					vert.uvs[0] = { (float)uv.x,1.f - (float)uv.y };
-				}
-
-				vert.vertexColors[0] = { 1,1,1,1 };
-
-				uint32_t vIndex = mesh->vertex_indices.data[ix];
-
-				vert.bones = {
-					(float)boneData[vIndex].IDs[0],
-					(float)boneData[vIndex].IDs[1],
-					(float)boneData[vIndex].IDs[2],
-					(float)boneData[vIndex].IDs[3]
-				};
-
-				vert.weights = {
-					boneData[vIndex].Weights[0],
-					boneData[vIndex].Weights[1],
-					boneData[vIndex].Weights[2],
-					boneData[vIndex].Weights[3]
-				};
-
-				indices.push_back((uint32_t)vertices.size());
-				vertices.push_back(vert);
-			}
-		}
-
-		if (!mesh->vertex_tangent.exists)
-		{
-			GenerateTangents(vertices, indices);
-		}
-
-		meshData.vertices = std::move(vertices);
-		meshData.indices = std::move(indices);
-
-		meshData.bounds = CalculateBoxSphereBounds(meshData.vertices);
-		meshData.name = mesh->name.data ? StringRegistry::RegisterOrGetString(mesh->name.data) : "Mesh"_tgaid;
-
-		rhi::BufferDesc vbDesc{};
-		vbDesc.byteSize = UINT(meshData.vertices.size() * sizeof(Vertex));
-		vbDesc.stride = sizeof(Vertex);
-		vbDesc.usage = rhi::BufferUsage::Vertex;
-		vbDesc.memory = rhi::MemoryType::Default;
-		vbDesc.debugName = "Mesh_VB";
-
-		rhi::BufferHandle vb = DX11::Rhi()->CreateBuffer(vbDesc, meshData.vertices.data());
-		if (!vb.IsValid()) return nullptr;
-
-		rhi::BufferDesc ibDesc{};
-		ibDesc.byteSize = UINT(meshData.indices.size() * sizeof(uint32_t));
-		ibDesc.stride = sizeof(uint32_t);
-		ibDesc.usage = rhi::BufferUsage::Index;
-		ibDesc.memory = rhi::MemoryType::Default;
-		ibDesc.debugName = "Mesh_IB";
-
-		rhi::BufferHandle ib = DX11::Rhi()->CreateBuffer(ibDesc, meshData.indices.data());
-		if (!ib.IsValid()) return nullptr;
-
-		meshData.vertexBuffer = vb;
-		meshData.indexBuffer = ib;
-		meshData.numberOfVertices = (UINT)meshData.vertices.size();
-		meshData.numberOfIndices = (UINT)meshData.indices.size();
-		meshData.stride = sizeof(Vertex);
-		meshData.offset = 0;
-
-		mdlMeshData.push_back(std::move(meshData));
-	}
-
-	auto model = std::make_shared<Model>();
-	model->Init(mdlMeshData, std::string(resolved_path.GetStringView()));
-
-	if (!mdlSkeleton.joints.empty())
-		model->mySkeleton = std::make_shared<Skeleton>(std::move(mdlSkeleton));
-
-	AssignDefaultMaterials(someFilePath, model.get());
-	myLoadedModels[someFilePath] = model;
-
-	ufbx_free_scene(scene);
-	return model;
-}
-
-
-std::shared_ptr<const Animation> ModelFactory::GetAnimation(
-	StringId someFilePath,
-	const std::shared_ptr<const Skeleton>& aSkeleton)
-{
-	if (someFilePath.IsEmpty())
-		return nullptr;
-
-	FilePathStream resolvedPath;
-	if (!Tga::Settings::ResolveAssetPath(someFilePath, resolvedPath))
-		return nullptr;
-
-	StringId resolvedPathId = StringRegistry::RegisterOrGetString(resolvedPath.GetStringView());
-
-	auto it = myLoadedAnimations.find(AnimationIdentifer{ resolvedPathId, aSkeleton });
-	if (it != myLoadedAnimations.end())
-		return it->second;
-
-	ufbx_load_opts opts = {
-		.target_axes = FBX_AXIS,
-	};
-	ufbx_error error;
-	ufbx_scene* scene = ufbx_load_file(resolvedPath.GetData(), &opts, &error);
-
-	if (!scene) return nullptr;
-	if (scene->anim_stacks.count == 0) return nullptr;
-
-	ufbx_anim_stack* stack = scene->anim_stacks.data[0];
-	ufbx_anim* anim = stack->anim;
-
-	std::shared_ptr<Animation> animation = std::make_shared<Animation>();
-
-	animation->name = someFilePath.GetString();
-
-	float fps = 30.0f;
-	animation->framesPerSecond = fps;
-
-	animation->duration = (float)(stack->time_end - stack->time_begin);
-	animation->length = (unsigned)(animation->duration * fps);
-
-	animation->frames.resize(animation->length);
-
-	const Skeleton& skeleton = *aSkeleton;
-
-	ufbx_matrix skeletonParent = ufbx_identity_matrix;
-	ufbx_matrix skeletonParentInv = ufbx_identity_matrix;
-
-	// resolve root once
-	const ufbx_node* skeletonRoot = ufbx_find_node(scene, skeleton.joints[0].name.c_str());
-	if (skeletonRoot)
-	{
-		if (skeletonRoot->parent)
-		{
-			skeletonParent = skeletonRoot->parent->node_to_world;
-			skeletonParentInv = ufbx_matrix_invert(&skeletonParent);
-		}
-	}
-	for (unsigned int f = 0; f < animation->length; f++)
-	{
-		double time = stack->time_begin + (double)f / fps;
-
-		ufbx_scene* eval = ufbx_evaluate_scene(scene, anim, time, nullptr, nullptr);
-
-		animation->frames[f].count = skeleton.joints.size();
-
-		for (size_t j = 0; j < skeleton.joints.size(); j++)
-		{
-			const std::string& jointName = skeleton.joints[j].name;
-
-			ufbx_node* sourceNode = ufbx_find_node(scene, jointName.c_str());
-			if (!sourceNode)
-				continue;
-
-			ufbx_node* node = eval->nodes[sourceNode->typed_id];
-
-			ufbx_matrix original = node->node_to_parent;
-
- 			// Compensate for transforms in nodes above the skeleton (blender tends to create this)
-			ufbx_matrix tmp = ufbx_matrix_mul(&original, &skeletonParentInv);
-			ufbx_matrix fixed = ufbx_matrix_mul(&skeletonParent, &tmp);
-
-			Matrix4x4f mat = ConvertMatrix(fixed);
-
-			animation->frames[f].jointTransforms[j] = ScaleRotationTranslationf::CreateFromMatrix(mat);
-			
-		}
-
-		ufbx_free_scene(eval);
-	}
-
-	myLoadedAnimations[AnimationIdentifer{ resolvedPathId, aSkeleton }] = animation;
-
-	ufbx_free_scene(scene);
-	return animation;
-}
-
-#else
-
-// ---------------------------------------------------------------------------
-//  Static-mesh import cache.  Parsing a large .fbx via the FBX SDK is slow
-//  (seconds). After the first import we serialise the converted MeshData to
-//  <CookedAssets>/meshcache/<asset path>.tgmesh; later loads skip the SDK
-//  entirely. Invalidated by the .fbx's write time + size. Skinned meshes are
-//  not cached (kept on the SDK path) so animation import is unaffected.
-// ---------------------------------------------------------------------------
 namespace
 {
-	constexpr uint32_t kMeshCacheMagic   = 0x434D4754u; // 'TGMC'
-	constexpr uint32_t kMeshCacheVersion = 3u;           // v3: sub-meshes merged by material at import
-
-	// Collapse sub-meshes that share a material into one vertex/index buffer.
 	// Sponza: 120 sub-meshes -> ~24 draws. Loses per-sub-mesh granularity (the
 	// model draw path has no per-sub-mesh culling), keeps one name per material.
+	// Shared by both the ufbx and Autodesk-SDK import paths below so neither
+	// one leaves a scene with hundreds of same-material draws per model (the
+	// symptom that showed up on Bistro: ~1600 raw (mesh, material-slot) pairs
+	// for only ~130 distinct materials).
 	constexpr bool kMergeByMaterial = true;
 
 	Tga::BoxSphereBounds BoundsOf(const std::vector<Tga::Vertex>& v)
@@ -1398,47 +987,6 @@ namespace
 		b.boxExtents = (mx - mn) * 0.5f;
 		b.radius = std::sqrt(b.boxExtents.x * b.boxExtents.x + b.boxExtents.y * b.boxExtents.y + b.boxExtents.z * b.boxExtents.z);
 		return b;
-	}
-
-	// Most static meshes only use position / normal / tangent / binormal / uv0.
-	// Those are stored as 15 floats/vertex instead of the full ~208-byte Vertex.
-	// A mesh that actually uses vertex colours, extra UV sets or skin weights is
-	// flagged and stored in full, so correctness never depends on the guess.
-	constexpr uint32_t kCompactFloats = 15u;
-
-	bool VertexIsCompactSafe(const Tga::Vertex& v)
-	{
-		auto nz2 = [](const Tga::Vector2f& a) { return a.x != 0.f || a.y != 0.f; };
-		auto nz4 = [](const Tga::Vector4f& a) { return a.x != 0.f || a.y != 0.f || a.z != 0.f || a.w != 0.f; };
-		if (nz4(v.vertexColors[0]) || nz4(v.vertexColors[1]) || nz4(v.vertexColors[2]) || nz4(v.vertexColors[3])) return false;
-		if (nz2(v.uvs[1]) || nz2(v.uvs[2]) || nz2(v.uvs[3])) return false;
-		if (nz4(v.bones) || nz4(v.weights)) return false;
-		return true;
-	}
-
-	std::string MeshCachePath(const char* assetPath)
-	{
-		std::string key(assetPath ? assetPath : "");
-		for (char& c : key) if (c == '/' || c == '\\' || c == ':') c = '_';
-		std::string root = Tga::Settings::CookedAssetRoot();
-		if (root.empty()) root = ".";
-		return root + "/meshcache/" + key + ".tgmesh";
-	}
-
-	template <class T> void CacheW(std::ofstream& o, const T& v) { o.write(reinterpret_cast<const char*>(&v), sizeof(T)); }
-	template <class T> void CacheR(std::ifstream& i, T& v)       { i.read (reinterpret_cast<char*>(&v), sizeof(T)); }
-	void CacheWStr(std::ofstream& o, const std::string& s) { uint32_t n = (uint32_t)s.size(); CacheW(o, n); if (n) o.write(s.data(), (std::streamsize)n); }
-	std::string CacheRStr(std::ifstream& i) { uint32_t n = 0; CacheR(i, n); std::string s(n, '\0'); if (n) i.read(s.data(), (std::streamsize)n); return s; }
-
-	bool CacheFileStamp(const char* path, int64_t& outTime, uint64_t& outSize)
-	{
-		std::error_code ec;
-		const std::filesystem::path p(path);
-		const auto t = std::filesystem::last_write_time(p, ec); if (ec) return false;
-		const auto s = std::filesystem::file_size(p, ec);       if (ec) return false;
-		outTime = (int64_t)t.time_since_epoch().count();
-		outSize = (uint64_t)s;
-		return true;
 	}
 
 	bool CacheCreateBuffers(Tga::Model::MeshData& md)
@@ -1467,7 +1015,7 @@ namespace
 		Tga::rhi::BufferDesc vbd{};
 		vbd.byteSize = (UINT)vbytes;
 		vbd.stride = sizeof(Tga::Vertex);
-		vbd.usage = Tga::rhi::BufferUsage::Vertex;
+		vbd.usage = Tga::rhi::BufferUsage::Vertex | Tga::rhi::BufferUsage::ByteAddress;
 		vbd.memory = Tga::rhi::MemoryType::Default;
 		vbd.debugName = "Mesh_VB";
 		Tga::rhi::IDevice* dev = Tga::DX11::Rhi();
@@ -1477,7 +1025,7 @@ namespace
 		Tga::rhi::BufferDesc ibd{};
 		ibd.byteSize = (UINT)(md.indices.size() * sizeof(unsigned int));
 		ibd.stride = sizeof(unsigned int);
-		ibd.usage = Tga::rhi::BufferUsage::Index;
+		ibd.usage = Tga::rhi::BufferUsage::Index | Tga::rhi::BufferUsage::ByteAddress;
 		ibd.memory = Tga::rhi::MemoryType::Default;
 		ibd.debugName = "Mesh_IB";
 		Tga::rhi::BufferHandle ib = dev->CreateBuffer(ibd, md.indices.data());
@@ -1492,10 +1040,31 @@ namespace
 
 	// Merge sub-meshes with the same material name; rebuilds GPU buffers for the
 	// merged set and releases the originals. Safe to run on MeshData that already
-	// has buffers (FBX path) or none yet (cache path).
+	// has buffers (FBX path) or none yet (cache path). Also safe for skinned
+	// meshes: Vertex carries bones/weights per-vertex (see Vertex.h), so
+	// concatenating vertex/index data across submeshes doesn't touch skinning at
+	// all -- a merged mesh's vertices still point at the same global joint
+	// indices they always did.
 	void MergeMeshesByMaterial(std::vector<Tga::Model::MeshData>& meshes)
 	{
-		if (!kMergeByMaterial || meshes.size() < 2) return;
+		if (meshes.empty()) return;
+		if (!kMergeByMaterial || meshes.size() < 2)
+		{
+			// Nothing to bucket, but every submesh still needs its GPU buffers
+			// built -- this used to be the caller's job for the path that used
+			// to skip merging entirely (formerly skinned-only). Centralising it
+			// here means every caller can unconditionally call this function and
+			// get buffer-ready MeshData back, merged or not.
+			size_t okMeshes = 0, totalTris = 0;
+			for (Tga::Model::MeshData& md : meshes)
+			{
+				md.bounds = BoundsOf(md.vertices);
+				if (CacheCreateBuffers(md)) { ++okMeshes; totalTris += md.indices.size() / 3; }
+			}
+			INFO_PRINT("mesh merge: %zu sub-mesh(es), nothing to merge -> %zu with geometry, %zu tris",
+				meshes.size(), okMeshes, totalTris);
+			return;
+		}
 
 		std::vector<Tga::Model::MeshData> out;
 		out.reserve(meshes.size());
@@ -1544,6 +1113,60 @@ namespace
 		INFO_PRINT("mesh merge: %zu sub-meshes (%zu empty) -> %zu materials, %zu with geometry, %zu tris",
 			meshes.size(), droppedEmpty, out.size(), okMeshes, totalTris);
 		meshes = std::move(out);
+	}
+
+	// ---------------------------------------------------------------------
+	//  Static-mesh import cache. Parsing a large .fbx is slow (seconds to
+	//  tens of seconds for something like Bistro) -- after the first import,
+	//  serialise the converted, already-merged MeshData to
+	//  <CookedAssets>/meshcache/<asset path>.tgmesh so later opens of the
+	//  same .tgo/.tgs skip re-parsing entirely. Invalidated by the .fbx's
+	//  write time + size. Skinned meshes are not cached (callers only write
+	//  one for a model with an empty skeleton) so animation import is
+	//  unaffected.
+	// ---------------------------------------------------------------------
+	constexpr uint32_t kMeshCacheMagic   = 0x434D4754u; // 'TGMC'
+	constexpr uint32_t kMeshCacheVersion = 3u;           // v3: sub-meshes merged by material at import
+
+	// Most static meshes only use position / normal / tangent / binormal / uv0.
+	// Those are stored as 15 floats/vertex instead of the full ~208-byte Vertex.
+	// A mesh that actually uses vertex colours, extra UV sets or skin weights is
+	// flagged and stored in full, so correctness never depends on the guess.
+	constexpr uint32_t kCompactFloats = 15u;
+
+	bool VertexIsCompactSafe(const Tga::Vertex& v)
+	{
+		auto nz2 = [](const Tga::Vector2f& a) { return a.x != 0.f || a.y != 0.f; };
+		auto nz4 = [](const Tga::Vector4f& a) { return a.x != 0.f || a.y != 0.f || a.z != 0.f || a.w != 0.f; };
+		if (nz4(v.vertexColors[0]) || nz4(v.vertexColors[1]) || nz4(v.vertexColors[2]) || nz4(v.vertexColors[3])) return false;
+		if (nz2(v.uvs[1]) || nz2(v.uvs[2]) || nz2(v.uvs[3])) return false;
+		if (nz4(v.bones) || nz4(v.weights)) return false;
+		return true;
+	}
+
+	std::string MeshCachePath(const char* assetPath)
+	{
+		std::string key(assetPath ? assetPath : "");
+		for (char& c : key) if (c == '/' || c == '\\' || c == ':') c = '_';
+		std::string root = Tga::Settings::CookedAssetRoot();
+		if (root.empty()) root = ".";
+		return root + "/meshcache/" + key + ".tgmesh";
+	}
+
+	template <class T> void CacheW(std::ofstream& o, const T& v) { o.write(reinterpret_cast<const char*>(&v), sizeof(T)); }
+	template <class T> void CacheR(std::ifstream& i, T& v)       { i.read (reinterpret_cast<char*>(&v), sizeof(T)); }
+	void CacheWStr(std::ofstream& o, const std::string& s) { uint32_t n = (uint32_t)s.size(); CacheW(o, n); if (n) o.write(s.data(), (std::streamsize)n); }
+	std::string CacheRStr(std::ifstream& i) { uint32_t n = 0; CacheR(i, n); std::string s(n, '\0'); if (n) i.read(s.data(), (std::streamsize)n); return s; }
+
+	bool CacheFileStamp(const char* path, int64_t& outTime, uint64_t& outSize)
+	{
+		std::error_code ec;
+		const std::filesystem::path p(path);
+		const auto t = std::filesystem::last_write_time(p, ec); if (ec) return false;
+		const auto s = std::filesystem::file_size(p, ec);       if (ec) return false;
+		outTime = (int64_t)t.time_since_epoch().count();
+		outSize = (uint64_t)s;
+		return true;
 	}
 
 	bool TryLoadMeshCache(const std::string& cachePath, const char* fbxPath,
@@ -1657,6 +1280,740 @@ namespace
 	}
 }
 
+#ifdef TGA_USE_UFBX
+static Matrix4x4f ConvertMatrix(const ufbx_matrix& m)
+{
+	Matrix4x4f mat;
+
+	mat(1, 1) = (float)m.m00; mat(1, 2) = (float)m.m10; mat(1, 3) = (float)m.m20; mat(1, 4) = 0.f;
+	mat(2, 1) = (float)m.m01; mat(2, 2) = (float)m.m11; mat(2, 3) = (float)m.m21; mat(2, 4) = 0.f;
+	mat(3, 1) = (float)m.m02; mat(3, 2) = (float)m.m12; mat(3, 3) = (float)m.m22; mat(3, 4) = 0.f;
+	mat(4, 1) = (float)m.m03; mat(4, 2) = (float)m.m13; mat(4, 3) = (float)m.m23; mat(4, 4) = 1.f;
+
+	return mat;
+}
+
+static constexpr ufbx_coordinate_axes FBX_AXIS = {
+	UFBX_COORDINATE_AXIS_POSITIVE_X, UFBX_COORDINATE_AXIS_POSITIVE_Y, UFBX_COORDINATE_AXIS_POSITIVE_Z,
+};
+
+static void GenerateTangents(std::vector<Vertex>& verts, const std::vector<uint32_t>& indices)
+{
+	// Quick implementation of tangent computation in cases they are missing
+	// Verified to match imported tangent orientation on particle_chest
+
+	for (auto& v : verts)
+	{
+		v.tangent = { 0,0,0 };
+		v.binormal = { 0,0,0 };
+	}
+
+	// Accumulation across triangles
+	// TODO: should probably have some kind of angle based weighting?
+	for (size_t i = 0; i < indices.size(); i += 3)
+	{
+		uint32_t i0 = indices[i + 0];
+		uint32_t i1 = indices[i + 1];
+		uint32_t i2 = indices[i + 2];
+
+		Vertex& v0 = verts[i0];
+		Vertex& v1 = verts[i1];
+		Vertex& v2 = verts[i2];
+
+		const auto& p0 = v0.position;
+		const auto& p1 = v1.position;
+		const auto& p2 = v2.position;
+
+		const auto& uv0 = v0.uvs[0];
+		const auto& uv1 = v1.uvs[0];
+		const auto& uv2 = v2.uvs[0];
+
+		Tga::Vector3f dp1 = p1 - p0;
+		Tga::Vector3f dp2 = p2 - p0;
+
+		Tga::Vector2f duv1 = uv1 - uv0;
+		Tga::Vector2f duv2 = uv2 - uv0;
+
+		float denom = duv1.x * duv2.y - duv1.y * duv2.x;
+		if (fabs(denom) < 1e-6f)	continue;
+
+		float r = 1.0f / denom;
+
+		Tga::Vector3f tangent = (dp1 * duv2.y - dp2 * duv1.y) * r;
+		Tga::Vector3f bitangent = (dp2 * duv1.x - dp1 * duv2.x) * r;
+
+		v0.tangent += tangent;
+		v1.tangent += tangent;
+		v2.tangent += tangent;
+
+		v0.binormal += bitangent;
+		v1.binormal += bitangent;
+		v2.binormal += bitangent;
+	}
+
+	for (auto& v : verts)
+	{
+		Tga::Vector3f n = v.normal;
+		Tga::Vector3f t = v.tangent;
+
+		if (t.LengthSqr() < 1e-6f)
+		{
+			// fallback: build arbitrary tangent to avoid broken meshes
+			Tga::Vector3f up = fabs(n.z) < 0.999f ? Tga::Vector3f{ 0,0,1 } : Tga::Vector3f{ 0,1,0 };
+			t = n.Cross(up).GetNormalized();
+		}
+		else
+		{
+			// Gram-Schmidt
+			t = (t - n * n.Dot(t)).GetNormalized();
+		}
+
+		// compute handedness:
+		Tga::Vector3f b = v.binormal;
+		float w = (n.Cross(t).Dot(b) < 0.0f) ? 1.0f : -1.0f;
+
+		v.tangent = t;
+		v.binormal = n.Cross(t) * w;
+	}
+}
+
+
+
+std::shared_ptr<Model> ModelFactory::LoadModel(StringId someFilePath)
+{
+	if (someFilePath.IsEmpty())
+		return nullptr;
+	FilePathStream resolved_path;
+	if (!Tga::Settings::ResolveAssetPath(someFilePath, resolved_path))
+		return nullptr;
+
+	// A large .fbx (e.g. Bistro) takes seconds to re-parse through ufbx every
+	// single time its .tgo/.tgs is opened -- there was no persistent cache on
+	// this path at all. Try the same on-disk cache the (currently unreachable)
+	// SDK importer already knows how to read; a hit skips ufbx entirely.
+	const std::string resolvedStr = std::string(resolved_path.GetStringView());
+	const std::string cachePath = MeshCachePath(someFilePath.GetString());
+	{
+		auto cachedModel = std::make_shared<Model>();
+		if (TryLoadMeshCache(cachePath, resolved_path.GetData(), cachedModel.get(), resolvedStr))
+		{
+			myLoadedModels[someFilePath] = cachedModel;
+			return cachedModel;
+		}
+	}
+
+	ufbx_load_opts opts =
+	{
+		.generate_missing_normals = true,
+		.target_axes = FBX_AXIS,
+	};
+
+
+	ufbx_error error;
+	ufbx_scene* scene = ufbx_load_file(resolved_path.GetData(), &opts, &error);
+
+	if (!scene)
+	{
+		ERROR_PRINT("ufbx load failed: %s", someFilePath.GetString());
+		return nullptr;
+	}
+
+	std::vector<Model::MeshData> mdlMeshData;
+
+	Skeleton mdlSkeleton;
+
+	std::unordered_map<const ufbx_node*, int> nodeToJoint;
+	std::vector<const ufbx_node*> jointNodes;
+
+	// Skeleton
+	for (size_t mesh_i = 0; mesh_i < scene->meshes.count; mesh_i++)
+	{
+		ufbx_mesh* mesh = scene->meshes.data[mesh_i];
+
+		if (mesh->skin_deformers.count == 0)
+			continue;
+
+		ufbx_skin_deformer* skin = mesh->skin_deformers.data[0];
+
+		for (size_t c = 0; c < skin->clusters.count; c++)
+		{
+			ufbx_skin_cluster* cluster = skin->clusters.data[c];
+			if (!cluster->bone_node) continue;
+
+			const ufbx_node* node = cluster->bone_node;
+
+			if (nodeToJoint.contains(node))
+				continue;
+
+			int index = (int)mdlSkeleton.joints.size();
+			nodeToJoint[node] = index;
+
+			Skeleton::Joint& joint = mdlSkeleton.joints.emplace_back();
+			jointNodes.push_back(node);
+
+			joint.name = node->name.data ? node->name.data : "";
+
+			if (node->parent && nodeToJoint.contains(node->parent))
+				joint.parent = nodeToJoint[node->parent];
+			else
+				joint.parent = -1;
+
+			mdlSkeleton.jointNameToIndex[joint.name] = index;
+		}
+	}
+
+	ufbx_matrix skeletonParent = ufbx_identity_matrix;
+
+	if (jointNodes.size() > 1)
+	{
+		const ufbx_node* skeletonRoot = jointNodes[0];
+		if (skeletonRoot && skeletonRoot->parent)
+		{
+			skeletonParent = skeletonRoot->parent->node_to_world;
+		}
+
+		for (size_t mesh_i = 0; mesh_i < scene->meshes.count; mesh_i++)
+		{
+			ufbx_mesh* mesh = scene->meshes.data[mesh_i];
+			if (mesh->skin_deformers.count == 0) continue;
+
+			ufbx_skin_deformer* skin = mesh->skin_deformers.data[0];
+
+			for (size_t c = 0; c < skin->clusters.count; c++)
+			{
+				ufbx_skin_cluster* cluster = skin->clusters.data[c];
+				if (!cluster->bone_node) continue;
+
+				int jointIndex = nodeToJoint[cluster->bone_node];
+
+				ufbx_matrix geomToBone = cluster->geometry_to_bone;
+				
+				// Apply transform above the skeleton root (blender tends to add this)
+				ufbx_matrix fixed = ufbx_matrix_mul(&skeletonParent, &geomToBone);
+
+				mdlSkeleton.joints[jointIndex].bindPoseInverse = ConvertMatrix(fixed);
+
+				mdlSkeleton.modelBindPose.jointTransforms[jointIndex] =
+					mdlSkeleton.joints[jointIndex].bindPoseInverse.GetInverse();
+			}
+		}
+
+		assert(MAX_ANIMATION_BONES >= mdlSkeleton.joints.size() && "More joints in animation than defined in EngineDefines.h");
+
+		mdlSkeleton.ConvertPoseToLocalSpace(mdlSkeleton.modelBindPose, mdlSkeleton.localBindPose);
+	}
+
+	// Build hierarchy
+	for (size_t i = 0; i < mdlSkeleton.joints.size(); i++)
+	{
+		int parent = mdlSkeleton.joints[i].parent;
+		if (parent >= 0)
+			mdlSkeleton.joints[parent].children.push_back((unsigned)i);
+	}
+
+	// Meshes
+	for (size_t mesh_i = 0; mesh_i < scene->meshes.count; mesh_i++)
+	{
+		ufbx_mesh* mesh = scene->meshes.data[mesh_i];
+
+		std::vector<VertexBoneData> boneData(mesh->num_vertices);
+
+		// Skinning
+		if (mesh->skin_deformers.count > 0)
+		{
+			ufbx_skin_deformer* skin = mesh->skin_deformers.data[0];
+
+			for (size_t v = 0; v < skin->vertices.count; v++)
+			{
+				const ufbx_skin_vertex& sv = skin->vertices.data[v];
+
+				for (uint32_t w = 0; w < sv.num_weights; w++)
+				{
+					const ufbx_skin_weight& weight =
+						skin->weights.data[sv.weight_begin + w];
+
+					ufbx_skin_cluster* cluster =
+						skin->clusters.data[weight.cluster_index];
+
+					if (!cluster->bone_node) continue;
+					if (!nodeToJoint.count(cluster->bone_node)) continue;
+
+					unsigned int boneIndex = nodeToJoint[cluster->bone_node];
+					boneData[v].AddBoneData(boneIndex, (float)weight.weight);
+				}
+			}
+		}
+
+		// Triangulation
+		std::vector<uint32_t> triBuf(mesh->max_face_triangles * 3);
+		const size_t materialCount = std::max<size_t>(1, mesh->materials.count);
+		for (size_t materialIndex = 0; materialIndex < materialCount; ++materialIndex)
+		{
+			Model::MeshData meshData;
+			std::vector<Vertex> vertices;
+			std::vector<uint32_t> indices;
+
+		for (size_t f = 0; f < mesh->faces.count; f++)
+		{
+			// A single FBX mesh may contain faces from several materials. Keep
+			// each material in its own engine mesh so the TGO's material rows map
+			// to the generated vertices correctly.
+			if (mesh->materials.count > 1 && mesh->face_material.data[f] != materialIndex)
+				continue;
+			ufbx_face face = mesh->faces.data[f];
+
+			uint32_t numTris = ufbx_triangulate_face(
+				triBuf.data(),
+				triBuf.size(),
+				mesh,
+				face
+			);
+
+			for (uint32_t t = 0; t < numTris * 3; t++)
+			{
+				uint32_t ix = triBuf[t];
+
+				Vertex vert{};
+
+				auto pos = ufbx_get_vertex_vec3(&mesh->vertex_position, ix);
+				vert.position = { (float)pos.x,(float)pos.y,(float)pos.z,1 };
+
+				if (mesh->vertex_normal.exists)
+				{
+					auto n = ufbx_get_vertex_vec3(&mesh->vertex_normal, ix);
+					vert.normal = { (float)n.x,(float)n.y,(float)n.z };
+				}
+
+				if (mesh->vertex_tangent.exists)
+				{
+					auto v = ufbx_get_vertex_vec3(&mesh->vertex_tangent, ix);
+					vert.tangent = { (float)v.x,(float)v.y,(float)v.z };
+				}
+
+				if (mesh->vertex_bitangent.exists)
+				{
+					auto b = ufbx_get_vertex_vec3(&mesh->vertex_bitangent, ix);
+					vert.binormal = { (float)b.x,(float)b.y,(float)b.z };
+				}
+
+				if (mesh->vertex_uv.exists)
+				{
+					auto uv = ufbx_get_vertex_vec2(&mesh->vertex_uv, ix);
+					vert.uvs[0] = { (float)uv.x,1.f - (float)uv.y };
+				}
+
+				vert.vertexColors[0] = { 1,1,1,1 };
+
+				uint32_t vIndex = mesh->vertex_indices.data[ix];
+
+				vert.bones = {
+					(float)boneData[vIndex].IDs[0],
+					(float)boneData[vIndex].IDs[1],
+					(float)boneData[vIndex].IDs[2],
+					(float)boneData[vIndex].IDs[3]
+				};
+
+				vert.weights = {
+					boneData[vIndex].Weights[0],
+					boneData[vIndex].Weights[1],
+					boneData[vIndex].Weights[2],
+					boneData[vIndex].Weights[3]
+				};
+
+				indices.push_back((uint32_t)vertices.size());
+				vertices.push_back(vert);
+			}
+		}
+
+		if (!mesh->vertex_tangent.exists)
+		{
+			GenerateTangents(vertices, indices);
+		}
+		if (vertices.empty() || indices.empty())
+			continue;
+
+		meshData.vertices = std::move(vertices);
+		meshData.indices = std::move(indices);
+
+		meshData.bounds = CalculateBoxSphereBounds(meshData.vertices);
+		meshData.name = mesh->name.data ? StringRegistry::RegisterOrGetString(mesh->name.data) : "Mesh"_tgaid;
+		if (mesh->materials.count > materialIndex && mesh->materials.data[materialIndex])
+		{
+			const ufbx_material* material = mesh->materials.data[materialIndex];
+			meshData.materialName = StringRegistry::RegisterOrGetString(std::string(material->name.data, material->name.length));
+		}
+		else
+		{
+			meshData.materialName = ""_tgaid;
+		}
+
+		rhi::BufferDesc vbDesc{};
+		vbDesc.byteSize = UINT(meshData.vertices.size() * sizeof(Vertex));
+		vbDesc.stride = sizeof(Vertex);
+		vbDesc.usage = rhi::BufferUsage::Vertex | rhi::BufferUsage::ByteAddress;
+		vbDesc.memory = rhi::MemoryType::Default;
+		vbDesc.debugName = "Mesh_VB";
+
+		rhi::BufferHandle vb = DX11::Rhi()->CreateBuffer(vbDesc, meshData.vertices.data());
+		if (!vb.IsValid()) return nullptr;
+
+		rhi::BufferDesc ibDesc{};
+		ibDesc.byteSize = UINT(meshData.indices.size() * sizeof(uint32_t));
+		ibDesc.stride = sizeof(uint32_t);
+		ibDesc.usage = rhi::BufferUsage::Index | rhi::BufferUsage::ByteAddress;
+		ibDesc.memory = rhi::MemoryType::Default;
+		ibDesc.debugName = "Mesh_IB";
+
+		rhi::BufferHandle ib = DX11::Rhi()->CreateBuffer(ibDesc, meshData.indices.data());
+		if (!ib.IsValid()) return nullptr;
+
+		meshData.vertexBuffer = vb;
+		meshData.indexBuffer = ib;
+		meshData.numberOfVertices = (UINT)meshData.vertices.size();
+		meshData.numberOfIndices = (UINT)meshData.indices.size();
+		meshData.stride = sizeof(Vertex);
+		meshData.offset = 0;
+
+		mdlMeshData.push_back(std::move(meshData));
+		}
+	}
+
+	// The loop above emits one MeshData per (ufbx mesh, material-slot) pair,
+	// each with its own GPU buffers already created -- for a scene like Bistro
+	// (many separate mesh objects sharing a handful of materials, e.g. dozens
+	// of individual streetlight/prop instances all using "Stringlights") that
+	// is ~1600 draws for ~130 actual materials. Collapse same-material entries
+	// into one draw per material, same as the SDK import path already does.
+	MergeMeshesByMaterial(mdlMeshData);
+
+	auto model = std::make_shared<Model>();
+	model->Init(mdlMeshData, resolvedStr);
+
+	if (!mdlSkeleton.joints.empty())
+		model->mySkeleton = std::make_shared<Skeleton>(std::move(mdlSkeleton));
+	else
+		WriteMeshCache(cachePath, resolved_path.GetData(), mdlMeshData);   // skinned meshes stay uncached, see the cache's own comment
+
+	AssignDefaultMaterials(someFilePath, model.get());
+	myLoadedModels[someFilePath] = model;
+
+	ufbx_free_scene(scene);
+	return model;
+}
+
+// ufbx is deliberately used for editor-facing imports because malformed or
+// exporter-specific FBX data must return an error, not take down the editor
+// inside the Autodesk SDK. Its current loader owns GPU uploads on this thread,
+// so expose the editor's async-facing API as a safe, on-demand load until the
+// ufbx path is split into CPU and GPU stages.
+std::shared_ptr<Model> ModelFactory::GetLoadedModel(StringId path) const
+{
+	auto it = myLoadedModels.find(path);
+	return it == myLoadedModels.end() ? nullptr : it->second;
+}
+
+bool ModelFactory::IsAsyncImportPending(StringId) const
+{
+	return false;
+}
+
+void ModelFactory::RequestAsyncImport(StringId path)
+{
+	if (!path.IsEmpty() && !GetLoadedModel(path))
+		LoadModel(path);
+}
+
+void ModelFactory::PumpAsyncImports()
+{
+}
+
+
+std::shared_ptr<const Animation> ModelFactory::GetAnimation(
+	StringId someFilePath,
+	const std::shared_ptr<const Skeleton>& aSkeleton)
+{
+	if (someFilePath.IsEmpty())
+		return nullptr;
+
+	FilePathStream resolvedPath;
+	if (!Tga::Settings::ResolveAssetPath(someFilePath, resolvedPath))
+		return nullptr;
+
+	StringId resolvedPathId = StringRegistry::RegisterOrGetString(resolvedPath.GetStringView());
+
+	auto it = myLoadedAnimations.find(AnimationIdentifer{ resolvedPathId, aSkeleton });
+	if (it != myLoadedAnimations.end())
+		return it->second;
+
+	ufbx_load_opts opts = {
+		.target_axes = FBX_AXIS,
+	};
+	ufbx_error error;
+	ufbx_scene* scene = ufbx_load_file(resolvedPath.GetData(), &opts, &error);
+
+	if (!scene) return nullptr;
+	if (scene->anim_stacks.count == 0) return nullptr;
+
+	ufbx_anim_stack* stack = scene->anim_stacks.data[0];
+	ufbx_anim* anim = stack->anim;
+
+	std::shared_ptr<Animation> animation = std::make_shared<Animation>();
+
+	animation->name = someFilePath.GetString();
+
+	float fps = 30.0f;
+	animation->framesPerSecond = fps;
+
+	animation->duration = (float)(stack->time_end - stack->time_begin);
+	animation->length = (unsigned)(animation->duration * fps);
+
+	animation->frames.resize(animation->length);
+
+	const Skeleton& skeleton = *aSkeleton;
+
+	ufbx_matrix skeletonParent = ufbx_identity_matrix;
+	ufbx_matrix skeletonParentInv = ufbx_identity_matrix;
+
+	// resolve root once
+	const ufbx_node* skeletonRoot = ufbx_find_node(scene, skeleton.joints[0].name.c_str());
+	if (skeletonRoot)
+	{
+		if (skeletonRoot->parent)
+		{
+			skeletonParent = skeletonRoot->parent->node_to_world;
+			skeletonParentInv = ufbx_matrix_invert(&skeletonParent);
+		}
+	}
+	for (unsigned int f = 0; f < animation->length; f++)
+	{
+		double time = stack->time_begin + (double)f / fps;
+
+		ufbx_scene* eval = ufbx_evaluate_scene(scene, anim, time, nullptr, nullptr);
+
+		animation->frames[f].count = skeleton.joints.size();
+
+		for (size_t j = 0; j < skeleton.joints.size(); j++)
+		{
+			const std::string& jointName = skeleton.joints[j].name;
+
+			ufbx_node* sourceNode = ufbx_find_node(scene, jointName.c_str());
+			if (!sourceNode)
+				continue;
+
+			ufbx_node* node = eval->nodes[sourceNode->typed_id];
+
+			ufbx_matrix original = node->node_to_parent;
+
+ 			// Compensate for transforms in nodes above the skeleton (blender tends to create this)
+			ufbx_matrix tmp = ufbx_matrix_mul(&original, &skeletonParentInv);
+			ufbx_matrix fixed = ufbx_matrix_mul(&skeletonParent, &tmp);
+
+			Matrix4x4f mat = ConvertMatrix(fixed);
+
+			animation->frames[f].jointTransforms[j] = ScaleRotationTranslationf::CreateFromMatrix(mat);
+			
+		}
+
+		ufbx_free_scene(eval);
+	}
+
+	myLoadedAnimations[AnimationIdentifer{ resolvedPathId, aSkeleton }] = animation;
+
+	ufbx_free_scene(scene);
+	return animation;
+}
+
+#else
+
+// ---------------------------------------------------------------------------
+//  Static-mesh import cache.  Parsing a large .fbx via the FBX SDK is slow
+//  (seconds). After the first import we serialise the converted MeshData to
+//  <CookedAssets>/meshcache/<asset path>.tgmesh; later loads skip the SDK
+//  entirely. Invalidated by the .fbx's write time + size. Skinned meshes are
+//  not cached (kept on the SDK path) so animation import is unaffected.
+//
+//  MeshCachePath/TryLoadMeshCache/WriteMeshCache (and their small serialise
+//  helpers) now live in the shared anonymous namespace above GetUnitPlane(),
+//  alongside CacheCreateBuffers/MergeMeshesByMaterial, so the live ufbx path
+//  can reuse them instead of re-parsing every .tgo/.tgs open from scratch.
+// ---------------------------------------------------------------------------
+
+// CPU-only result owned by an async FBX job. Deliberately contains no RHI
+// handles: the worker is allowed to parse and convert memory, while adoption
+// on the render thread is solely responsible for GPU resources.
+namespace
+{
+	struct CpuImportResult
+	{
+		bool success = false;
+		bool skinned = false;
+		std::string error;
+		std::vector<Tga::Model::MeshData> meshes;
+		std::vector<std::pair<std::string, std::string>> names;
+	};
+
+	CpuImportResult ImportStaticFbxCpu(const std::string& absolutePath)
+	{
+		CpuImportResult result;
+		try
+		{
+			TGA::FBX::Mesh source;
+			if (!TGA::FBX::Importer::LoadMeshA(absolutePath.c_str(), source))
+			{
+				result.error = "FBX SDK parse failed";
+				return result;
+			}
+		if (source.Skeleton.GetRoot())
+		{
+			// Skinned import needs skeleton/animation ownership work that is still
+			// synchronous. Keep it explicit rather than creating GPU state off-thread.
+			result.skinned = true;
+			result.error = "skinned FBX imports are not yet backgrounded";
+			return result;
+		}
+
+		result.meshes.resize(source.Elements.size());
+		result.names.resize(source.Elements.size());
+		for (size_t i = 0; i < source.Elements.size(); ++i)
+		{
+			const TGA::FBX::Mesh::Element& in = source.Elements[i];
+			auto& out = result.meshes[i];
+			out.vertices.resize(in.Vertices.size());
+			for (size_t v = 0; v < in.Vertices.size(); ++v)
+			{
+				const auto& sv = in.Vertices[v]; auto& dv = out.vertices[v];
+				dv.position = { sv.Position[0], sv.Position[1], sv.Position[2], 1.f };
+				for (int c = 0; c < 4; ++c)
+					dv.vertexColors[c] = { sv.VertexColors[c][0], sv.VertexColors[c][1], sv.VertexColors[c][2], sv.VertexColors[c][3] };
+				dv.normal = { sv.Normal[0], sv.Normal[1], sv.Normal[2] };
+				dv.binormal = { sv.BiNormal[0], sv.BiNormal[1], sv.BiNormal[2] };
+				dv.tangent = { sv.Tangent[0], sv.Tangent[1], sv.Tangent[2] };
+				for (unsigned int uv = 0; uv < 4; ++uv) dv.uvs[uv] = { sv.UVs[uv][0], sv.UVs[uv][1] };
+				dv.bones = { (float)sv.BoneIDs[0], (float)sv.BoneIDs[1], (float)sv.BoneIDs[2], (float)sv.BoneIDs[3] };
+				dv.weights = { sv.BoneWeights[0], sv.BoneWeights[1], sv.BoneWeights[2], sv.BoneWeights[3] };
+			}
+			out.indices.assign(in.Indices.begin(), in.Indices.end());
+			// StringRegistry is editor-global and not worker-thread safe. Preserve
+			// strings here and intern them only when the render thread adopts this job.
+			result.names[i].first = in.MeshName;
+			result.names[i].second = in.MaterialIndex < source.Materials.size() ? source.Materials[in.MaterialIndex].MaterialName : "";
+			out.bounds = BoundsOf(out.vertices);
+		}
+			result.success = true;
+		}
+		catch (const std::exception& e)
+		{
+			result.error = std::string("FBX conversion failed: ") + e.what();
+		}
+		catch (...)
+		{
+			result.error = "FBX conversion failed with an unknown error";
+		}
+		return result;
+	}
+}
+
+struct ModelFactory::AsyncImportJob
+{
+	StringId path;
+	std::string resolvedPath;
+	std::string cachePath;
+	std::future<CpuImportResult> future;
+};
+
+std::shared_ptr<Model> ModelFactory::GetLoadedModel(StringId path) const
+{
+	const auto it = myLoadedModels.find(path);
+	return it == myLoadedModels.end() ? nullptr : it->second;
+}
+
+bool ModelFactory::IsAsyncImportPending(StringId path) const
+{
+	std::scoped_lock lock(myAsyncImportMutex);
+	return myAsyncImportJobs.contains(path);
+}
+
+void ModelFactory::RequestAsyncImport(StringId path)
+{
+	if (path.IsEmpty() || GetLoadedModel(path) || IsAsyncImportPending(path)) return;
+	FilePathStream resolved;
+	if (!Settings::ResolveAssetPath(path, resolved)) return;
+	const std::string resolvedPath = resolved.GetData();
+	const std::string cachePath = MeshCachePath(path.GetString());
+	// Cache adoption is already CPU-light and performs GPU creation on this
+	// render thread, so do it immediately rather than needlessly reparsing FBX.
+	auto cached = std::make_shared<Model>();
+	if (TryLoadMeshCache(cachePath, resolved.GetData(), cached.get(), resolvedPath))
+	{
+		AssignDefaultMaterials(path, cached.get());
+		myLoadedModels[path] = std::move(cached);
+		if (myWatchedPaths.insert(path).second)
+			Application::GetInstance()->GetFileWatcher()->WatchFileChange(resolved.GetStringView(), std::bind(&Tga::ModelFactory::OnModelChanged, this, path));
+		INFO_PRINT("FBX import: cache hit '%s'", path.GetString());
+		return;
+	}
+
+	auto job = std::make_shared<AsyncImportJob>();
+	job->path = path;
+	job->resolvedPath = resolvedPath;
+	job->cachePath = cachePath;
+	INFO_PRINT("FBX import: queued '%s' on worker", path.GetString());
+	job->future = std::async(std::launch::async, [absolute = job->resolvedPath]() { return ImportStaticFbxCpu(absolute); });
+	std::scoped_lock lock(myAsyncImportMutex);
+	myAsyncImportJobs.emplace(path, std::move(job));
+}
+
+void ModelFactory::PumpAsyncImports()
+{
+	std::vector<std::shared_ptr<AsyncImportJob>> ready;
+	{
+		std::scoped_lock lock(myAsyncImportMutex);
+		for (auto it = myAsyncImportJobs.begin(); it != myAsyncImportJobs.end();)
+		{
+			if (it->second->future.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+			{
+				ready.push_back(it->second); it = myAsyncImportJobs.erase(it);
+			}
+			else ++it;
+		}
+	}
+	for (const auto& job : ready)
+	{
+		CpuImportResult result;
+		try { result = job->future.get(); }
+		catch (const std::exception& e)
+		{
+			ERROR_PRINT("FBX import: worker crashed for '%s': %s", job->path.GetString(), e.what());
+			continue;
+		}
+		catch (...)
+		{
+			ERROR_PRINT("FBX import: worker crashed for '%s'", job->path.GetString());
+			continue;
+		}
+		if (!result.success)
+		{
+			ERROR_PRINT("FBX import: worker failed '%s': %s", job->path.GetString(), result.error.c_str());
+			continue;
+		}
+		INFO_PRINT("FBX import: worker complete '%s'; uploading %zu merged mesh buffer(s)", job->path.GetString(), result.meshes.size());
+		for (size_t i = 0; i < result.meshes.size(); ++i)
+		{
+			result.meshes[i].name = StringRegistry::RegisterOrGetString(result.names[i].first);
+			result.meshes[i].materialName = StringRegistry::RegisterOrGetString(result.names[i].second);
+		}
+		MergeMeshesByMaterial(result.meshes); // GPU creation happens here, on the render thread.
+		auto model = std::make_shared<Model>();
+		model->Init(result.meshes, job->resolvedPath);
+		WriteMeshCache(job->cachePath, job->resolvedPath.c_str(), result.meshes);
+		AssignDefaultMaterials(job->path, model.get());
+		myLoadedModels[job->path] = std::move(model);
+		if (myWatchedPaths.insert(job->path).second)
+			Application::GetInstance()->GetFileWatcher()->WatchFileChange(job->resolvedPath, std::bind(&Tga::ModelFactory::OnModelChanged, this, job->path));
+		INFO_PRINT("FBX import: ready '%s'", job->path.GetString());
+	}
+}
+
 std::shared_ptr<Model> ModelFactory::LoadModel(StringId someFilePath)
 {
 	if (someFilePath.IsEmpty())
@@ -1675,18 +2032,24 @@ std::shared_ptr<Model> ModelFactory::LoadModel(StringId someFilePath)
 	const std::string resolvedStr = std::string(resolved_path.GetStringView());
 	const std::string cachePath = MeshCachePath(someFilePath.GetString());
 	{
+		const auto cacheStart = std::chrono::steady_clock::now();
 		auto cachedModel = std::make_shared<Model>();
 		if (TryLoadMeshCache(cachePath, resolved_path.GetData(), cachedModel.get(), resolvedStr))
 		{
 			AssignDefaultMaterials(someFilePath, cachedModel.get());
 			myLoadedModels.insert(std::pair<StringId, std::shared_ptr<Model>>(someFilePath, cachedModel));
+			const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - cacheStart).count();
+			INFO_PRINT("FBX import: cache hit '%s' (%zu meshes, %.0f ms)", someFilePath.GetString(), cachedModel->GetMeshCount(), ms);
 			return cachedModel;
 		}
 	}
 
+	const auto importStart = std::chrono::steady_clock::now();
+	INFO_PRINT("FBX import: parsing '%s' (cache miss; large files can take a while)", someFilePath.GetString());
 	TGA::FBX::Mesh tgaModel;
 	if (TGA::FBX::Importer::LoadMeshA(resolved_path.GetData(), tgaModel))
 	{
+		INFO_PRINT("FBX import: parsed '%s'; converting %zu mesh element(s)", someFilePath.GetString(), tgaModel.Elements.size());
 		Skeleton mdlSkeleton;
 
 		if (tgaModel.Skeleton.GetRoot())
@@ -1724,6 +2087,13 @@ std::shared_ptr<Model> ModelFactory::LoadModel(StringId someFilePath)
 		// Convert model to our own format.
 		for (size_t i = 0; i < tgaModel.Elements.size(); i++)
 		{
+			// The FBX SDK parse itself is opaque, but conversion can take just as
+			// long on very dense meshes. Emit bounded progress messages so the
+			// editor console makes forward progress visible without log spam.
+			const size_t progressStep = std::max<size_t>(1, tgaModel.Elements.size() / 10);
+			if (i == 0 || i + 1 == tgaModel.Elements.size() || ((i + 1) % progressStep) == 0)
+				INFO_PRINT("FBX import: converting '%s' %zu/%zu", someFilePath.GetString(), i + 1, tgaModel.Elements.size());
+
 			// The imported element data.
 			TGA::FBX::Mesh::Element& element = tgaModel.Elements[i];
 
@@ -1790,38 +2160,6 @@ std::shared_ptr<Model> ModelFactory::LoadModel(StringId someFilePath)
 			memcpy(meshData.indices.data(), element.Indices.data(), sizeof(unsigned int) * element.Indices.size());
 			//meshData.Indices = element.Indices;
 
-			rhi::BufferDesc vertexBufferDesc{};
-			vertexBufferDesc.byteSize = static_cast<UINT>(meshData.vertices.size()) * static_cast<UINT>(sizeof(Vertex));
-			vertexBufferDesc.stride = sizeof(Vertex);
-			vertexBufferDesc.usage = rhi::BufferUsage::Vertex;
-			vertexBufferDesc.memory = rhi::MemoryType::Default;
-			vertexBufferDesc.debugName = "Mesh_VB";
-
-			rhi::BufferHandle vertexBuffer = DX11::Rhi()->CreateBuffer(vertexBufferDesc, &meshData.vertices[0]);
-			if (!vertexBuffer.IsValid())
-			{
-				return nullptr;
-			}
-
-			rhi::BufferDesc indexBufferDesc{};
-			indexBufferDesc.byteSize = static_cast<UINT>(meshData.indices.size()) * static_cast<UINT>(sizeof(float)); // TODO: What :P Sizeof should be uint.
-			indexBufferDesc.stride = sizeof(unsigned int);
-			indexBufferDesc.usage = rhi::BufferUsage::Index;
-			indexBufferDesc.memory = rhi::MemoryType::Default;
-			indexBufferDesc.debugName = "Mesh_IB";
-
-			rhi::BufferHandle indexBuffer = DX11::Rhi()->CreateBuffer(indexBufferDesc, &meshData.indices[0]);
-			if (!indexBuffer.IsValid())
-			{
-				return nullptr;
-			}
-
-			meshData.numberOfVertices = static_cast<UINT>(meshData.vertices.size());
-			meshData.numberOfIndices = static_cast<UINT>(meshData.indices.size());
-			meshData.stride = sizeof(Vertex);
-			meshData.offset = 0;
-			meshData.vertexBuffer = vertexBuffer;
-			meshData.indexBuffer = indexBuffer;
 			meshData.name = StringRegistry::RegisterOrGetString(element.MeshName);
 			if (tgaModel.Materials.size() > element.MaterialIndex)
 			{
@@ -1836,13 +2174,20 @@ std::shared_ptr<Model> ModelFactory::LoadModel(StringId someFilePath)
 
 		std::shared_ptr<Model> model = std::make_shared<Model>();
 
-		// Static meshes: collapse same-material sub-meshes before Init so the cache
-		// stores the merged form. Skinned meshes keep their sub-mesh split.
-		if (mdlSkeleton.joints.empty())
-			MergeMeshesByMaterial(mdlMeshData);
+		// Collapse same-material sub-meshes before creating any GPU buffers, for
+		// both static and skinned imports. This used to be static-only (skinned
+		// models kept every raw submesh and uploaded them individually), which
+		// meant a dense skinned FBX could blow straight through
+		// MAX_MESHES_PER_MODEL on raw element count alone -- merging is what
+		// actually keeps something like Bistro (1000+ raw FBX elements, ~132
+		// materials) under that ceiling, not raising the ceiling itself. Merging
+		// is bone-index-agnostic (see MergeMeshesByMaterial's comment), so this
+		// is safe for skinned meshes too.
+		const bool isStaticMesh = mdlSkeleton.joints.empty();
+		MergeMeshesByMaterial(mdlMeshData);
 
 		model->Init(mdlMeshData, std::string(resolved_path.GetStringView()));
-		if (mdlSkeleton.joints.size() > 0)
+		if (!isStaticMesh)
 		{
 			model->mySkeleton = std::make_shared<Skeleton>(std::move(mdlSkeleton));
 		}
@@ -1853,10 +2198,14 @@ std::shared_ptr<Model> ModelFactory::LoadModel(StringId someFilePath)
 		}
 		AssignDefaultMaterials(someFilePath, model.get());
 		myLoadedModels.insert(std::pair<StringId, std::shared_ptr<Model>>(someFilePath, model));
+		const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - importStart).count();
+		INFO_PRINT("FBX import: ready '%s' (%zu mesh(es), %.2f s)%s", someFilePath.GetString(), model->GetMeshCount(), seconds,
+			isStaticMesh ? "; static cache written for next load" : "");
 
 		return model;
 	}
 
+	ERROR_PRINT("FBX import: failed while parsing '%s'", someFilePath.GetString());
 	return nullptr;
 }
 

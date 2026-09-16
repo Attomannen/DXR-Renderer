@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include "tge/rhi/Device.h"
 
 namespace Tga::rhi
@@ -8,11 +9,11 @@ namespace Tga::rhi
 	// D3D11_SHADER_RESOURCE_VIEW_DESC + CreateShaderResourceView (+ UAV)"
 	// boilerplate with one type -- one place to change for DX12.
 	//
-	// Two flavours: CPU-updated (Upload memory, `Update()` does a
-	// Map(WRITE_DISCARD)-equivalent via IDevice::AllocateDynamicConstants-style
-	// upload) for buffers the CPU fills every frame (lights, local shadow
-	// transforms), or GPU-only (Default memory, no `Update()`) for buffers a
-	// compute shader writes via its UAV (cluster lists, GI SH coefficients).
+	// Two flavours: CPU-updated (Upload memory, with frame-owned backing
+	// resources on DX12) for buffers the CPU fills every frame (lights, local
+	// shadow transforms), or GPU-only (Default memory, no `Update()`) for
+	// buffers a compute shader writes via its UAV (cluster lists, GI SH
+	// coefficients).
 	class StructuredBuffer
 	{
 	public:
@@ -27,46 +28,88 @@ namespace Tga::rhi
 			bd.usage     = BufferUsage::Structured | (aWithUav ? BufferUsage::UAV : BufferUsage::None);
 			bd.memory    = aCpuUpdatable ? MemoryType::Upload : MemoryType::Default;
 			bd.debugName = aDebugName;
-			myBuffer = aDevice.CreateBuffer(bd);
-			if (!myBuffer.IsValid())
-				return;
-
-			SrvDesc sd = {};
-			sd.asStructuredOrRaw = true;
-			sd.bufferNumElements = aElementCount;
-			mySrv = aDevice.CreateSrv(myBuffer, sd);
-
-			if (aWithUav)
+			myDevice = &aDevice;
+			myCpuUpdatable = aCpuUpdatable;
+			mySlotCount = (aCpuUpdatable && aDevice.GetBackend() == Backend::DX12) ? kDx12SlotCount : 1;
+			myCapacity = bd.byteSize;
+			for (uint32_t i = 0; i < mySlotCount; ++i)
 			{
-				UavDesc ud = {};
-				ud.bufferNumElements = aElementCount;
-				myUav = aDevice.CreateUav(myBuffer, ud);
+				myBuffers[i] = aDevice.CreateBuffer(bd);
+				if (!myBuffers[i].IsValid())
+					continue;
+
+				SrvDesc sd = {};
+				sd.bufferType = BufferSrvType::Structured;
+				sd.bufferNumElements = aElementCount;
+				mySrvs[i] = aDevice.CreateSrv(myBuffers[i], sd);
+
+				if (aWithUav)
+				{
+					UavDesc ud = {};
+					ud.bufferNumElements = aElementCount;
+					myUavs[i] = aDevice.CreateUav(myBuffers[i], ud);
+				}
 			}
 		}
 
 		void Destroy(IDevice& aDevice)
 		{
-			if (myUav.IsValid())    aDevice.Destroy(myUav);
-			if (mySrv.IsValid())    aDevice.Destroy(mySrv);
-			if (myBuffer.IsValid()) aDevice.Destroy(myBuffer);
-			myUav = {}; mySrv = {}; myBuffer = {};
+			for (uint32_t i = 0; i < mySlotCount; ++i)
+			{
+				if (myUavs[i].IsValid())    aDevice.Destroy(myUavs[i]);
+				if (mySrvs[i].IsValid())    aDevice.Destroy(mySrvs[i]);
+				if (myBuffers[i].IsValid()) aDevice.Destroy(myBuffers[i]);
+				myUavs[i] = {}; mySrvs[i] = {}; myBuffers[i] = {};
+			}
+			myDevice = nullptr;
+			mySlotCount = 0;
+			myCapacity = 0;
+			myActiveSlot = 0;
+			myLastFrame = ~0u;
+			myUpdatesThisFrame = 0;
 		}
 
-		bool IsValid() const { return myBuffer.IsValid() && mySrv.IsValid(); }
+		bool IsValid() const { return myBuffers[myActiveSlot].IsValid() && mySrvs[myActiveSlot].IsValid(); }
 
-		BufferHandle Handle() const { return myBuffer; }
-		SrvHandle    Srv() const    { return mySrv; }
-		UavHandle    Uav() const    { return myUav; }
+		BufferHandle Handle() const { return myBuffers[myActiveSlot]; }
+		SrvHandle    Srv() const    { return mySrvs[myActiveSlot]; }
+		UavHandle    Uav() const    { return myUavs[myActiveSlot]; }
 
 		// CPU-updated buffers only (created with aCpuUpdatable = true).
-		void Update(ICommandContext& aCtx, const void* aData, uint32_t aByteSize) const
+		void Update(ICommandContext& aCtx, const void* aData, uint32_t aByteSize)
 		{
-			aCtx.UpdateBuffer(myBuffer, aData, aByteSize);
+			if (!myCpuUpdatable || !myDevice)
+				return;
+			const uint32_t frame = myDevice->GetFrameIndex();
+			if (frame != myLastFrame)
+			{
+				myLastFrame = frame;
+				myUpdatesThisFrame = 0;
+			}
+			const uint32_t frameBase = (frame % kDx12FramesInFlight) * kUpdatesPerFrame;
+			const uint32_t update = mySlotCount > 1
+				? (myUpdatesThisFrame < kUpdatesPerFrame ? myUpdatesThisFrame++ : kUpdatesPerFrame - 1)
+				: 0;
+			myActiveSlot = mySlotCount > 1 ? frameBase + update : 0;
+			aCtx.UpdateBuffer(myBuffers[myActiveSlot], aData, aByteSize < myCapacity ? aByteSize : (uint32_t)myCapacity);
 		}
 
 	private:
-		BufferHandle myBuffer;
-		SrvHandle    mySrv;
-		UavHandle    myUav;
+		// Structured lighting data is normally updated once, but the local-shadow
+		// pass patches light slots and submits a second version.  As with CBVs,
+		// each version needs its own DX12 resource until the frame's fence retires.
+		static constexpr uint32_t kDx12FramesInFlight = 2; // keep in sync with Dx12Device
+		static constexpr uint32_t kUpdatesPerFrame = 4;
+		static constexpr uint32_t kDx12SlotCount = kDx12FramesInFlight * kUpdatesPerFrame;
+		std::array<BufferHandle, kDx12SlotCount> myBuffers = {};
+		std::array<SrvHandle, kDx12SlotCount> mySrvs = {};
+		std::array<UavHandle, kDx12SlotCount> myUavs = {};
+		IDevice* myDevice = nullptr;
+		uint64_t myCapacity = 0;
+		uint32_t mySlotCount = 0;
+		uint32_t myActiveSlot = 0;
+		uint32_t myLastFrame = ~0u;
+		uint32_t myUpdatesThisFrame = 0;
+		bool myCpuUpdatable = false;
 	};
 }

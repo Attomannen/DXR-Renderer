@@ -52,6 +52,9 @@ namespace Tga
 		bool IsDebugFeatureOn(DebugFeature aFeature) const;
 
 		void SetResolution(const Vector2ui &aResolution);
+		// Request swapchain/dependent-renderer resizing at the normal frame
+		// boundary. Used by fullscreen transitions as well as WM_SIZE.
+		void RequestResize() { myWantToUpdateSize = true; }
 
 		void SetClearColor(const Color& aClearColor);
         const Color& GetClearColor() const { return myWindowConfiguration.clearColor; }

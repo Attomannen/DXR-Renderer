@@ -31,6 +31,16 @@ namespace Tga
 		//void SetPerforceInfo(const P4::FileInfo& someInfo);
 
 		const RenderTarget& GetIdRenderTarget() const { return myIdTarget; }
+		// Exposed so a pluggable EditorGraphics backend (DefaultEditorGraphics,
+		// specifically DefaultSceneEditorGraphics) can point DeferredRenderer's
+		// hardcoded DX11::BackBuffer/DepthBuffer globals at THIS viewport's own
+		// targets for the duration of one deferred-rendered frame, then restore
+		// them -- see DeferredRenderer's Composite()/BeginGeometryPass(), which
+		// assume those globals rather than taking an explicit render target.
+		// EditorViewport itself stays graphics-backend-agnostic; it just owns
+		// the resources being pointed at.
+		RenderTarget& GetRenderTarget() { return myRenderTarget; }
+		DepthBuffer& GetColorDepthBuffer() { return myDepth; }
 
 		inline const Vector2i& GetViewportSize() const;
 		inline const Vector2i& GetViewportPos() const;

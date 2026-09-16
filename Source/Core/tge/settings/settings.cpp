@@ -318,6 +318,12 @@ bool Tga::LoadSettings(const std::string& aProjectName)
 			Settings::locWindowParams.borderless = app;
 		}
 	}
+	{
+		auto& app = game_settings["window_settings"]["keep_aspect_ratio"];
+		if (!app.is_null()) {
+			Settings::locWindowParams.keepAspectRatio = app;
+		}
+	}
 
 	/////////////////////////////////////
 	// Debug systems

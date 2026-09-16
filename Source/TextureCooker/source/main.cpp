@@ -10,6 +10,9 @@
 //     _n   BC5_UNORM        R   = Normal.X             G = Normal.Y   (Z rebuilt in shader)
 //     _fx  BC7_UNORM        R   = Emissive mask        G = Height / Displacement
 //
+//  Bare .hdr files are treated as environment panoramas and written as
+//  <stem>.dds in linear R16G16B16A16_FLOAT (mipped, never BC-compressed).
+//
 //  Optional: reads an .fbx (ufbx) to name outputs after real material names and
 //  to emit a .tgo object-definition / .tgm import descriptor.
 //
@@ -37,6 +40,7 @@
 
 #include <ufbx/ufbx.h>
 #include <nlohmann/json.hpp>
+#include "../../Core/tge/EngineDefines.h"
 
 #include <d3d11.h>
 #include <wrl/client.h>
@@ -47,13 +51,17 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
+#include <cstring>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -101,15 +109,19 @@ struct Log
 {
 	bool quiet = false;
 	mutable std::mutex mtx;
-	void info(const std::string& m) const { if (quiet) return; std::lock_guard lk(mtx); std::cout << m << "\n"; }
-	void warn(const std::string& m) const { std::lock_guard lk(mtx); std::cout << "  [warn] " << m << "\n"; }
-	void err(const std::string& m)  const { std::lock_guard lk(mtx); std::cerr << "  [error] " << m << "\n"; }
+	// Explicit flush on every line: stdout is fully buffered (not line-buffered)
+	// once redirected to a file/pipe, so without this a crash mid-cook loses
+	// every log line still sitting in the buffer -- exactly the information
+	// needed to tell which texture it was on when it went down.
+	void info(const std::string& m) const { if (quiet) return; std::lock_guard lk(mtx); std::cout << m << "\n"; std::cout.flush(); }
+	void warn(const std::string& m) const { std::lock_guard lk(mtx); std::cout << "  [warn] " << m << "\n"; std::cout.flush(); }
+	void err(const std::string& m)  const { std::lock_guard lk(mtx); std::cerr << "  [error] " << m << "\n"; std::cerr.flush(); }
 };
 static Log gLog;
 static std::mutex gGpuMtx;   // ID3D11 immediate context (DirectXTex GPU Compress) is not thread-safe
 
 // ------------------------------------------------------------------ channel roles
-enum class Role { Color, Normal, Roughness, Metalness, AO, Emissive, Height, Opacity, PackedM, PackedFx, Unknown };
+enum class Role { Color, Normal, Roughness, Metalness, AO, Emissive, Height, Opacity, PackedM, PackedFx, Specular, Unknown };
 
 struct SuffixRule { const char* suffix; Role role; };
 
@@ -151,9 +163,23 @@ static const SuffixRule kSuffixRules[] = {
 	// Pre-packed AO/Roughness/Metalness in RGB -> straight to the _M output.
 	// Unreal's "OcclusionRoughnessMetallic" export is exactly R=AO G=Rough B=Metal.
 	{ "_occlusionroughnessmetallic", Role::PackedM },
-	{ "_orm", Role::PackedM },   { "_arm", Role::PackedM },
+	{ "_metallicroughnessao", Role::PackedM },
+	{ "_roughnessmetallicao", Role::PackedM },
+	// glTF's 2-channel metallicRoughness export (no AO channel: R unused).
+	{ "_metallicroughness", Role::PackedM }, { "_roughnessmetallic", Role::PackedM },
+	{ "_maskmap", Role::PackedM }, { "_mask_map", Role::PackedM },
+	{ "_rma", Role::PackedM }, { "_mra", Role::PackedM }, { "_arm", Role::PackedM },
+	{ "_orm", Role::PackedM },
 	{ "_m", Role::PackedM },
 	{ "_fx", Role::PackedFx },
+
+	// Legacy spec/gloss workflow (CryEngine/Lumberyard assets, e.g. Amazon
+	// Bistro): RGB = specular color/intensity, alpha = glossiness. Converted
+	// to the engine's metal/rough ORM output below rather than dropped --
+	// leaving these unclassified silently starved every such material of any
+	// non-default roughness/metalness, since no other role ever claims them.
+	{ "_specularglossiness", Role::Specular }, { "_specgloss", Role::Specular },
+	{ "_specular", Role::Specular },           { "_spec", Role::Specular },
 };
 
 static const char* RoleName(Role r)
@@ -165,6 +191,7 @@ static const char* RoleName(Role r)
 	case Role::AO: return "ao"; case Role::Emissive: return "emissive";
 	case Role::Height: return "height"; case Role::Opacity: return "opacity";
 	case Role::PackedM: return "packed_m"; case Role::PackedFx: return "packed_fx";
+	case Role::Specular: return "specular";
 	default: return "unknown";
 	}
 }
@@ -178,6 +205,10 @@ struct MatOverride
 	float emissiveStrength = -1.0f;   // <0 = unset; resolves to 1.0 at use
 	std::optional<bool> flipGreen;
 	std::optional<bool> srcNormalsGl;                // "gl" -> true, "dx" -> false
+	// Semantic labels for source RGBA channels in a packed material map.
+	// "rma" means R=roughness, G=metalness, B=AO. "ma-s" is Unity's
+	// Mask Map: R=metalness, G=AO, A=smoothness (inverted to roughness).
+	std::optional<std::string> packedMLayout;
 	std::map<int, std::string> explicitInputs;       // Role (as int) -> source filename, for oddly-named assets
 
 	void mergeFrom(const MatOverride& o)             // 'o' fills only what we lack
@@ -190,9 +221,10 @@ struct MatOverride
 		if (emissiveStrength < 0.f) emissiveStrength = o.emissiveStrength;
 		if (!flipGreen) flipGreen = o.flipGreen;
 		if (!srcNormalsGl) srcNormalsGl = o.srcNormalsGl;
+		if (!packedMLayout) packedMLayout = o.packedMLayout;
 		for (auto& [k, v] : o.explicitInputs) explicitInputs.try_emplace(k, v);
 	}
-	bool definesAnyChannel() const { return baseColor || roughness || metalness || ao || emissive || !explicitInputs.empty(); }
+	bool definesAnyChannel() const { return baseColor || roughness || metalness || ao || emissive || packedMLayout || !explicitInputs.empty(); }
 };
 
 static uint8_t ToByte(float linear01) { return (uint8_t)std::clamp((int)std::lround(linear01 * 255.0f), 0, 255); }
@@ -208,6 +240,7 @@ static Role RoleFromName(std::string s)
 	if (s == "emissive" || s == "emission" || s == "e") return Role::Emissive;
 	if (s == "height" || s == "displacement" || s == "h") return Role::Height;
 	if (s == "opacity" || s == "alpha" || s == "mask") return Role::Opacity;
+	if (s == "packed_m" || s == "orm" || s == "rma" || s == "mra" || s == "arm" || s == "maskmap") return Role::PackedM;
 	return Role::Unknown;
 }
 
@@ -253,6 +286,14 @@ static bool ParseOverride(const json& j, MatOverride& o)
 		if (j.contains("emissiveStrength")) o.emissiveStrength = j["emissiveStrength"].get<float>();
 		if (j.contains("flipGreen"))        o.flipGreen = j["flipGreen"].get<bool>();
 		if (j.contains("srcNormals"))       o.srcNormalsGl = (ToLower(j["srcNormals"].get<std::string>()) != "dx");
+		if (j.contains("packedMLayout"))
+		{
+			std::string layout = ToLower(j["packedMLayout"].get<std::string>());
+			const bool validLength = layout.size() == 3 || layout.size() == 4;
+			const bool validChars = std::all_of(layout.begin(), layout.end(), [](char c) { return c == 'a' || c == 'r' || c == 'm' || c == 's' || c == '-'; });
+			if (!validLength || !validChars) gLog.warn("cook.json packedMLayout must use 3-4 RGBA labels from a,r,m,s,-");
+			else o.packedMLayout = layout;
+		}
 		if (j.contains("inputs"))
 		{
 			for (auto it = j["inputs"].begin(); it != j["inputs"].end(); ++it)
@@ -302,6 +343,21 @@ static bool LoadManifest(const fs::path& file, Manifest& m)
 static bool Classify(const fs::path& file, std::string& outKey, Role& outRole)
 {
 	const std::string stem = file.stem().string();
+	// Artists commonly export colour variations as e.g.
+	// `Fabric_Curtain_Diffuse_Red`. Treat the trailing variation as part of
+	// the material key rather than discarding the whole map as unclassified.
+	// Shared normal/ORM maps are inherited by the variation below.
+	for (const char* marker : { "_basecolor_", "_base_color_", "_albedo_", "_diffuse_", "_color_" })
+	{
+		const std::string lowerStem = ToLower(stem);
+		const size_t pos = lowerStem.rfind(marker);
+		if (pos != std::string::npos && pos + strlen(marker) < stem.size())
+		{
+			outKey = TrimSeparators(stem.substr(0, pos)) + "_" + stem.substr(pos + strlen(marker));
+			outRole = Role::Color;
+			return true;
+		}
+	}
 	size_t bestLen = 0; Role bestRole = Role::Unknown;
 	for (const SuffixRule& rule : kSuffixRules)
 	{
@@ -327,7 +383,9 @@ static bool IsImageExt(const fs::path& p)
 }
 
 // ------------------------------------------------------------------ image helpers
-// Load any supported source and return it as a single-mip R8G8B8A8_UNORM scratch.
+// Load any supported material source and return it as a single-mip
+// R8G8B8A8_UNORM scratch. HDR environment sources use LoadHDRFloat below;
+// routing them through this helper would quantise away their luminance range.
 static bool LoadRGBA8(const fs::path& path, ScratchImage& out)
 {
 	const std::string e = ToLower(path.extension().string());
@@ -337,8 +395,12 @@ static bool LoadRGBA8(const fs::path& path, ScratchImage& out)
 	if (e == ".dds")      hr = LoadFromDDSFile(path.c_str(), DDS_FLAGS_NONE, &meta, raw);
 	else if (e == ".tga") hr = LoadFromTGAFile(path.c_str(), &meta, raw);
 	else if (e == ".hdr") hr = LoadFromHDRFile(path.c_str(), &meta, raw);
-	else                  hr = LoadFromWICFile(path.c_str(), WIC_FLAGS_NONE, &meta, raw);
+	else                  hr = LoadFromWICFile(path.c_str(), WIC_FLAGS_IGNORE_SRGB, &meta, raw);
 	if (FAILED(hr)) { gLog.err("load failed (0x" + std::to_string((unsigned)hr) + "): " + path.string()); return false; }
+	// Preserve encoded channel values. Semantic colour-space handling happens
+	// when packing C; normals, roughness, AO and masks must never be gamma decoded.
+	raw.OverrideFormat(MakeLinear(raw.GetMetadata().format));
+	meta = raw.GetMetadata();
 
 	if (IsCompressed(meta.format))
 	{
@@ -360,6 +422,46 @@ static bool LoadRGBA8(const fs::path& path, ScratchImage& out)
 	ScratchImage top;
 	top.InitializeFromImage(*raw.GetImage(0, 0, 0));
 	out = std::move(top);
+	return true;
+}
+
+// Load a Radiance HDR panorama without converting it through an 8-bit format.
+// The engine's HDR render targets and equirectangular converter use half-float
+// RGBA, so this keeps the full useful HDR range while remaining broadly
+// supported by D3D11/D3D12 texture loaders. The source may be RGB or RGBA;
+// Convert supplies an opaque alpha channel for RGB input.
+static bool LoadHDRFloat(const fs::path& path, ScratchImage& out)
+{
+	ScratchImage raw;
+	TexMetadata meta{};
+	const HRESULT hr = LoadFromHDRFile(path.c_str(), &meta, raw);
+	if (FAILED(hr))
+	{
+		gLog.err("HDR load failed (0x" + std::to_string((unsigned)hr) + "): " + path.string());
+		return false;
+	}
+
+	const Image* image = raw.GetImage(0, 0, 0);
+	if (!image)
+	{
+		gLog.err("HDR has no image: " + path.string());
+		return false;
+	}
+
+	if (image->format == DXGI_FORMAT_R16G16B16A16_FLOAT)
+	{
+		out.InitializeFromImage(*image);
+		return true;
+	}
+
+	ScratchImage converted;
+	if (FAILED(Convert(*image, DXGI_FORMAT_R16G16B16A16_FLOAT,
+		TEX_FILTER_DEFAULT, TEX_THRESHOLD_DEFAULT, converted)))
+	{
+		gLog.err("HDR float conversion failed: " + path.string());
+		return false;
+	}
+	out = std::move(converted);
 	return true;
 }
 
@@ -394,6 +496,7 @@ struct MaterialGroup
 {
 	std::string key;                                  // material key derived from filenames
 	std::map<Role, Source> maps;                      // role -> source file
+	std::string packedMLayout;                        // inferred from a known packed-map suffix
 	fs::file_time_type newestInput{};
 
 	MaterialGroup() = default;
@@ -402,6 +505,26 @@ struct MaterialGroup
 	MaterialGroup(const MaterialGroup&) = delete;
 	MaterialGroup& operator=(const MaterialGroup&) = delete;
 };
+
+// Layout labels describe source RGBA channels. A dash means unused and s is
+// smoothness, which is inverted when writing the engine's roughness channel.
+static std::string InferPackedMLayout(const fs::path& file)
+{
+	const std::string stem = ToLower(file.stem().string());
+	if (IEndsWith(stem, "_maskmap") || IEndsWith(stem, "_mask_map")) return "ma-s"; // Unity HDRP/URP mask map
+	if (IEndsWith(stem, "_rma")) return "rma";
+	if (IEndsWith(stem, "_mra")) return "mra";
+	if (IEndsWith(stem, "_arm")) return "arm";
+	// glTF core metallicRoughness has no occlusion channel: R is unused, G=roughness, B=metalness.
+	if (IEndsWith(stem, "_metallicroughness") || IEndsWith(stem, "_roughnessmetallic")) return "-rm";
+	return "orm";
+}
+
+static int PackedChannel(const std::string& layout, char semantic)
+{
+	const size_t pos = layout.find(semantic);
+	return pos == std::string::npos || pos > 3 ? -1 : (int)pos;
+}
 
 // pixel-space channel picker
 static uint8_t Pick(const uint8_t* px, int comp) { return px[comp]; } // 0=R 1=G 2=B 3=A
@@ -506,9 +629,25 @@ struct Compressor
 		{
 			HRESULT hr;
 			{
-				std::lock_guard lk(gGpuMtx);   // immediate context is single-threaded
+				// DirectXTex's GPU BC7 compressor is driven through one ID3D11
+				// immediate context, which is not thread-safe to call concurrently.
+				// An earlier version of this tool tried giving each worker thread
+				// its own independent device to avoid this lock entirely; running
+				// several such devices' compute dispatches at once against the
+				// same physical GPU from separate threads deadlocked in testing
+				// (most likely a driver-level stall/TDR, not something DirectXTex's
+				// GPU BC7 path is verified safe for). One shared device behind a
+				// mutex is the version actually proven to work.
+				std::lock_guard lk(gGpuMtx);
+				// This call is fully serialized across all worker threads (see the
+				// mutex comment above), so its per-texture cost is on the wall-clock
+				// critical path for the whole cook, unlike the CPU compressor which
+				// runs unlocked and benefits from --jobs. BC7_QUICK trades a bit of
+				// block-mode search quality for a meaningfully faster GPU shader
+				// pass -- worth it here specifically because this path can't be
+				// parallelized the way everything else in the cooker is.
 				hr = DirectX::Compress(device.Get(), src.GetImages(), src.GetImageCount(), src.GetMetadata(),
-					fmt, TEX_COMPRESS_DEFAULT, 1.0f, out);
+					fmt, TEX_COMPRESS_BC7_QUICK, 1.0f, out);
 			}
 			if (SUCCEEDED(hr)) return true;
 			gLog.warn("GPU compress failed, retrying on CPU");
@@ -526,7 +665,31 @@ struct Compressor
 		return SUCCEEDED(hr);
 	}
 };
+
 static Compressor gComp;
+
+// Small blocking counting semaphore (pre-C++20 <semaphore>). Bounds how many
+// nvcompress.exe subprocesses run at once instead of forcing them all onto
+// one at a time.
+struct Semaphore
+{
+	std::mutex m;
+	std::condition_variable cv;
+	int count;
+	explicit Semaphore(int initial) : count(initial) {}
+	void acquire() { std::unique_lock lk(m); cv.wait(lk, [&] { return count > 0; }); --count; }
+	void release() { { std::lock_guard lk(m); ++count; } cv.notify_one(); }
+};
+struct NvttSlot
+{
+	Semaphore& sem;
+	explicit NvttSlot(Semaphore& s) : sem(s) { sem.acquire(); }
+	~NvttSlot() { sem.release(); }
+};
+// Capped rather than sized to hardware_concurrency: many concurrent CUDA BC7
+// encodes on one GPU (e.g. during a large Bistro-sized import) risk driver
+// instability/VRAM pressure that pure CPU-thread counts don't.
+static Semaphore gNvttSlots(4);
 
 // ------------------------------------------------------------------ NVTT backend
 // Optional: when NVIDIA Texture Tools is installed, delegate the BC step to
@@ -547,7 +710,26 @@ struct Nvtt
 		std::error_code ec;
 		for (const auto& c : candidates)
 		{
-			if (c.filename() == "nvcompress.exe" && (c == fs::path("nvcompress.exe") || fs::exists(c, ec)))
+			if (c.filename() != "nvcompress.exe") continue;
+			// A bare "nvcompress.exe" PATH candidate used to be treated as
+			// available unconditionally (the `c == fs::path("nvcompress.exe")`
+			// side of this check was always true for that exact candidate,
+			// short-circuiting past the existence check entirely). On a
+			// machine without NVTT installed, that meant every single BC7/BC5
+			// output spent a full failed subprocess launch (spawn + Windows
+			// "not recognized" + wait) before falling back to DirectXTex --
+			// hundreds of wasted process creations across a large import like
+			// Bistro. SearchPathW does the same lookup cmd.exe would actually
+			// do (cwd, then PATH) so a real PATH install is still found, but a
+			// missing one is correctly reported as unavailable up front.
+			if (c == fs::path("nvcompress.exe"))
+			{
+				wchar_t found[MAX_PATH]{};
+				if (SearchPathW(nullptr, L"nvcompress.exe", nullptr, MAX_PATH, found, nullptr) == 0)
+					continue;
+				exe = c; available = true; break;
+			}
+			if (fs::exists(c, ec))
 			{
 				exe = c; available = true; break;
 			}
@@ -561,9 +743,26 @@ struct Nvtt
 	{
 		if (!available) return false;
 
-		std::lock_guard<std::mutex> lk(mtx);   // one nvcompress (CUDA) at a time
+		// Bounded concurrency, not full serialization: each call writes to its
+		// own uniquely-named temp file (outFile.stem() below) and launches an
+		// independent nvcompress.exe process, so nothing here needs mutual
+		// exclusion for correctness. The previous single mutex meant every
+		// worker thread queued behind one nvcompress invocation at a time --
+		// the same "cooking one texture at a time" bottleneck as the GPU BC7
+		// path had. A small cap (rather than unbounded, one process per worker
+		// thread) avoids piling many concurrent CUDA encodes onto the GPU at
+		// once on a large import like Bistro.
+		NvttSlot slot(gNvttSlots);
 
-		const fs::path tmp = outFile.parent_path() / (outFile.stem().string() + ".__nvtt.dds");
+		// Do not place this transient DDS beside the cooked asset.  The editor's
+		// asset browser/file watcher sees every *.dds in that directory and can
+		// try to load the scratch file after NVTT has deleted it, producing paths
+		// such as "Column_C_C.__nvtt.dds#NO_SRGB".  It is an NVTT input only, so
+		// keep it in the process temp directory instead.
+		std::error_code tempEc;
+		fs::path scratchRoot = fs::temp_directory_path(tempEc);
+		if (tempEc) scratchRoot = outFile.parent_path(); // only a last-resort fallback
+		const fs::path tmp = scratchRoot / ("tge_nvtt_" + outFile.stem().string() + ".dds");
 		std::error_code ec;
 		fs::remove(tmp, ec);
 		if (FAILED(SaveToDDSFile(*topMip.GetImage(0, 0, 0), DDS_FLAGS_NONE, tmp.c_str())))
@@ -584,8 +783,6 @@ struct Nvtt
 		if (!ok) gLog.err("nvcompress failed (rc=" + std::to_string(rc) + ") for " + outFile.filename().string());
 		return ok;
 	}
-
-	mutable std::mutex mtx;
 };
 static Nvtt gNvtt;
 
@@ -610,7 +807,17 @@ static bool Finish(ScratchImage& packed, bool srgb, DXGI_FORMAT bcFormat, const 
 		const int kind = (bcFormat == DXGI_FORMAT_BC5_UNORM) ? 2 : (srgb ? 0 : 1);
 		fs::create_directories(outFile.parent_path());
 		if (gNvtt.Compress(packed, kind, outFile))
-			return true;
+		{
+			// NVTT writes BC7 with a linear DDS tag even for encoded base color.
+			// Preserve the compressed bytes, but tag the output for its intended
+			// sampling space so consumers do not have to repair the SRV format.
+			ScratchImage encoded;
+			if (SUCCEEDED(LoadFromDDSFile(outFile.c_str(), DDS_FLAGS_NONE, nullptr, encoded))
+				&& encoded.OverrideFormat(bcFormat)
+				&& SUCCEEDED(SaveToDDSFile(encoded.GetImages(), encoded.GetImageCount(), encoded.GetMetadata(), DDS_FLAGS_NONE, outFile.c_str())))
+				return true;
+			gLog.warn("could not tag NVTT output: " + outFile.string());
+		}
 		gLog.warn("nvcompress failed, falling back to DirectXTex for " + outFile.filename().string());
 	}
 
@@ -654,11 +861,54 @@ static bool Finish(ScratchImage& packed, bool srgb, DXGI_FORMAT bcFormat, const 
 	return true;
 }
 
+// Mip and save a standalone HDR panorama as linear half-float DDS. Do not run
+// this through NVTT/BC7: those paths are intended for 8-bit material maps and
+// would either reject or quantise the HDR data. A regular mip chain keeps the
+// cooked asset usable with trilinear samplers while retaining scene-linear
+// values in every level.
+static bool FinishHDR(ScratchImage& hdr, const fs::path& outFile)
+{
+	const Image* top = hdr.GetImage(0, 0, 0);
+	if (!top)
+	{
+		gLog.err("HDR has no top mip: " + outFile.string());
+		return false;
+	}
+
+	ScratchImage mips;
+	if (FAILED(GenerateMipMaps(*top, TEX_FILTER_DEFAULT, 0, mips)))
+	{
+		gLog.err("HDR mip generation failed: " + outFile.string());
+		return false;
+	}
+	if (mips.GetMetadata().format != DXGI_FORMAT_R16G16B16A16_FLOAT)
+	{
+		gLog.err("HDR mip generation changed format unexpectedly: " + outFile.string());
+		return false;
+	}
+
+	fs::create_directories(outFile.parent_path());
+	if (FAILED(SaveToDDSFile(mips.GetImages(), mips.GetImageCount(), mips.GetMetadata(),
+		DDS_FLAGS_FORCE_DX10_EXT, outFile.c_str())))
+	{
+		gLog.err("HDR DDS save failed: " + outFile.string());
+		return false;
+	}
+
+	gLog.info("  HDR   " + outFile.filename().string() + " (R16G16B16A16_FLOAT, "
+		+ std::to_string(mips.GetMetadata().width) + "x"
+		+ std::to_string(mips.GetMetadata().height) + ", "
+		+ std::to_string(mips.GetImageCount()) + " mips)");
+	return true;
+}
+
 // ------------------------------------------------------------------ per-output cook
 struct CookOptions
 {
 	bool flipGreenToggle = false;   // --flip-green : extra XOR on top of convention
-	bool srcNormalsGl = true;       // inputs are OpenGL(+Y); engine wants DirectX(-Y) -> flip
+	// Authored texture sets are normally OpenGL/green-up. The engine's negated
+	// imported bitangent converts this correctly after cooking.
+	bool srcNormalsGl = true;
 	bool force = false;
 };
 
@@ -689,7 +939,39 @@ static const char* KindSuffix(OutKind k)
 	             case OutKind::N: return "_N"; default: return "_FX"; }
 }
 
-struct CookResult { bool produced = false; bool skipped = false; fs::path file; };
+struct CookResult { bool produced = false; bool skipped = false; bool failed = false; fs::path file; };
+
+// Cook an unclassified .hdr as a standalone environment panorama. Material
+// maps use the suffix-based _C/_M/_N/_FX convention; an HDRI has no material
+// channels, so preserving its stem (e.g. meadow_2_4k.hdr -> meadow_2_4k.dds)
+// lets BENCH_CUBEMAP and the editor resolve it directly by name.
+static CookResult CookHDR(const fs::path& sourceFile, const fs::path& outDir, bool force)
+{
+	CookResult r;
+	r.file = outDir / (sourceFile.stem().string() + ".dds");
+	std::error_code ec;
+	const fs::file_time_type newestInput = fs::last_write_time(sourceFile, ec);
+	if (ec)
+	{
+		r.failed = true;
+		gLog.err("could not stat HDR source: " + sourceFile.string());
+		return r;
+	}
+	if (UpToDate(r.file, newestInput, force))
+	{
+		r.skipped = true;
+		r.produced = true;
+		return r;
+	}
+
+	r.failed = true;
+	ScratchImage hdr;
+	if (!LoadHDRFloat(sourceFile, hdr)) return r;
+	if (!FinishHDR(hdr, r.file)) return r;
+	r.produced = true;
+	r.failed = false;
+	return r;
+}
 
 static CookResult CookOne(MaterialGroup& g, OutKind kind, const std::string& outName,
                           const fs::path& outDir, const CookOptions& opt, const MatOverride& ov)
@@ -700,7 +982,7 @@ static CookResult CookOne(MaterialGroup& g, OutKind kind, const std::string& out
 	const bool haveC  = g.maps.count(Role::Color) || ov.baseColor;
 	const bool haveN  = g.maps.count(Role::Normal);
 	const bool haveM  = g.maps.count(Role::AO) || g.maps.count(Role::Roughness) || g.maps.count(Role::Metalness)
-	                  || g.maps.count(Role::PackedM) || ov.ao || ov.roughness || ov.metalness;
+	                  || g.maps.count(Role::PackedM) || g.maps.count(Role::Specular) || ov.ao || ov.roughness || ov.metalness;
 	const bool haveFx = g.maps.count(Role::Emissive) || g.maps.count(Role::Height) || g.maps.count(Role::PackedFx) || ov.emissive;
 
 	if ((kind == OutKind::C && !haveC) || (kind == OutKind::N && !haveN) ||
@@ -708,6 +990,7 @@ static CookResult CookOne(MaterialGroup& g, OutKind kind, const std::string& out
 		return r;
 
 	if (UpToDate(r.file, g.newestInput, opt.force)) { r.skipped = true; r.produced = true; return r; }
+	r.failed = true; // Expected output: any decode/pack/compress failure must be reported.
 
 	// ---- working size: largest source, or 4x4 for a purely constant material
 	size_t w = 0, h = 0;
@@ -722,10 +1005,13 @@ static CookResult CookOne(MaterialGroup& g, OutKind kind, const std::string& out
 	{
 	case OutKind::C:  grow(Role::Color); grow(Role::Opacity); break;
 	case OutKind::N:  grow(Role::Normal); break;
-	case OutKind::M:  grow(Role::PackedM); grow(Role::AO); grow(Role::Roughness); grow(Role::Metalness); break;
+	case OutKind::M:  grow(Role::PackedM); grow(Role::AO); grow(Role::Roughness); grow(Role::Metalness); grow(Role::Specular); break;
 	case OutKind::FX: grow(Role::PackedFx); grow(Role::Emissive); grow(Role::Height); break;
 	}
 	if (w == 0 || h == 0) { w = h = 4; }   // constant-only output
+	// Bistro includes 1x1 constants. Give BC outputs a complete block and a
+	// valid mip chain rather than asking GenerateMipMaps to mip a 1x1 image.
+	w = std::max(w, size_t(4)); h = std::max(h, size_t(4));
 
 	ScratchImage packed;
 	bool srgb = false;
@@ -765,8 +1051,73 @@ static CookResult CookOne(MaterialGroup& g, OutKind kind, const std::string& out
 		{
 			Plane m = MakePlane(g, Role::PackedM, w, h);
 			if (!m.ok) { gLog.err("packed _m plane failed: " + outName); return r; }
+			const std::string layout = ov.packedMLayout ? *ov.packedMLayout
+				: (g.packedMLayout.empty() ? "orm" : g.packedMLayout);
+			const int aoChannel = PackedChannel(layout, 'a');
+			const int roughnessChannel = PackedChannel(layout, 'r');
+			const int smoothnessChannel = PackedChannel(layout, 's');
+			const int metalnessChannel = PackedChannel(layout, 'm');
 			BuildRGBA8(w, h, packed, [&](size_t x, size_t y, uint8_t* o) {
-				o[0] = m.at(x, y, 0); o[1] = m.at(x, y, 1); o[2] = m.at(x, y, 2); o[3] = 255;
+				o[0] = ov.ao ? ToByte(*ov.ao) : (aoChannel >= 0 ? m.at(x, y, aoChannel) : 255);
+				o[1] = ov.roughness ? ToByte(*ov.roughness)
+					: (roughnessChannel >= 0 ? m.at(x, y, roughnessChannel)
+						: (smoothnessChannel >= 0 ? (uint8_t)(255 - m.at(x, y, smoothnessChannel)) : 128));
+				o[2] = ov.metalness ? ToByte(*ov.metalness) : (metalnessChannel >= 0 ? m.at(x, y, metalnessChannel) : 0);
+				o[3] = 255;
+			});
+		}
+		else if (!g.maps.count(Role::AO) && !g.maps.count(Role::Roughness) && !g.maps.count(Role::Metalness)
+		         && !ov.ao && !ov.roughness && !ov.metalness && g.maps.count(Role::Specular))
+		{
+			// Legacy spec/gloss source, no explicit metal/rough data: RGB is the
+			// specular reflectance color/intensity, alpha is glossiness (roughness
+			// inverted). Approximate the metal/rough conversion rather than leave
+			// this material at the flat roughness=0.5/metalness=0 default -- a
+			// standard dielectric baseline is ~0.04 reflectance, so anything
+			// brighter than that in the specular map reads as increasingly metallic.
+			constexpr float kDielectric = 0.04f;
+			Plane sp = MakePlane(g, Role::Specular, w, h);
+			if (!sp.ok) { gLog.err("specular plane failed: " + outName); return r; }
+
+			// Some source packs ship a placeholder/stub specular map instead of
+			// real per-material data (seen in the wild: every material in a set
+			// pointing at one tiny, flat-white file). A flat alpha channel carries
+			// no real glossiness signal, so deriving roughness from it produces a
+			// confident but wrong result -- identically, across every material
+			// that hits this path, which reads as "every surface has the same
+			// roughness" rather than an obviously broken texture. Sample a coarse
+			// grid instead of every pixel; this only needs to catch "no variation
+			// at all", not measure real texture detail.
+			// Track each channel's own min/max separately -- mixing R/G/B together
+			// into one range would measure how different the channels are from
+			// EACH OTHER within a single pixel (e.g. a flat (0,189,0) stub spans
+			// 0..189 that way), not whether the image varies from pixel to pixel.
+			uint8_t chMin[4] = { 255, 255, 255, 255 }, chMax[4] = { 0, 0, 0, 0 };
+			const size_t stepX = std::max<size_t>(1, w / 32), stepY = std::max<size_t>(1, h / 32);
+			for (size_t y = 0; y < h; y += stepY)
+				for (size_t x = 0; x < w; x += stepX)
+					for (int c = 0; c < 4; ++c)
+					{
+						const uint8_t v = sp.at(x, y, c);
+						chMin[c] = std::min(chMin[c], v); chMax[c] = std::max(chMax[c], v);
+					}
+			const bool degenerate = (int)chMax[0] - (int)chMin[0] < 4 && (int)chMax[1] - (int)chMin[1] < 4
+				&& (int)chMax[2] - (int)chMin[2] < 4 && (int)chMax[3] - (int)chMin[3] < 4;
+			if (degenerate)
+				gLog.warn("specular map carries no real data (flat rgba=" + std::to_string((int)chMin[0])
+					+ "," + std::to_string((int)chMin[1]) + "," + std::to_string((int)chMin[2]) + "," + std::to_string((int)chMin[3])
+					+ "), falling back to default roughness/metalness instead of deriving them from it: " + outName);
+
+			BuildRGBA8(w, h, packed, [&](size_t x, size_t y, uint8_t* o) {
+				o[0] = 255;                              // no AO data in this workflow
+				if (degenerate) { o[1] = 128; o[2] = 0; o[3] = 255; return; }
+				const float specR = sp.at(x, y, 0) / 255.0f, specG = sp.at(x, y, 1) / 255.0f, specB = sp.at(x, y, 2) / 255.0f;
+				const float maxSpec = std::max({ specR, specG, specB });
+				const float metalness = std::clamp((maxSpec - kDielectric) / (1.0f - kDielectric), 0.0f, 1.0f);
+				const float glossiness = sp.at(x, y, 3) / 255.0f;
+				o[1] = ToByte(1.0f - glossiness);         // roughness = 1 - glossiness
+				o[2] = ToByte(metalness);
+				o[3] = 255;
 			});
 		}
 		else
@@ -819,13 +1170,20 @@ static CookResult CookOne(MaterialGroup& g, OutKind kind, const std::string& out
 		}
 	}
 
+	// Logged (and flushed) before the compress/mip step, not just after it
+	// succeeds -- if the process dies inside Finish() (GPU BC7/BC5 compress),
+	// this is the last line in the log and pins down exactly which output was
+	// in flight, instead of only ever seeing the previous *completed* cook.
+	gLog.info("  compressing  " + r.file.filename().string()
+		+ " (" + std::to_string((int)w) + "x" + std::to_string((int)h) + ")");
 	if (!Finish(packed, srgb, bc, r.file)) return r;
 	r.produced = true;
+	r.failed = false;
 	return r;
 }
 
 // ------------------------------------------------------------------ fbx material names (ufbx)
-static std::vector<std::string> ReadFbxMaterials(const fs::path& fbx, std::string& err)
+static std::vector<std::string> ReadFbxMaterials(const fs::path& fbx, std::string& err, std::vector<std::string>* meshMaterials)
 {
 	std::vector<std::string> names;
 	ufbx_load_opts opts{};
@@ -836,6 +1194,24 @@ static std::vector<std::string> ReadFbxMaterials(const fs::path& fbx, std::strin
 	{
 		const ufbx_material* m = scene->materials.data[i];
 		names.emplace_back(m->name.data ? std::string(m->name.data, m->name.length) : "");
+	}
+	if (meshMaterials)
+	{
+		// Match the engine's depth-first mesh traversal and first-occurrence
+		// material merge. FBX's global material list is not the mesh row order.
+		std::function<void(const ufbx_node*)> visit = [&](const ufbx_node* node)
+		{
+			if (node->mesh)
+				for (size_t i = 0; i < node->materials.count; ++i)
+				{
+					const ufbx_material* material = node->materials.data[i];
+					const std::string name(material->name.data, material->name.length);
+					if (std::find(meshMaterials->begin(), meshMaterials->end(), name) == meshMaterials->end())
+						meshMaterials->push_back(name);
+				}
+			for (size_t i = 0; i < node->children.count; ++i) visit(node->children.data[i]);
+		};
+		visit(scene->root_node);
 	}
 	ufbx_free_scene(scene);
 	return names;
@@ -869,13 +1245,17 @@ struct Args
 {
 	fs::path in, out, fbx, tgo, tgm, gameRoot, manifest;
 	std::string tgoName;   // object-definition property name (default: tgo stem)
-	int tgoPadRows = 0;    // pad the textures array up to N rows to match editor output
+	// FBX material name -> existing authored .tgmat path. Repeated CLI option.
+	// Paths are written relative to --game-root alongside generated materials.
+	std::map<std::string, std::string> materialRemaps;
+	int tgoPadRows = 0;    // pad the materials array up to N rows to match editor output
 	bool flipGreen = false, cpu = false, force = false, recursive = false, quiet = false;
 	bool srcNormalsGl = true;
 	bool noNvtt = false;
 	std::string nvttPath;
 	std::string nvttQuality;
 	int jobs = 0;   // 0 -> hardware_concurrency
+	std::string only; // Optional comma-separated output kinds: c,n,m,fx.
 };
 
 static bool ParseArgs(int argc, char** argv, Args& a)
@@ -890,12 +1270,33 @@ static bool ParseArgs(int argc, char** argv, Args& a)
 		else if (k == "--tgo") a.tgo = next();
 		else if (k == "--tgm") a.tgm = next();
 		else if (k == "--tgo-name") a.tgoName = next();
+		else if (k == "--material-remap")
+		{
+			const std::string remap = next();
+			const size_t equals = remap.find('=');
+			if (equals == std::string::npos || equals == 0 || equals + 1 == remap.size()) return false;
+			a.materialRemaps[ToLower(remap.substr(0, equals))] = remap.substr(equals + 1);
+		}
 		else if (k == "--tgo-pad") a.tgoPadRows = std::max(0, atoi(next().c_str()));
 		else if (k == "--game-root") a.gameRoot = next();
 		else if (k == "--manifest") a.manifest = next();
 		else if (k == "--src-normals") a.srcNormalsGl = (ToLower(next()) != "dx");
 		else if (k == "--flip-green") a.flipGreen = true;
 		else if (k == "--jobs") a.jobs = std::max(1, atoi(next().c_str()));
+		else if (k == "--only")
+		{
+			a.only = ToLower(next());
+			if (a.only.empty()) return false;
+			size_t begin = 0;
+			do
+			{
+				const size_t end = a.only.find(',', begin);
+				const std::string kind = a.only.substr(begin, end - begin);
+				if (kind != "c" && kind != "n" && kind != "m" && kind != "fx") return false;
+				if (end == std::string::npos) break;
+				begin = end + 1;
+			} while (true);
+		}
 		else if (k == "--cpu") a.cpu = true;
 		else if (k == "--nvtt") a.nvttPath = next();
 		else if (k == "--no-nvtt") a.noNvtt = true;
@@ -917,10 +1318,11 @@ int main(int argc, char** argv)
 	{
 		std::cout <<
 			"TextureCooker  --in <srcDir> --out <dstDir>\n"
-			"              [--fbx <model.fbx>] [--tgo <out.tgo>] [--tgm <out.tgm>]\n"
+			"              [--fbx <model.fbx>] [--tgo <out.tgo>] [--tgm <out.tgm>] [--material-remap <fbx=tgmat>]\n"
 			"              [--game-root <dir>] [--manifest <cook.json>]\n"
 			"              [--src-normals gl|dx] [--flip-green] [--cpu] [--jobs N]\n"
-			"              [--force] [--recursive] [--quiet]\n";
+			"              [--only c,n,m,fx] [--force] [--recursive] [--quiet]\n"
+			"              bare .hdr inputs -> <stem>.dds (R16G16B16A16_FLOAT)\n";
 		return 2;
 	}
 	gLog.quiet = a.quiet;
@@ -932,6 +1334,18 @@ int main(int argc, char** argv)
 	HRESULT hrco = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 	const bool coInit = SUCCEEDED(hrco);
 
+	const unsigned nthreads = a.jobs > 0 ? (unsigned)a.jobs
+		: std::max(1u, std::thread::hardware_concurrency());
+
+	// Deliberately unchanged from the original design: one shared GPU device
+	// behind Compressor::Compress's mutex when a GPU is available and --cpu
+	// wasn't forced. Two different attempts at making BC7 compression itself
+	// run across multiple threads (one device per thread; forcing the CPU
+	// compressor by default under multiple --jobs) both stalled during live
+	// testing on this machine and were reverted. The actual, verified fixes
+	// in this run are eliminating the NVTT false-availability bug below (was
+	// wasting a failed subprocess spawn on every single texture) and the
+	// stale-output cleanup pass further down -- not compressor concurrency.
 	gComp.Init(a.cpu);
 	if (!a.noNvtt)
 	{
@@ -961,16 +1375,26 @@ int main(int argc, char** argv)
 
 	std::map<std::string, MaterialGroup> groupMap;
 	std::vector<fs::path> unclassified;
+	std::vector<fs::path> hdrSources;
 	for (const fs::path& f : files)
 	{
 		std::string key; Role role;
-		if (!Classify(f, key, role)) { unclassified.push_back(f); continue; }
+		if (!Classify(f, key, role))
+		{
+			// Bare HDR files are environment panoramas, not material maps. Keep
+			// them in a dedicated list so they retain floating-point precision and
+			// receive a stem.dds output instead of being silently ignored.
+			if (ToLower(f.extension().string()) == ".hdr") hdrSources.push_back(f);
+			else unclassified.push_back(f);
+			continue;
+		}
 		MaterialGroup& g = groupMap[ToLower(key)];
 		if (g.key.empty()) g.key = key;
 		Source src; src.path = f;
 		// last one wins if a role is duplicated; warn
 		if (g.maps.count(role)) gLog.warn("duplicate " + std::string(RoleName(role)) + " for '" + key + "': " + f.filename().string());
 		g.maps[role] = std::move(src);
+		if (role == Role::PackedM) g.packedMLayout = InferPackedMLayout(f);
 		std::error_code ec;
 		auto t = fs::last_write_time(f, ec);
 		if (!ec && t > g.newestInput) g.newestInput = t;
@@ -978,6 +1402,26 @@ int main(int argc, char** argv)
 
 	std::vector<MaterialGroup> groups;
 	for (auto& kv : groupMap) groups.push_back(std::move(kv.second));
+
+	// Colour variants usually share all non-colour maps with their base material
+	// (Curtain_Red -> Fabric_Curtain normal/ORM, etc.). Inherit those maps by
+	// naming convention so ordinary FBX exports work without a hand-written
+	// manifest. A manifest still wins below when an asset is genuinely ambiguous.
+	for (MaterialGroup& variant : groups)
+	{
+		if (!variant.maps.count(Role::Color)) continue;
+		const MaterialGroup* base = nullptr;
+		for (const MaterialGroup& candidate : groups)
+		{
+			if (&candidate == &variant) continue;
+			const std::string prefix = ToLower(candidate.key) + "_";
+			if (ToLower(variant.key).rfind(prefix, 0) == 0 &&
+				(!base || candidate.key.size() > base->key.size())) base = &candidate;
+		}
+		if (!base) continue;
+		for (const auto& [role, source] : base->maps)
+			if (role != Role::Color && !variant.maps.count(role)) variant.maps[role].path = source.path;
+	}
 
 	// Manifest-only materials: listed in cook.json with constants but no source files.
 	if (manifest.loaded)
@@ -1007,6 +1451,7 @@ int main(int argc, char** argv)
 				if (!fs::exists(p, ec)) { gLog.warn("cook.json inputs: '" + fname + "' not found for '" + k + "'"); continue; }
 				Source src; src.path = p;
 				g->maps[(Role)roleInt] = std::move(src);
+				if ((Role)roleInt == Role::PackedM) g->packedMLayout = InferPackedMLayout(p);
 				auto t = fs::last_write_time(p, ec);
 				if (!ec && t > g->newestInput) g->newestInput = t;
 			}
@@ -1017,7 +1462,8 @@ int main(int argc, char** argv)
 	}
 
 	gLog.info("TextureCooker: " + std::to_string(files.size()) + " source images -> "
-		+ std::to_string(groups.size()) + " materials  (out: " + a.out.string() + ")");
+		+ std::to_string(groups.size()) + " materials, " + std::to_string(hdrSources.size())
+		+ " HDR panorama(s)  (out: " + a.out.string() + ")");
 	if (!unclassified.empty())
 	{
 		gLog.info("  " + std::to_string(unclassified.size()) + " unclassified file(s) ignored");
@@ -1026,12 +1472,13 @@ int main(int argc, char** argv)
 
 	// ---- fbx material names (optional) -> per-key output name
 	std::vector<std::string> fbxMats;
+	std::vector<std::string> meshMats;
 	std::map<std::string, std::string> keyToOutName;   // lower(key) -> output base name
 	std::map<std::string, std::string> matToBase;      // exact fbx material name -> cooked DDS base name
 	if (!a.fbx.empty())
 	{
 		std::string ferr;
-		fbxMats = ReadFbxMaterials(a.fbx, ferr);
+		fbxMats = ReadFbxMaterials(a.fbx, ferr, &meshMats);
 		if (fbxMats.empty()) gLog.warn("fbx: " + (ferr.empty() ? "no materials found" : ferr));
 		else
 		{
@@ -1076,17 +1523,24 @@ int main(int argc, char** argv)
 	fs::create_directories(a.out);
 
 	std::atomic<int> produced{ 0 }, skipped{ 0 }, failed{ 0 };
+	std::atomic<int> hdrProduced{ 0 }, hdrSkipped{ 0 }, hdrFailed{ 0 };
 	json report;
 	report["source_dir"] = a.in.string();
 	report["out_dir"] = a.out.string();
 	report["materials"] = json::array();
+	report["hdr"] = json::array();
 	const auto t0 = std::chrono::steady_clock::now();
 
 	std::map<std::string, std::map<OutKind, fs::path>> outputsByKey;   // for tgo emission
+	// Every output filename this run considers applicable (attempted, whether it
+	// was actually recooked, already up-to-date, or failed this time -- a
+	// transient failure must not delete a still-good file from a previous run).
+	// Used below to clean up stale outputs from renamed/removed materials
+	// instead of leaving them behind indefinitely.
+	std::set<std::string> keepDdsNames;
 	std::mutex sinkMtx;
 
-	const unsigned nthreads = a.jobs > 0 ? (unsigned)a.jobs
-		: std::max(1u, std::thread::hardware_concurrency());
+	// nthreads is computed above, before gComp.Init(), which needs it.
 	std::atomic<size_t> nextIdx{ 0 };
 
 	auto worker = [&]()
@@ -1112,8 +1566,45 @@ int main(int argc, char** argv)
 			std::map<OutKind, fs::path> mine;
 			for (OutKind k : { OutKind::C, OutKind::M, OutKind::N, OutKind::FX })
 			{
-				CookResult res = CookOne(g, k, outName, a.out, opt, ov);
+				if (!a.only.empty() && ("," + a.only + ",").find("," + ToLower(KindSuffix(k)).substr(1) + ",") == std::string::npos)
+					continue;
+				// A single texture's decode/mip/compress step can legitimately throw
+				// (std::bad_alloc under memory pressure from many large 4K+ buffers
+				// alive at once across worker threads -- confirmed the cause of an
+				// exit-code-3 crash that lost the whole run's progress). Uncaught,
+				// that propagates out of this thread and terminates the entire
+				// process. Treat it the same as a normal cook failure instead: log
+				// it, mark this one output failed, keep going.
+				const fs::path expectedFile = a.out / (outName + KindSuffix(k) + ".dds");
+				CookResult res;
+				res.file = expectedFile;
+				try
+				{
+					res = CookOne(g, k, outName, a.out, opt, ov);
+				}
+				catch (const std::exception& e)
+				{
+					gLog.err("cook threw: " + expectedFile.filename().string() + " -> " + e.what());
+					res = CookResult{};
+					res.file = expectedFile;
+					res.failed = true;
+				}
+				catch (...)
+				{
+					gLog.err("cook threw unknown exception: " + expectedFile.filename().string());
+					res = CookResult{};
+					res.file = expectedFile;
+					res.failed = true;
+				}
+				if (res.failed)
+				{
+					++failed;
+					mj["outputs"].push_back({ {"file", res.file.filename().string()}, {"kind", KindSuffix(k)}, {"status", "failed"} });
+					{ std::lock_guard lk(sinkMtx); keepDdsNames.insert(ToLower(res.file.filename().string())); }
+					continue;
+				}
 				if (!res.produced && !res.skipped) continue;
+				{ std::lock_guard lk(sinkMtx); keepDdsNames.insert(ToLower(res.file.filename().string())); }
 				mine[k] = res.file;
 				json oj;
 				oj["file"] = res.file.filename().string();
@@ -1138,6 +1629,36 @@ int main(int argc, char** argv)
 		for (auto& th : pool) th.join();
 	}
 
+	// ---- standalone HDR environment panoramas ------------------------------
+	// These are intentionally handled outside the material worker pool: each
+	// source maps one-to-one to <stem>.dds and does not participate in TGO
+	// material rows. The path still uses the same up-to-date/force semantics.
+	for (const fs::path& sourceFile : hdrSources)
+	{
+		CookResult res = CookHDR(sourceFile, a.out, a.force);
+		keepDdsNames.insert(ToLower(res.file.filename().string()));
+		json hj;
+		hj["input"] = sourceFile.filename().string();
+		hj["file"] = res.file.filename().string();
+		hj["kind"] = "hdr";
+		if (res.failed)
+		{
+			hj["status"] = "failed";
+			++hdrFailed;
+		}
+		else if (res.skipped)
+		{
+			hj["status"] = "up-to-date";
+			++hdrSkipped;
+		}
+		else
+		{
+			hj["status"] = "cooked";
+			++hdrProduced;
+		}
+		report["hdr"].push_back(std::move(hj));
+	}
+
 	// stable report order (nlohmann array iterators aren't random-access -> sort a copy)
 	{
 		std::vector<json> mats(report["materials"].begin(), report["materials"].end());
@@ -1146,19 +1667,49 @@ int main(int argc, char** argv)
 		report["materials"] = mats;
 	}
 
-	// ---- optional .tgm  ({ "Fbx": "<rel>" })
+	// A TGM is an import request, not merely a passive settings file.  Earlier
+	// versions wrote it successfully but only emitted .tgmat assets when the
+	// caller also supplied --tgo, making the normal TGM-only editor workflow
+	// appear to have done nothing.  Derive the prefab beside the TGM so its
+	// cooked maps, material assets, and prefab always arrive together.
+	if (!a.tgm.empty() && a.tgo.empty() && !a.fbx.empty())
+	{
+		a.tgo = a.tgm;
+		a.tgo.replace_extension(".tgo");
+		gLog.info("  tgm import: derived prefab output " + a.tgo.string());
+	}
+
+	// ---- optional .tgm import settings.  Keep this schema in lockstep with
+	// direct FBX placement in GameEditor: it is the durable source of truth for
+	// later reimport instead of an ephemeral command line invocation.
 	if (!a.tgm.empty() && !a.fbx.empty())
 	{
-		json j;
-		j["Fbx"] = RelBackslash(a.fbx, a.gameRoot);
+		json j = {
+			{ "version", 1 },
+			{ "Fbx", RelBackslash(a.fbx, a.gameRoot) },
+			{ "scale", 1.0f },
+			{ "axisConversion", "EngineDefault" },
+			{ "normalConvention", a.srcNormalsGl ? "OpenGL" : "DirectX" },
+			{ "flipGreen", a.flipGreen },
+			{ "generatedPrefab", a.tgo.empty() ? "" : RelBackslash(a.tgo, a.gameRoot) },
+			{ "materialRemaps", json::object() },
+			{ "reimport", {
+				{ "sourceFolder", RelBackslash(a.in, a.gameRoot) },
+				{ "outputFolder", RelBackslash(a.out, a.gameRoot) },
+				{ "recursive", a.recursive }
+			} }
+		};
 		fs::create_directories(a.tgm.parent_path());
 		std::ofstream(a.tgm) << j.dump(2) << "\n";
 		gLog.info("  wrote " + a.tgm.string());
 	}
 
 	// ---- optional .tgo  (object-definition with Model property)
+	std::set<std::string> keepTgmatNames;   // filled below; used by the cleanup pass further down
+	bool ownsTgmats = false;
 	if (!a.tgo.empty() && !a.fbx.empty())
 	{
+		ownsTgmats = true;
 		json prop;
 		prop["description"] = ""; prop["group"] = "";
 		prop["is-dynamic"] = false; prop["is-per-instance"] = false;
@@ -1166,16 +1717,16 @@ int main(int argc, char** argv)
 		prop["type"] = "Model";
 		json val;
 		val["path"] = RelBackslash(a.fbx, a.gameRoot);
-		val["textures"] = json::array();
+		val["materials"] = json::array();
 
-		// One [C, N, M, FX] row per FBX material, in FBX order. We just probe the
+		// One [C, N, M, FX] row per merged material in engine traversal order. Probe the
 		// cooked output for "<material><suffix>.dds" on disk (covers direct matches,
 		// aliases and manifest constants alike). Engine slot order is C, N, M, FX.
-		const int kMaxMeshes = 128;   // engine MAX_MESHES_PER_MODEL
+		const int kMaxMeshes = MAX_MESHES_PER_MODEL;
 
 		// If the FBX exposes no material nodes (single-material atlas exports often
 		// don't), fall back to one row per cooked texture group.
-		std::vector<std::string> tgoNames = fbxMats;
+		std::vector<std::string> tgoNames = meshMats.empty() ? fbxMats : meshMats;
 		if (tgoNames.empty())
 		{
 			for (const auto& g : groups) tgoNames.push_back(g.key);
@@ -1188,7 +1739,7 @@ int main(int argc, char** argv)
 		for (const std::string& mn : tgoNames)
 		{
 			if (emitted >= kMaxMeshes) break;
-			json row = json::array();
+			json maps;
 			int rowFilled = 0;
 			// resolved cooked-DDS base name for this material (handles Blender ".003"
 			// dedup suffixes + cook.json aliases); fall back to the raw material name.
@@ -1205,18 +1756,42 @@ int main(int argc, char** argv)
 				++rowFilled;
 				return RelBackslash(f, a.gameRoot);
 			};
-			row.push_back(slot("_C.dds"));
-			row.push_back(slot("_N.dds"));
-			row.push_back(slot("_M.dds"));
-			row.push_back(slot("_FX.dds"));
-			val["textures"].push_back(row);
+			maps["albedo"] = slot("_C.dds");
+			maps["normal"] = slot("_N.dds");
+			maps["orm"] = slot("_M.dds");
+			maps["fx"] = slot("_FX.dds");
+
+			// A TGO now points to material assets, never directly to individual
+			// texture maps. The material is emitted beside the cooked textures and
+			// is independently editable in GameEditor afterwards.
+			const fs::path materialFile = a.out / (base + ".tgmat");
+			json material = {
+				{ "masterMaterial", "PBR" }, { "surfaceType", "Opaque" },
+				{ "alphaCutoff", 0.33f }, { "baseColor", { 0.8f, 0.8f, 0.8f } },
+				{ "roughness", 0.5f }, { "metalness", 0.0f }, { "ao", 1.0f },
+				{ "emissiveColor", { 1.0f, 1.0f, 1.0f } }, { "emissiveStrength", 0.0f },
+				{ "normalStrength", 1.0f }, { "previewMesh", "Sphere" }, { "maps", maps }
+			};
+			fs::create_directories(materialFile.parent_path());
+			std::ofstream(materialFile) << material.dump(2) << "\n";
+			keepTgmatNames.insert(ToLower(materialFile.filename().string()));
+			// A named remap preserves a deliberately authored material instead of
+			// replacing it with a generated default. Match Blender's .001 material
+			// copies against their original material name too.
+			const std::string materialKey = ToLower(mn);
+			const std::string cleanMaterialKey = ToLower(StripDupSuffix(mn));
+			auto remap = a.materialRemaps.find(materialKey);
+			if (remap == a.materialRemaps.end()) remap = a.materialRemaps.find(cleanMaterialKey);
+			val["materials"].push_back(remap == a.materialRemaps.end()
+				? RelBackslash(materialFile, a.gameRoot)
+				: RelBackslash(fs::path(remap->second), a.gameRoot));
 			if (rowFilled) ++filled;
 			++emitted;
 		}
 		for (int pad = emitted; pad < a.tgoPadRows && pad < kMaxMeshes; ++pad)
-			val["textures"].push_back(json::array({ "", "", "", "" }));
+			val["materials"].push_back("");
 
-		gLog.info("  .tgo: " + std::to_string(filled) + "/" + std::to_string(tgoNames.size()) + " row(s) have cooked textures");
+		gLog.info("  .tgo: " + std::to_string(filled) + "/" + std::to_string(tgoNames.size()) + " material asset(s) have cooked maps");
 		if ((int)tgoNames.size() > kMaxMeshes)
 			gLog.warn("fbx has " + std::to_string(tgoNames.size()) + " materials but engine MAX_MESHES_PER_MODEL="
 				+ std::to_string(kMaxMeshes) + "; .tgo lists first " + std::to_string(kMaxMeshes)
@@ -1231,6 +1806,58 @@ int main(int argc, char** argv)
 		gLog.info("  wrote " + a.tgo.string());
 	}
 
+	// ---- clean up stale outputs -------------------------------------------
+	// A rename or removal of a source material previously left its old cooked
+	// _C/_N/_M/_FX.dds (and, when this run owns material generation, its old
+	// .tgmat) behind forever: nothing ever deleted a file this tool had
+	// stopped producing, so --out accumulated orphaned DDS/tgmat files across
+	// reimports. Only touch files in --out matching this tool's own output
+	// naming convention (never arbitrary user content), and only delete a
+	// name that is not in this run's keep-set -- built above from every
+	// output actually considered this run, including ones skipped as
+	// up-to-date or that failed to recook (so a transient failure never
+	// deletes an otherwise-still-good file).
+	// Skipped entirely for a --only partial run: keepDdsNames then only covers
+	// the requested kinds, so e.g. an --only c,n run would otherwise see every
+	// _M/_FX output as "not in the keep-set" and delete them.
+	if (a.only.empty())
+	{
+		int removedDds = 0, removedTgmat = 0;
+		std::error_code ec;
+		for (const auto& entry : fs::directory_iterator(a.out, ec))
+		{
+			if (ec || !entry.is_regular_file()) continue;
+			const fs::path& p = entry.path();
+			const std::string ext = ToLower(p.extension().string());
+			const std::string stem = ToLower(p.stem().string());
+			const std::string name = ToLower(p.filename().string());
+			if (ext == ".dds")
+			{
+				// Only the unambiguous suffixed material outputs are auto-cleaned.
+				// A bare-stem .dds (HDR panoramas use <stem>.dds with no suffix) is
+				// left alone even when not currently tracked: nothing distinguishes
+				// "an old HDR cook this tool no longer produces" from "unrelated
+				// content someone placed directly in --out".
+				const bool isMaterialOutput = IEndsWith(stem, "_c") || IEndsWith(stem, "_n")
+					|| IEndsWith(stem, "_m") || IEndsWith(stem, "_fx");
+				if (isMaterialOutput && !keepDdsNames.count(name))
+				{
+					fs::remove(p, ec);
+					if (!ec) { ++removedDds; gLog.info("  removed (stale) " + p.filename().string()); }
+				}
+			}
+			else if (ext == ".tgmat" && ownsTgmats && !keepTgmatNames.count(name))
+			{
+				fs::remove(p, ec);
+				if (!ec) { ++removedTgmat; gLog.info("  removed (stale) " + p.filename().string()); }
+			}
+		}
+		if (removedDds || removedTgmat)
+			gLog.info("  cleanup: removed " + std::to_string(removedDds) + " stale DDS + "
+				+ std::to_string(removedTgmat) + " stale tgmat file(s)");
+		report["cleanup"] = { { "removed_dds", removedDds }, { "removed_tgmat", removedTgmat } };
+	}
+
 	const auto t1 = std::chrono::steady_clock::now();
 	const double secs = std::chrono::duration<double>(t1 - t0).count();
 
@@ -1240,6 +1867,9 @@ int main(int argc, char** argv)
 		{ "cooked", nProduced },
 		{ "up_to_date", nSkipped },
 		{ "failed", nFailed },
+		{ "hdr_cooked", hdrProduced.load() },
+		{ "hdr_up_to_date", hdrSkipped.load() },
+		{ "hdr_failed", hdrFailed.load() },
 		{ "seconds", secs },
 		{ "threads", (int)nthreads },
 		{ "compressor", (gComp.device && !a.cpu) ? "gpu-bc7" : "cpu" },
@@ -1249,9 +1879,12 @@ int main(int argc, char** argv)
 	}
 
 	gLog.info("done: " + std::to_string(nProduced) + " cooked, " + std::to_string(nSkipped)
-		+ " up-to-date, " + std::to_string(nFailed) + " failed  ("
+		+ " up-to-date, " + std::to_string(nFailed) + " failed; "
+		+ std::to_string(hdrProduced.load()) + " HDR cooked, "
+		+ std::to_string(hdrSkipped.load()) + " HDR up-to-date, "
+		+ std::to_string(hdrFailed.load()) + " HDR failed  ("
 		+ std::to_string(secs).substr(0, 5) + "s, " + std::to_string(nthreads) + " threads)");
 
 	if (coInit) CoUninitialize();
-	return failed ? 1 : 0;
+	return (failed || hdrFailed) ? 1 : 0;
 }

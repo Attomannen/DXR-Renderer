@@ -104,6 +104,39 @@ namespace Tga
 
 		void UpdateFolderCounts(StringId aOldFolder, StringId aNewFolder);
 		void GetAllFolderNames(std::vector<StringId>& outFolderNames);
+
+		// Scene-wide directional sun + ambient fill. Genuinely part of the
+		// scene's authored lighting setup (not just an editor preview), so
+		// this lives on Scene itself rather than in editor-only state --
+		// DefaultSceneEditorGraphics feeds these straight into
+		// DeferredRenderer/GraphicsStateStack, and the hierarchy panel
+		// exposes them as two fixed pseudo-entries (see SceneLightSelection).
+		float mySunYaw = 45.f;
+		float mySunPitch = -45.f;
+		float mySunColor[3] = { 0.9f, 0.7f, 0.5f };
+		float mySunIntensity = 1.4f;
+		float myAmbientColor[3] = { 0.25f, 0.28f, 0.35f };
+
+		float GetSunYaw() const { return mySunYaw; }
+		void SetSunYaw(float v) { mySunYaw = v; }
+		float GetSunPitch() const { return mySunPitch; }
+		void SetSunPitch(float v) { mySunPitch = v; }
+		float* GetSunColor() { return mySunColor; }
+		const float* GetSunColor() const { return mySunColor; }
+		float GetSunIntensity() const { return mySunIntensity; }
+		void SetSunIntensity(float v) { mySunIntensity = v; }
+		float* GetAmbientColor() { return myAmbientColor; }
+		const float* GetAmbientColor() const { return myAmbientColor; }
+
+		// Project-relative path (see Settings::GameAssetRoot()) to a .hdr
+		// equirectangular panorama or a .dds cubemap used as the scene's IBL
+		// environment/backdrop. Empty = no environment, falls back to the
+		// uniform ambient color above. Lives here for the same reason the sun/
+		// ambient fields do: it's authored scene state, not editor-only.
+		std::string myEnvironmentTexturePath;
+		const std::string& GetEnvironmentTexturePath() const { return myEnvironmentTexturePath; }
+		void SetEnvironmentTexturePath(const std::string& path) { myEnvironmentTexturePath = path; }
+
 	private:
 		std::string myPath;
 		std::string myName;

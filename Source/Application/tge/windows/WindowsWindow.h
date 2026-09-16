@@ -24,14 +24,11 @@ namespace Tga
 		HWND GetWindowHandle() const {return myWindowHandle;}
 		void SetResolution(Vector2ui aResolution);
 		void Close();
-		unsigned int GetWidth()
-		{
-			return myResolution.X;
-		}
-		unsigned int  GetHeight()
-		{
-			return myResolution.Y;
-		}
+		// The swapchain must follow the physical client area, not the startup
+		// configuration. In particular, DXGI exclusive fullscreen can change the
+		// client dimensions without synchronously updating our cached resolution.
+		unsigned int GetWidth() const;
+		unsigned int GetHeight() const;
 	private:
 		LRESULT LocWindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 		static LRESULT CALLBACK WindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -40,5 +37,7 @@ namespace Tga
 		callback_function_wndProc myWndProcCallback;
 		Vector2ui myResolution;
 		Vector2ui myResolutionWithBorderDifference;
+		bool myKeepAspectRatio = false;
+		float myClientAspectRatio = 1.0f;
 	};
 }

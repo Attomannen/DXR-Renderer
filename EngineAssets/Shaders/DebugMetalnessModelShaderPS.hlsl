@@ -1,0 +1,28 @@
+#include "Common.hlsli"
+#include "LambertFunctions.hlsli"
+
+PixelOutput main(ModelVertexToPixel input)
+{
+    PixelOutput result;
+
+    float2 scaledUV = input.texCoord0;
+	
+    float3 toEye = normalize(CameraToWorld._m03_m13_m23 - input.worldPosition.xyz);
+    float4 albedo = albedoTexture.Sample(defaultSampler, scaledUV).rgba;
+
+    if (albedo.a <= AlphaTestThreshold)
+    {
+        discard;
+        result.color = float4(0.f, 0.f, 0.f, 0.f);
+        return result;
+    }
+
+    float3 material = materialTexture.Sample(defaultSampler, scaledUV).rgb;
+
+    float metalness = material.b;
+    
+    result.color.rgb = (float3) pow(metalness, 2.2);
+    result.color.a = albedo.a;
+    return result;
+}
+

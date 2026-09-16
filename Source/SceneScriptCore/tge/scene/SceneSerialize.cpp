@@ -84,6 +84,13 @@ extern void Tga::SaveScene(const Scene& scene, void (*afileChangedCallback)(Scen
 			{ "scale", {scale.x, scale.y, scale.z} },
 			{ "object-definition", object.second->GetSceneObjectDefinitionName().GetString() },
 		};
+		if (object.second->IsLight())
+		{
+			jsonobj["object-type"] = object.second->GetType() == SceneObjectType::SpotLight ? "spot-light" : "point-light";
+			jsonobj["light"] = { {"color", {object.second->GetLightColor()[0], object.second->GetLightColor()[1], object.second->GetLightColor()[2]}},
+				{"range", object.second->GetLightRange()}, {"radius", object.second->GetLightRadius()},
+				{"inner-angle", object.second->GetLightInnerAngle()}, {"outer-angle", object.second->GetLightOuterAngle()} };
+		}
 
 		for (const SceneProperty& propertyDefinition : object.second->GetPropertyOverrides())
 		{
@@ -144,6 +151,12 @@ extern void Tga::SaveScene(const Scene& scene, void (*afileChangedCallback)(Scen
 	}
 
 	json scenejson;
+	scenejson["lighting"]["sunYaw"] = scene.GetSunYaw();
+	scenejson["lighting"]["sunPitch"] = scene.GetSunPitch();
+	scenejson["lighting"]["sunColor"] = { scene.GetSunColor()[0], scene.GetSunColor()[1], scene.GetSunColor()[2] };
+	scenejson["lighting"]["sunIntensity"] = scene.GetSunIntensity();
+	scenejson["lighting"]["ambientColor"] = { scene.GetAmbientColor()[0], scene.GetAmbientColor()[1], scene.GetAmbientColor()[2] };
+	scenejson["lighting"]["environmentTexture"] = scene.GetEnvironmentTexturePath();
 
 
 	std::ofstream fout(path, std::ios::trunc);
@@ -163,6 +176,17 @@ extern bool Tga::LoadScene(const char* filepath, Scene& scene)
 	std::string stem = resolvedTgsPath.stem().string();
 	scene.SetName(stem.c_str());
 	scene.ClearScene();
+	if (std::filesystem::exists(resolvedTgsPath)) {
+		std::ifstream in(resolvedTgsPath); json root; in >> root;
+		if (root.contains("lighting")) {
+			auto& l = root["lighting"];
+			scene.SetSunYaw(l.value("sunYaw", scene.GetSunYaw())); scene.SetSunPitch(l.value("sunPitch", scene.GetSunPitch()));
+			scene.SetSunIntensity(l.value("sunIntensity", scene.GetSunIntensity()));
+			if (l.contains("sunColor")) { auto c=l["sunColor"].get<std::array<float,3>>(); std::copy(c.begin(),c.end(),scene.GetSunColor()); }
+			if (l.contains("ambientColor")) { auto c=l["ambientColor"].get<std::array<float,3>>(); std::copy(c.begin(),c.end(),scene.GetAmbientColor()); }
+			scene.SetEnvironmentTexturePath(l.value("environmentTexture", std::string()));
+		}
+	}
 
 	std::filesystem::path dataPath = resolvedTgsPath;
 	dataPath.replace_extension(".leveldata");
@@ -211,6 +235,11 @@ extern bool Tga::LoadScene(const char* filepath, Scene& scene)
 		if (item.contains("object-definition"))
 		{
 			object.SetSceneObjectDefinitionName(StringRegistry::RegisterOrGetString(item["object-definition"].get<std::string>()));
+		}
+		if (item.contains("object-type"))
+		{
+			object.SetType(item["object-type"] == "spot-light" ? SceneObjectType::SpotLight : SceneObjectType::PointLight);
+			if (item.contains("light")) { const auto& light = item["light"]; if (light.contains("color")) { auto c = light["color"].get<std::array<float,3>>(); std::copy(c.begin(), c.end(), object.GetLightColor()); } object.GetLightRange() = light.value("range", 1000.f); object.GetLightRadius() = light.value("radius", 0.f); object.GetLightInnerAngle() = light.value("inner-angle", 20.f); object.GetLightOuterAngle() = light.value("outer-angle", 35.f); }
 		}
 
 		std::vector<SceneProperty>& properties = object.EditPropertyOverrides();

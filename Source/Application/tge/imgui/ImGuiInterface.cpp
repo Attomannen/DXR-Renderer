@@ -49,6 +49,26 @@ void ImGuiInterface::Shutdown()
 #endif
 }
 
+void ImGuiInterface::OnResizeBegin()
+{
+#ifndef _RETAIL
+	if (!ImGui::GetCurrentContext()) return;
+	Tga::rhi::IDevice* rhiDevice = Tga::DX11::Rhi();
+	if (!rhiDevice || rhiDevice->GetBackend() != Tga::rhi::Backend::DX12)
+		ImGui_ImplDX11_InvalidateDeviceObjects();
+#endif
+}
+
+void ImGuiInterface::OnResizeEnd()
+{
+#ifndef _RETAIL
+	if (!ImGui::GetCurrentContext()) return;
+	Tga::rhi::IDevice* rhiDevice = Tga::DX11::Rhi();
+	if (!rhiDevice || rhiDevice->GetBackend() != Tga::rhi::Backend::DX12)
+		ImGui_ImplDX11_CreateDeviceObjects();
+#endif
+}
+
 #ifndef _RETAIL
 static ImFont* ImGuiLoadSystemFont(ImFontAtlas& atlas, const char* name, float size)
 {
@@ -168,7 +188,7 @@ void ImGuiInterface::Init()
 		ImGui_ImplDX12_InitInfo initInfo = {};
 		initInfo.Device = static_cast<ID3D12Device*>(rhiDevice->GetNativeDevice());
 		initInfo.CommandQueue = static_cast<ID3D12CommandQueue*>(rhiDevice->GetNativeCommandQueue());
-		initInfo.NumFramesInFlight = 2;   // matches Dx12Device::kFramesInFlight
+		initInfo.NumFramesInFlight = 3;   // matches Dx12Device::kFramesInFlight
 		initInfo.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;   // BackBufferNoSrgbConversion's format -- ImGui renders here, not the sRGB view (see Application::EndFrame)
 		initInfo.SrvDescriptorHeap = static_cast<ID3D12DescriptorHeap*>(rhiDevice->GetImGuiSrvDescriptorHeap());
 		initInfo.LegacySingleSrvCpuDescriptor = fontCpu;

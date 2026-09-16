@@ -77,9 +77,13 @@ void MaterialDocument::Update(float aTimeDelta, InputManager& inputManager)
 		asterix[0] = '*';
 	sprintf_s(buffer, "%s%s###Document:%s", myName.c_str(), asterix, myPath.c_str());
 
-	if (!myIsDockingInitialized)
+	// See SceneDocument.cpp's identical guard: GetDocumentDockSpaceSize() can
+	// still be {0,0} on this document's opening frame, which asserts inside
+	// DockBuilderSetNodeSize -- wait for a real size instead.
+	const ImVec2 outerDockSize = Editor::GetEditor()->GetDocumentDockSpaceSize();
+	if (!myIsDockingInitialized && outerDockSize.x > 0.0f && outerDockSize.y > 0.0f)
 	{
-		ImGui::DockBuilderSetNodeSize(Editor::GetEditor()->GetDocumentDockSpaceId(), Editor::GetEditor()->GetDocumentDockSpaceSize());
+		ImGui::DockBuilderSetNodeSize(Editor::GetEditor()->GetDocumentDockSpaceId(), outerDockSize);
 		ImGui::DockBuilderDockWindow(buffer, Editor::GetEditor()->GetDocumentDockSpaceId());
 		ImGui::DockBuilderFinish(Editor::GetEditor()->GetDocumentDockSpaceId());
 	}
@@ -101,7 +105,7 @@ void MaterialDocument::Update(float aTimeDelta, InputManager& inputManager)
 		ImGuiID dockSpaceId = ImGui::GetID("Material Dockspace");
 		ImGui::DockSpace(dockSpaceId, docSpaceSize, ImGuiDockNodeFlags_None, &myDocumentWindowClass);
 
-		if (!myIsDockingInitialized)
+		if (!myIsDockingInitialized && docSpaceSize.x > 0.0f && docSpaceSize.y > 0.0f)
 		{
 			ImGuiID center = 0, left = 0, right = 0;
 			ImGui::DockBuilderRemoveNode(dockSpaceId);
@@ -144,8 +148,37 @@ void MaterialDocument::Update(float aTimeDelta, InputManager& inputManager)
 void MaterialDocument::DrawProperties()
 {
 	bool changed = false;
+	{
+	Tga::InspectorSection materialSection("Material", true, "The authored material asset and its rendering model.");
+	if (materialSection.IsOpen() && Tga::BeginInspectorPropertyTable("MaterialIdentity"))
+	{
+		Tga::InspectorPropertyLabel("Actions");
+		Tga::InspectorPropertyValue();
+		if (ImGui::SmallButton("Reset Material"))
+		{
+			const std::string preservedPreviewMesh = myMaterial.previewMesh;
+			myMaterial = MaterialAsset::Default();
+			myMaterial.previewMesh = preservedPreviewMesh;
+			changed = true;
+		}
+		if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+			ImGui::SetTooltip("Restore all authored properties and texture assignments to their defaults.");
+		Tga::InspectorPropertyLabel("Shader", "The shader family used to render this material.");
+		Tga::InspectorPropertyValue(); ImGui::TextDisabled("%s", myMaterial.masterMaterial.c_str());
+	const char* surfaceTypes[] = { "Opaque", "Masked", "Transparent" };
+	int surfaceType = myMaterial.surfaceType == "Masked" ? 1 : myMaterial.surfaceType == "Transparent" ? 2 : 0;
+		Tga::InspectorPropertyLabel("Surface Type", "Masked exposes Alpha Cutoff; Transparent is blended.");
+		Tga::InspectorPropertyValue();
+	if (ImGui::Combo("##Surface", &surfaceType, surfaceTypes, IM_ARRAYSIZE(surfaceTypes)))
+	{
+		myMaterial.surfaceType = surfaceTypes[surfaceType];
+		changed = true;
+	}
+	if (surfaceType == 1)
+		{ Tga::InspectorPropertyLabel("Alpha Cutoff"); Tga::InspectorPropertyValue(); changed |= ImGui::SliderFloat("##AlphaCutoff", &myMaterial.alphaCutoff, 0.01f, 0.99f, "%.2f"); }
 
-	if (ImGui::BeginCombo("Preview Mesh", myMaterial.previewMesh.c_str()))
+		Tga::InspectorPropertyLabel("Preview Mesh"); Tga::InspectorPropertyValue();
+	if (ImGui::BeginCombo("##PreviewMesh", myMaterial.previewMesh.c_str()))
 	{
 		for (const char* m : kPreviewMeshes)
 		{
@@ -155,33 +188,54 @@ void MaterialDocument::DrawProperties()
 		}
 		ImGui::EndCombo();
 	}
+		Tga::EndInspectorPropertyTable();
+	}
+	}
 
-	ImGui::SeparatorText("Surface");
-	changed |= ImGui::ColorEdit3("Base Colour", myMaterial.baseColor, ImGuiColorEditFlags_Float);
-	changed |= ImGui::SliderFloat("Metallic", &myMaterial.metalness, 0.f, 1.f, "%.3f");
-	changed |= ImGui::SliderFloat("Roughness", &myMaterial.roughness, 0.f, 1.f, "%.3f");
-	changed |= ImGui::SliderFloat("Ambient Occlusion", &myMaterial.ao, 0.f, 1.f, "%.3f");
-	changed |= ImGui::SliderFloat("Normal Strength", &myMaterial.normalStrength, 0.f, 4.f, "%.2f");
+	{
+	Tga::InspectorSection surfaceSection("Surface");
+	if (surfaceSection.IsOpen() && Tga::BeginInspectorPropertyTable("SurfaceProperties"))
+	{
+		Tga::InspectorPropertyLabel("Base Colour"); Tga::InspectorPropertyValue(); changed |= ImGui::ColorEdit3("##BaseColour", myMaterial.baseColor, ImGuiColorEditFlags_Float);
+		Tga::InspectorPropertyLabel("Metallic"); Tga::InspectorPropertyValue(); changed |= ImGui::SliderFloat("##Metallic", &myMaterial.metalness, 0.f, 1.f, "%.3f");
+		Tga::InspectorPropertyLabel("Roughness"); Tga::InspectorPropertyValue(); changed |= ImGui::SliderFloat("##Roughness", &myMaterial.roughness, 0.f, 1.f, "%.3f");
+		Tga::InspectorPropertyLabel("Ambient Occlusion"); Tga::InspectorPropertyValue(); changed |= ImGui::SliderFloat("##AO", &myMaterial.ao, 0.f, 1.f, "%.3f");
+		Tga::InspectorPropertyLabel("Normal Strength", "Used only when a normal map is assigned."); Tga::InspectorPropertyValue();
+		if (myMaterial.maps[1].empty()) { ImGui::BeginDisabled(); ImGui::SliderFloat("##NormalStrength", &myMaterial.normalStrength, 0.f, 4.f, "%.2f"); ImGui::EndDisabled(); }
+		else changed |= ImGui::SliderFloat("##NormalStrength", &myMaterial.normalStrength, 0.f, 4.f, "%.2f");
+		Tga::EndInspectorPropertyTable();
+	}
+	}
 
-	ImGui::SeparatorText("Emission");
-	changed |= ImGui::ColorEdit3("Emissive Colour", myMaterial.emissiveColor, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
-	changed |= ImGui::SliderFloat("Emissive Strength", &myMaterial.emissiveStrength, 0.f, 16.f, "%.2f");
+	{
+	Tga::InspectorSection emissionSection("Emission");
+	if (emissionSection.IsOpen() && Tga::BeginInspectorPropertyTable("EmissionProperties"))
+	{
+		Tga::InspectorPropertyLabel("Enable Emission"); Tga::InspectorPropertyValue(); bool emission = myMaterial.emissiveStrength > 0.f;
+		if (ImGui::Checkbox("##EmissionEnabled", &emission)) { myMaterial.emissiveStrength = emission ? 1.f : 0.f; changed = true; }
+		ImGui::BeginDisabled(!emission);
+		Tga::InspectorPropertyLabel("Emissive Colour"); Tga::InspectorPropertyValue(); changed |= ImGui::ColorEdit3("##EmissiveColour", myMaterial.emissiveColor, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+		Tga::InspectorPropertyLabel("Intensity"); Tga::InspectorPropertyValue(); changed |= ImGui::SliderFloat("##EmissiveStrength", &myMaterial.emissiveStrength, 0.f, 16.f, "%.2f");
+		ImGui::EndDisabled(); Tga::EndInspectorPropertyTable();
+	}
+	}
 
-	ImGui::SeparatorText("Texture Maps");
+	{
+	Tga::InspectorSection texturesSection("Texture Maps", true, "Drop a cooked DDS texture here, or select one in the Asset Browser and use the picker.");
+	if (texturesSection.IsOpen() && Tga::BeginInspectorPropertyTable("TextureProperties"))
+	{
 	const char* slotNames[4] = { "Albedo (C)", "Normal (N)", "ORM (M)", "FX" };
 	for (int i = 0; i < 4; ++i)
 	{
 		ImGui::PushID(i);
-		ImGui::TextUnformatted(slotNames[i]);
-		ImGui::SameLine(140);
-		ImGui::SetNextItemWidth(-60);
-		char buf[260];
-		strncpy_s(buf, myMaterial.maps[i].c_str(), sizeof(buf));
-		if (ImGui::InputText("##map", buf, sizeof(buf)))
+		Tga::InspectorPropertyLabel(slotNames[i]); Tga::InspectorPropertyValue();
+		const char* assetName = myMaterial.maps[i].empty() ? "None (Texture)" : myMaterial.maps[i].c_str();
+		if (ImGui::Button(assetName, ImVec2(-58, 0)))
 		{
-			myMaterial.maps[i] = buf;
-			changed = true;
+			std::string sel = Editor::GetEditor()->GetAssetBrowser().GetSelectedAsset().GetString();
+			if (sel.ends_with(".dds")) { myMaterial.maps[i] = sel; changed = true; }
 		}
+		if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("Assign the selected DDS from Asset Browser, or drop one here.");
 		if (ImGui::BeginDragDropTarget())
 		{
 			if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(".dds"))
@@ -192,14 +246,11 @@ void MaterialDocument::DrawProperties()
 			ImGui::EndDragDropTarget();
 		}
 		ImGui::SameLine();
-		if (ImGui::SmallButton("Set")) // pull the AssetBrowser's current selection
-		{
-			std::string sel = Editor::GetEditor()->GetAssetBrowser().GetSelectedAsset().GetString();
-			if (sel.find(".dds") != std::string::npos) { myMaterial.maps[i] = sel; changed = true; }
-		}
-		ImGui::SameLine();
-		if (ImGui::SmallButton("X")) { myMaterial.maps[i].clear(); changed = true; }
+		if (Tga::InspectorResetButton("X", "Clear this texture assignment")) { myMaterial.maps[i].clear(); changed = true; }
 		ImGui::PopID();
+	}
+		Tga::EndInspectorPropertyTable();
+	}
 	}
 
 	if (changed)

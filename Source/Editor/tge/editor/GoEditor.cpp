@@ -12,7 +12,6 @@
 
 #include "tge/Application.h"
 #include <tge/log/Log.h>
-#include <tge/windows/BackendChooser.h>
 #include <tge/windows/CrashHandler.h>
 #include <cstdlib>
 
@@ -44,17 +43,17 @@ void GoEditor(const char* aSettingsPath, const EditorConfiguration& aEditorConfi
 {
 	Tga::InstallCrashHandler();
 
-	// Only for a plain interactive launch -- see Go.cpp's identical guard.
+	// DX12 is the engine's default backend -- see Go.cpp's identical guard.
 	// _dupenv_s rather than std::getenv: this project builds with /WX and
 	// without _CRT_SECURE_NO_WARNINGS (unlike Go.cpp's), so plain getenv is a
-	// hard error here (C4996).
+	// hard error here (C4996). DX11 stays fully supported for backporting via
+	// an explicit TGE_RHI=dx11.
 	{
 		char* rhiEnv = nullptr;
 		size_t rhiEnvLen = 0;
 		const bool hasRhiEnv = (_dupenv_s(&rhiEnv, &rhiEnvLen, "TGE_RHI") == 0 && rhiEnv != nullptr);
 		if (rhiEnv) free(rhiEnv);
-		if (!hasRhiEnv && Tga::ShowBackendChooser(L"TGE Editor - Choose Backend") == Tga::RhiBackendChoice::Cancelled)
-			return;
+		if (!hasRhiEnv) _putenv_s("TGE_RHI", "dx12");
 	}
 
 	locSettingsPath = aSettingsPath;

@@ -21,7 +21,10 @@ namespace Tga
 		void BuildObjectList(const std::unordered_map<uint32_t, std::shared_ptr<SceneObject>>& aAllObjects, bool aHasSearch, bool aHasFilter);
 
 	private:
-		std::vector<std::pair<uint32_t, SceneObject*>> mySortedObjects;
+		// IDs remain valid as hierarchy cache entries across scene mutations.
+		// Raw SceneObject pointers do not: deleting/reloading an asset could leave
+		// the previous frame's hierarchy holding dangling pointers.
+		std::vector<uint32_t> mySortedObjects;
 		std::unordered_map<StringId, std::vector<StringId>> myFolderPaths;
 	
 		bool mySceneDirty{ true };
@@ -31,5 +34,11 @@ namespace Tga
 
 		std::vector<PropertyTypeId> myRequiredPropertyTypeIds;
 		int mySelectedPropertyTypeIndex = -1;
+
+		// Inline rename mirrors established hierarchy behaviour: F2, context-menu
+		// Rename, Enter to commit and Escape to cancel.
+		uint32_t myRenameObject = 0;
+		char myRenameBuffer[256]{};
+		bool myFocusRename = false;
 	};
 }

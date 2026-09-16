@@ -3,6 +3,9 @@
 #include <commdlg.h>
 #include <cstdlib>
 #include <regex>
+#include <fstream>
+
+#include <nlohmann/json.hpp>
 
 #include <tge/editor/Scene/SceneDocument.h>
 
@@ -23,6 +26,7 @@
 
 #include <tge/editor/Commands/AddSceneObjectsCommand.h>
 #include <tge/editor/Commands/RemoveSceneObjectsCommand.h>
+#include <tge/scene/ScenePropertyTypes.h>
 
 #include <tge/editor/Editor.h>
 
@@ -146,9 +150,16 @@ void SceneDocument::Update(float aTimeDelta, InputManager& inputManager)
 
 	sprintf_s(buffer, "%s%s###Document:%s", myScene->GetName(), asterix, myScene->GetPath());
 
-	if (!myIsDockingInitialized)
+	// A document's very first frame can see a zero-size document dockspace --
+	// GetContentRegionAvail() (which feeds GetDocumentDockSpaceSize()) reports
+	// {0,0} before ImGui has laid out the host window on its first pass, same
+	// as the editor viewport's own {0,0}-on-first-frame case elsewhere. Building
+	// the one-time layout against that hits DockBuilderSetNodeSize's assert;
+	// wait for a real size instead of asserting on the doc's opening frame.
+	const ImVec2 outerDockSize = Editor::GetEditor()->GetDocumentDockSpaceSize();
+	if (!myIsDockingInitialized && outerDockSize.x > 0.0f && outerDockSize.y > 0.0f)
 	{
-		ImGui::DockBuilderSetNodeSize(Editor::GetEditor()->GetDocumentDockSpaceId(), Editor::GetEditor()->GetDocumentDockSpaceSize());
+		ImGui::DockBuilderSetNodeSize(Editor::GetEditor()->GetDocumentDockSpaceId(), outerDockSize);
 		ImGui::DockBuilderDockWindow(buffer, Editor::GetEditor()->GetDocumentDockSpaceId());
 
 		ImGui::DockBuilderFinish(Editor::GetEditor()->GetDocumentDockSpaceId());
@@ -238,7 +249,7 @@ void SceneDocument::Update(float aTimeDelta, InputManager& inputManager)
 	// todo: ImGui::GetContentRegionAvail() returns wrong result first time it seems. What to do instead?
 	ImGui::DockSpace(dockSpaceId, docSpaceSize, ImGuiDockNodeFlags_None, &myDocumentWindowClass);
 
-	if (!myIsDockingInitialized)
+	if (!myIsDockingInitialized && docSpaceSize.x > 0.0f && docSpaceSize.y > 0.0f)
 	{
 		ImGuiID center = 0, left = 0, rightBottom = 0, rightTop = 0;
 
@@ -296,7 +307,6 @@ void SceneDocument::Update(float aTimeDelta, InputManager& inputManager)
 
 	ImGui::SetNextWindowClass(&myDocumentWindowClass);
 	ImGui::Begin(myPanelWindowNames[(size_t)Panels::Instances].c_str());
-	isViewportOrInstancesFocused = isViewportOrInstancesFocused || ImGui::IsWindowFocused();
 	mySceneObjectList.Draw();
 	ImGui::End();
 
@@ -373,7 +383,7 @@ void SceneDocument::Update(float aTimeDelta, InputManager& inputManager)
 	ImGuiIO& io = ImGui::GetIO();
 	if (isViewportOrInstancesFocused)
 	{
-		if (ImGui::IsAnyItemActive() == false && ImGui::IsKeyDown(ImGuiKey_Delete))
+		if (ImGui::IsAnyItemActive() == false && ImGui::IsKeyPressed(ImGuiKey_Delete))
 		{
 			if (SceneSelection::GetActiveSceneSelection()->GetSelection().size() > 0)
 			{
@@ -616,17 +626,15 @@ void SceneDocument::HandleDrop()
 {
 	if (ImGui::BeginDragDropTarget())
 	{
-		if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(".tgo"))
+		auto placePrefab = [this](const std::string& definitionPath, const std::string& displayName)
 		{
-			std::string data = (const char*)payload->Data;
-
 			auto object = std::make_shared<SceneObject>();
-			StringId objectDefinitionName = StringRegistry::RegisterOrGetString(fs::path(data).stem().string());
+			StringId objectDefinitionName = StringRegistry::RegisterOrGetString(fs::path(definitionPath).stem().string());
 			object->SetSceneObjectDefinitionName(objectDefinitionName);
 
 			if (myScene->GetFirstSceneObject(objectDefinitionName.GetString()) == nullptr)
 			{
-				object->SetName(objectDefinitionName.GetString());
+				object->SetName(displayName.c_str());
 			}
 			else
 			{
@@ -637,7 +645,7 @@ void SceneDocument::HandleDrop()
 				// todo: this is a O(n^2) algorithm
 				while (true)
 				{
-					sprintf_s(buffer, "%s(%i)", objectDefinitionName.GetString(), i);
+					sprintf_s(buffer, "%s(%i)", displayName.c_str(), i);
 					if (myScene->GetFirstSceneObject(buffer) == nullptr)
 					{
 						object->SetName(buffer);
@@ -677,6 +685,75 @@ void SceneDocument::HandleDrop()
 			}
 
 			mySceneObjectList.SetSceneDirty();
+		};
+
+		if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(".tgo"))
+		{
+			const std::string definitionPath = static_cast<const char*>(payload->Data);
+			placePrefab(definitionPath, fs::path(definitionPath).stem().string());
+		}
+
+		// Unity-style model placement: artists drag an FBX straight from Project
+		// into the Scene.  The editor creates its minimal prefab definition beside
+		// the model on first use, adds the Model property automatically, then
+		// places an instance.  TGO remains the serialised prefab asset but no
+		// longer has to be authored before the model can be used.
+		if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(".fbx"))
+		{
+			try
+			{
+			const std::string modelPath = static_cast<const char*>(payload->Data);
+			fs::path prefabPath = fs::path(modelPath).replace_extension(".tgo");
+			fs::path importPath = fs::path(modelPath).replace_extension(".tgm");
+
+			// A generated prefab must have a durable companion import asset.  The
+			// descriptor deliberately belongs next to the source model, not the
+			// editor layout: reimport tools can now change scale/conversion/remaps
+			// without overwriting the authored prefab or guessing its origin.
+			const fs::path absoluteImportPath = fs::path(Settings::GameAssetRoot()) / importPath;
+			if (!fs::exists(absoluteImportPath))
+			{
+				nlohmann::json importSettings = {
+					{ "version", 1 },
+					{ "Fbx", modelPath },
+					{ "scale", 1.0f },
+					{ "axisConversion", "EngineDefault" },
+					{ "normalConvention", "OpenGL" },
+					{ "generatedPrefab", prefabPath.generic_string() },
+					{ "materialRemaps", nlohmann::json::object() },
+					{ "reimport", { { "lastResult", "Generated by FBX placement" } } }
+				};
+				fs::create_directories(absoluteImportPath.parent_path());
+				std::ofstream output(absoluteImportPath);
+				if (output.is_open())
+					output << importSettings.dump(2) << "\n";
+			}
+			auto& definitions = Editor::GetEditor()->GetSceneObjectDefinitionManager();
+			SceneObjectDefinition* definition = definitions.CreateOrGet(prefabPath);
+			if (definition && definition->GetProperties().empty())
+			{
+				ScenePropertyDefinition modelProperty{};
+				modelProperty.name = StringRegistry::RegisterOrGetString("Model");
+				modelProperty.groupName = StringRegistry::RegisterOrGetString("Rendering");
+				modelProperty.description = StringRegistry::RegisterOrGetString("Model placed by dragging the FBX into the scene.");
+				modelProperty.flags = ScenePropertyFlags::IsPerInstance;
+				modelProperty.type = GetPropertyType<CopyOnWriteWrapper<SceneModel>>();
+				auto model = CopyOnWriteWrapper<SceneModel>::Create();
+				model.Edit().path = StringRegistry::RegisterOrGetString(modelPath);
+				modelProperty.value = Property::Create<CopyOnWriteWrapper<SceneModel>>(model);
+				definition->EditProperties().push_back(std::move(modelProperty));
+				definition->Save();
+			}
+			placePrefab(prefabPath.string(), fs::path(modelPath).stem().string());
+			}
+			catch (const std::exception& e)
+			{
+				ERROR_PRINT("FBX placement failed for '%s': %s", static_cast<const char*>(payload->Data), e.what());
+			}
+			catch (...)
+			{
+				ERROR_PRINT("FBX placement failed: unknown error");
+			}
 		}
 
 		ImGui::EndDragDropTarget();

@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <cstddef>
 
 #include <tge/graphics/Vertex.h>
 #include <tge/Animation/Skeleton.h>
@@ -25,6 +26,28 @@ public:
 
 	struct MeshData
 	{
+		// Immutable source data consumed by the future DXR hit shader. These are
+		// deliberately separate from the IA bindings: RayQuery fetches vertices
+		// through raw SRVs, using the byte offsets below.
+		struct RayGeometryData
+		{
+			rhi::SrvHandle vertexRawSrv;
+			rhi::SrvHandle indexRawSrv;
+			rhi::RaytracingBlasHandle blas;
+			uint32_t materialIndex = 0; // RayTracingMaterialTable slot; zero = invalid/default
+			uint32_t vertexStride = sizeof(Vertex);
+			uint32_t positionOffset = offsetof(Vertex, position);
+			uint32_t normalOffset = offsetof(Vertex, normal);
+			uint32_t uv0Offset = offsetof(Vertex, uvs);
+			uint32_t indexStride = sizeof(uint32_t);
+			// Authored per-vertex tangent/binormal -- the same ones GBufferPS.hlsl's
+			// TBN uses (import-time-computed, correct across mirrored-UV shells).
+			// Smoothly interpolated across a triangle exactly like the raster path,
+			// unlike deriving a tangent from position/UV deltas (flat per-triangle).
+			uint32_t tangentOffset = offsetof(Vertex, tangent);
+			uint32_t binormalOffset = offsetof(Vertex, binormal);
+		};
+
 		StringId name;
 		StringId materialName;
 		uint32_t numberOfVertices;
@@ -33,6 +56,7 @@ public:
 		uint32_t offset;
 		rhi::BufferHandle vertexBuffer;
 		rhi::BufferHandle indexBuffer;
+		RayGeometryData rayGeometry;
 		BoxSphereBounds bounds;
 		std::vector<Vertex> vertices;
 		std::vector<unsigned int> indices;

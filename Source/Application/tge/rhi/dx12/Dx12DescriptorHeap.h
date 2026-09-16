@@ -77,7 +77,18 @@ namespace Tga::rhi::dx12
 			return start;
 		}
 
-		void ResetRange() { myNextFree = 1; myReservedSlotZero = true; }
+		// Reserve [0, count) for persistent descriptors mirrored into every
+		// frame heap.  Transient descriptor-table allocations begin at count and
+		// ResetRange() never walks back into this prefix.
+		void ReservePersistentPrefix(uint32_t count)
+		{
+			assert(count > 0 && count < myCapacity);
+			myPersistentPrefix = count;
+			myReservedSlotZero = true;
+			myNextFree = count;
+		}
+
+		void ResetRange() { myNextFree = myPersistentPrefix ? myPersistentPrefix : 1; myReservedSlotZero = true; }
 
 		D3D12_CPU_DESCRIPTOR_HANDLE Cpu(uint32_t aSlot) const
 		{
@@ -105,6 +116,7 @@ namespace Tga::rhi::dx12
 		uint32_t myDescriptorSize = 0;
 		uint32_t myCapacity = 0;
 		uint32_t myNextFree = 1;
+		uint32_t myPersistentPrefix = 0;
 		bool myShaderVisible = false;
 		bool myReservedSlotZero = false;
 		std::vector<uint32_t> myFreeList;

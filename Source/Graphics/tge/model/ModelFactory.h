@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 #include <unordered_set>
+	#include <mutex>
+	#include <future>
 #include <tge/animation/animation.h>
 #include <tge/graphics/Vertex.h>
 #include <tge/model/model.h>
@@ -39,6 +41,15 @@ public:
 
 	std::shared_ptr<Model> GetModel(StringId aFilePath);
 	std::shared_ptr<Model> GetModel(std::string_view aFilePath);
+
+	// Editor-only asynchronous preload. CPU FBX parsing is performed away from
+	// the UI thread; PumpAsyncImports is called from the render thread to adopt
+	// finished work safely. GetModel remains the synchronous runtime API.
+	void RequestAsyncImport(StringId aFilePath);
+	void PumpAsyncImports();
+	bool IsAsyncImportPending(StringId aFilePath) const;
+	// Never starts I/O or parsing; used by the editor while an async job is pending.
+	std::shared_ptr<Model> GetLoadedModel(StringId aFilePath) const;
 
 	AnimatedModelInstance GetAnimatedModelInstance(StringId aFilePath);
 	AnimatedModelInstance GetAnimatedModelInstance(std::string_view aFilePath);
@@ -83,6 +94,9 @@ private:
 
 	std::unordered_set<StringId> myWatchedPaths;
 	std::unordered_map<StringId, std::shared_ptr<Model>> myLoadedModels;	
+	mutable std::mutex myAsyncImportMutex;
+	struct AsyncImportJob;
+	std::unordered_map<StringId, std::shared_ptr<AsyncImportJob>> myAsyncImportJobs;
 	std::unordered_map<AnimationIdentifer, std::shared_ptr<Animation>, AnimationIdentiferHash> myLoadedAnimations;
 
 	static ModelFactory* ourInstance;

@@ -14,6 +14,8 @@ namespace Tga
 		static void PreFrame();
 		static void Render();
 		static void Shutdown();
+		static void OnResizeBegin();
+		static void OnResizeEnd();
 
 		static ImFont* GetIconFontLarge();
 

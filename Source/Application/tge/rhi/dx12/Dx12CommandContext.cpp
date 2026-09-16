@@ -20,6 +20,20 @@ namespace Tga::rhi::dx12
 		// at the start of every frame.
 		List()->SetGraphicsRootSignature(myDevice.GraphicsRootSignature());
 		List()->SetComputeRootSignature(myDevice.ComputeRootSignature());
+		List()->SetComputeRootDescriptorTable(Dx12Device::kRaySceneRootParameter,
+			myDevice.RaySceneDescriptorGpuStart());
+		// Same GPU address as above, bound a second time under the space4 root
+		// parameter so a shader can read the identical slots as Texture2D --
+		// see kRaySceneTexRootParameter's comment.
+		List()->SetComputeRootDescriptorTable(Dx12Device::kRaySceneTexRootParameter,
+			myDevice.RaySceneDescriptorGpuStart());
+		// Only once the first BuildRaytracingTlas of the process has actually
+		// run -- until then both addresses are 0, and binding a null address
+		// to a root SRV is invalid (unlike an unused descriptor-table slot,
+		// which the null descriptors above cover). Scenes without DXR content
+		// (or before the first frame's TLAS build) simply never bind these;
+		// no compute shader is required to declare space2 unless it uses it.
+		myDevice.BindRaytracingSceneForCompute();
 
 		for (auto& h : myBoundSrv) h = {};
 		for (auto& h : myBoundUav) h = {};
@@ -122,6 +136,7 @@ namespace Tga::rhi::dx12
 			TransitionResource(rec->texture, ResourceState::RenderTarget);
 		uint32_t* slot = myDevice.GetRtvSlot(rtv);
 		if (!slot) return;
+		FlushBarriers();
 		List()->ClearRenderTargetView(myDevice.RtvCpuHandle(*slot), rgba, 0, nullptr);
 	}
 
@@ -136,6 +151,7 @@ namespace Tga::rhi::dx12
 		if (clearStencil) flags |= D3D12_CLEAR_FLAG_STENCIL;
 		if (!flags) return;
 		D3D12_CPU_DESCRIPTOR_HANDLE h = myDevice.DsvCpuHandle(*slot);
+		FlushBarriers();
 		List()->ClearDepthStencilView(h, flags, depth, stencil, 0, nullptr);
 	}
 
@@ -169,6 +185,7 @@ namespace Tga::rhi::dx12
 		D3D12_GPU_DESCRIPTOR_HANDLE scratchGpu = myDevice.CbvSrvUavScratch().Gpu(scratchSlot);
 		myDevice.Raw()->CopyDescriptorsSimple(1, scratchCpu, permCpu, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
+		FlushBarriers();
 		List()->ClearUnorderedAccessViewFloat(scratchGpu, permCpu, resource, rgba, 0, nullptr);
 	}
 
@@ -465,6 +482,7 @@ namespace Tga::rhi::dx12
 	{
 		ResolveGraphicsPipeline();
 		FlushGraphicsTables();
+		FlushBarriers();
 		List()->DrawInstanced(vertexCount, 1, startVertex, 0);
 		Tga::DX11::LogDrawCall();
 	}
@@ -472,6 +490,7 @@ namespace Tga::rhi::dx12
 	{
 		ResolveGraphicsPipeline();
 		FlushGraphicsTables();
+		FlushBarriers();
 		List()->DrawInstanced(vertexCountPerInstance, instanceCount, startVertex, startInstance);
 		Tga::DX11::LogDrawCall();
 	}
@@ -479,6 +498,7 @@ namespace Tga::rhi::dx12
 	{
 		ResolveGraphicsPipeline();
 		FlushGraphicsTables();
+		FlushBarriers();
 		List()->DrawIndexedInstanced(indexCount, 1, startIndex, baseVertex, 0);
 		Tga::DX11::LogDrawCall();
 	}
@@ -486,12 +506,14 @@ namespace Tga::rhi::dx12
 	{
 		ResolveGraphicsPipeline();
 		FlushGraphicsTables();
+		FlushBarriers();
 		List()->DrawIndexedInstanced(indexCount, instanceCount, startIndex, baseVertex, startInstance);
 		Tga::DX11::LogDrawCall();
 	}
 	void Dx12CommandContext::Dispatch(uint32_t x, uint32_t y, uint32_t z)
 	{
 		FlushComputeTables();
+		FlushBarriers();
 		List()->Dispatch(x, y, z);
 	}
 
@@ -532,30 +554,23 @@ namespace Tga::rhi::dx12
 		UINT64 totalBytes = 0;
 		device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, &numRows, &rowSizeInBytes, &totalBytes);
 
-		D3D12_HEAP_PROPERTIES uploadHeap = { D3D12_HEAP_TYPE_UPLOAD };
-		D3D12_RESOURCE_DESC ud = {};
-		ud.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-		ud.Width = totalBytes; ud.Height = 1; ud.DepthOrArraySize = 1; ud.MipLevels = 1;
-		ud.SampleDesc.Count = 1;
-		ud.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+		uint64_t uploadOffset = 0;
+		void* mapped = nullptr;
+		ID3D12Resource* uploadRes = nullptr;
+		myDevice.AllocateUploadSpace((uint32_t)totalBytes, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, uploadOffset, mapped, uploadRes);
 
-		ComPtr<ID3D12Resource> upload;
-		if (FAILED(device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &ud, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(upload.GetAddressOf()))))
+		if (!uploadRes || !mapped)
 			return;
 
-		uint8_t* mapped = nullptr;
-		D3D12_RANGE noRead{ 0, 0 };
-		if (SUCCEEDED(upload->Map(0, &noRead, reinterpret_cast<void**>(&mapped))))
+		const uint8_t* src = static_cast<const uint8_t*>(data);
+		for (UINT row = 0; row < numRows; ++row)
 		{
-			const uint8_t* src = static_cast<const uint8_t*>(data);
-			for (UINT row = 0; row < numRows; ++row)
-			{
-				memcpy(mapped + row * footprint.Footprint.RowPitch,
-				       src + row * rowPitch,
-				       (size_t)rowSizeInBytes);
-			}
-			upload->Unmap(0, nullptr);
+			memcpy(static_cast<uint8_t*>(mapped) + row * footprint.Footprint.RowPitch,
+			       src + row * rowPitch,
+			       (size_t)rowSizeInBytes);
 		}
+
+		footprint.Offset += uploadOffset;
 
 		const D3D12_RESOURCE_STATES before = t->state;
 		if (before != D3D12_RESOURCE_STATE_COPY_DEST)
@@ -566,13 +581,14 @@ namespace Tga::rhi::dx12
 			toCopyDest.Transition.StateBefore = before;
 			toCopyDest.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
 			toCopyDest.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			List()->ResourceBarrier(1, &toCopyDest);
+			myBarriers.push_back(toCopyDest);
 		}
 
 		D3D12_TEXTURE_COPY_LOCATION dstLoc = { t->res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {} };
 		dstLoc.SubresourceIndex = 0;
-		D3D12_TEXTURE_COPY_LOCATION srcLoc = { upload.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {} };
+		D3D12_TEXTURE_COPY_LOCATION srcLoc = { uploadRes, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {} };
 		srcLoc.PlacedFootprint = footprint;
+		FlushBarriers();
 		List()->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
 
 		if (before != D3D12_RESOURCE_STATE_COPY_DEST)
@@ -583,18 +599,17 @@ namespace Tga::rhi::dx12
 			back.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
 			back.Transition.StateAfter = before;
 			back.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			List()->ResourceBarrier(1, &back);
+			myBarriers.push_back(back);
 		}
 		// t->state is unchanged overall (restored to `before` above), so no
 		// update to the tracked state needed.
-
-		myDevice.KeepAliveUntilFrameRetires(std::move(upload));
 	}
 	void Dx12CommandContext::CopyTexture(TextureHandle dstH, TextureHandle srcH)
 	{
 		TextureRec* dst = myDevice.GetTexture(dstH);
 		TextureRec* src = myDevice.GetTexture(srcH);
 		if (!dst || !src || !dst->res || !src->res) return;
+		FlushBarriers();
 		List()->CopyResource(dst->res.Get(), src->res.Get());
 	}
 	void Dx12CommandContext::CopyTextureRegion(TextureHandle dstH, uint32_t dstMip, uint32_t dstArray, TextureHandle srcH, uint32_t srcMip, uint32_t srcArray)
@@ -626,7 +641,7 @@ namespace Tga::rhi::dx12
 			b.Transition.StateBefore = before;
 			b.Transition.StateAfter = after;
 			b.Transition.Subresource = sub;
-			List()->ResourceBarrier(1, &b);
+			myBarriers.push_back(b);
 		};
 
 		const D3D12_RESOURCE_STATES dstBefore = dst->state;
@@ -638,6 +653,8 @@ namespace Tga::rhi::dx12
 		dstLoc.SubresourceIndex = dstSub;
 		D3D12_TEXTURE_COPY_LOCATION srcLoc = { src->res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {} };
 		srcLoc.SubresourceIndex = srcSub;
+
+		FlushBarriers();
 		List()->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
 
 		barrier(dst->res.Get(), dstSub, D3D12_RESOURCE_STATE_COPY_DEST, dstBefore);
@@ -794,6 +811,7 @@ namespace Tga::rhi::dx12
 		if (s == ResourceState::ResolveDest) return D3D12_RESOURCE_STATE_RESOLVE_DEST;
 		if (s == ResourceState::ResolveSource) return D3D12_RESOURCE_STATE_RESOLVE_SOURCE;
 		if (s == ResourceState::Present) return D3D12_RESOURCE_STATE_PRESENT;
+		if (s == ResourceState::RaytracingAccelerationStructure) return D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
 		if (s == ResourceState::VertexAndConstantBuffer) return D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
 		if (s == ResourceState::IndexBuffer) return D3D12_RESOURCE_STATE_INDEX_BUFFER;
 		if (s == ResourceState::PixelShaderResource) return D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
@@ -803,6 +821,13 @@ namespace Tga::rhi::dx12
 			return D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 		assert(false && "Dx12: ToD3D12State -- unhandled ResourceState combination");
 		return D3D12_RESOURCE_STATE_COMMON;
+	}
+
+	void Dx12CommandContext::FlushBarriers()
+	{
+		if (myBarriers.empty()) return;
+		List()->ResourceBarrier((UINT)myBarriers.size(), myBarriers.data());
+		myBarriers.clear();
 	}
 
 	void Dx12CommandContext::TransitionResource(TextureHandle h, ResourceState after)
@@ -817,7 +842,7 @@ namespace Tga::rhi::dx12
 		b.Transition.StateBefore = t->state;
 		b.Transition.StateAfter = to;
 		b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-		List()->ResourceBarrier(1, &b);
+		myBarriers.push_back(b);
 		t->state = to;
 	}
 
@@ -833,7 +858,7 @@ namespace Tga::rhi::dx12
 		b.Transition.StateBefore = buf->state;
 		b.Transition.StateAfter = to;
 		b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-		List()->ResourceBarrier(1, &b);
+		myBarriers.push_back(b);
 		buf->state = to;
 	}
 
@@ -844,7 +869,7 @@ namespace Tga::rhi::dx12
 		D3D12_RESOURCE_BARRIER b = {};
 		b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
 		b.UAV.pResource = t->res.Get();
-		List()->ResourceBarrier(1, &b);
+		myBarriers.push_back(b);
 	}
 
 	void Dx12CommandContext::UavBarrier(BufferHandle h)
@@ -854,12 +879,40 @@ namespace Tga::rhi::dx12
 		D3D12_RESOURCE_BARRIER b = {};
 		b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
 		b.UAV.pResource = buf->res.Get();
-		List()->ResourceBarrier(1, &b);
+		myBarriers.push_back(b);
 	}
 
 	// ---- timestamps / markers (milestone 3) ----
-	void Dx12CommandContext::WriteTimestampBegin(TimestampQueryHandle) { /* milestone 3 */ }
-	void Dx12CommandContext::WriteTimestampEnd(TimestampQueryHandle) { /* milestone 3 */ }
-	void Dx12CommandContext::PushMarker(const char*) { /* PIX markers: trivial to add via WinPixEventRuntime's DX12 entry points, not done yet */ }
-	void Dx12CommandContext::PopMarker() { }
+	void Dx12CommandContext::WriteTimestampBegin(TimestampQueryHandle h)
+	{
+		TimestampRec* r = myDevice.GetTimestampRec(h);
+		if (!r) return;
+		const uint32_t slot = r->queryIndex * 2;
+		List()->EndQuery(myDevice.TimestampHeap(), D3D12_QUERY_TYPE_TIMESTAMP, slot);
+		r->hasBegin = true;
+		r->frame = myDevice.FrameIndex();
+		myDevice.MarkTimestampSlotUsed(slot);
+	}
+	void Dx12CommandContext::WriteTimestampEnd(TimestampQueryHandle h)
+	{
+		TimestampRec* r = myDevice.GetTimestampRec(h);
+		if (!r) return;
+		const uint32_t slot = r->queryIndex * 2 + 1;
+		List()->EndQuery(myDevice.TimestampHeap(), D3D12_QUERY_TYPE_TIMESTAMP, slot);
+		r->hasEnd = true;
+		myDevice.MarkTimestampSlotUsed(slot);
+	}
+	void Dx12CommandContext::PushMarker(const char* name)
+	{
+		(void)name;
+#ifdef USE_PIX
+		PIXBeginEvent(List(), PIX_COLOR_DEFAULT, "%s", name);
+#endif
+	}
+	void Dx12CommandContext::PopMarker()
+	{
+#ifdef USE_PIX
+		PIXEndEvent(List());
+#endif
+	}
 }

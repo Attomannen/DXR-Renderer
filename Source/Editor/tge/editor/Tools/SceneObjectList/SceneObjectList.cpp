@@ -4,6 +4,7 @@
 
 #include <tge/editor/Scene/SceneSelection.h>
 #include <tge/editor/Scene/ActiveScene.h>
+#include <tge/editor/Scene/SceneLightSelection.h>
 
 #include <imgui.h>
 #include <algorithm>
@@ -14,11 +15,38 @@
 #include <IconFontHeaders\IconsLucide.h>
 #include <tge/editor/Tools/SceneObjectProperties/ChangeSceneObjectNameCommand.h>
 #include <tge/editor/Tools/SceneObjectProperties/ChangeSceneObjectFolderCommand.h>
+#include <tge/editor/Commands/AddSceneObjectsCommand.h>
+#include <tge/editor/Commands/RemoveSceneObjectsCommand.h>
+#include <tge/editor/Tools/SceneObjectProperties/ChangePropertyOverridesCommand.h>
+#include <tge/scene/ScenePropertyTypes.h>
+#include <tge/settings/settings.h>
 
 using namespace Tga;
 
 void SceneObjectList::Draw()
 {
+	// Fixed pseudo-entries for the scene's sun + ambient -- not real
+	// SceneObjects (there's no light scene-object type yet), so they're
+	// selected via SceneLightSelection instead of SceneSelection, and drawn
+	// here rather than coming from GetActiveScene()->GetSceneObjects().
+	{
+		const SceneLightSelection current = GetSelectedSceneLight();
+		if (ImGui::Selectable(ICON_LC_SUN " Sun", current == SceneLightSelection::Sun, ImGuiSelectableFlags_SpanAllColumns))
+		{
+			SetSelectedSceneLight(SceneLightSelection::Sun);
+			SceneSelection::GetActiveSceneSelection()->ClearSelection();
+		}
+		if (ImGui::Selectable(ICON_LC_SUN_MEDIUM " Ambient", current == SceneLightSelection::Ambient, ImGuiSelectableFlags_SpanAllColumns))
+		{
+			SetSelectedSceneLight(SceneLightSelection::Ambient);
+			SceneSelection::GetActiveSceneSelection()->ClearSelection();
+		}
+		if (ImGui::Button("+ Point Light")) { auto [id, light] = GetActiveScene()->CreateSceneObject<SceneObject>(); light.SetName("Point Light"); light.SetType(SceneObjectType::PointLight); light.GetPosition() = {0.f, 150.f, 0.f}; SceneSelection::GetActiveSceneSelection()->ClearSelection(); SceneSelection::GetActiveSceneSelection()->AddToSelection(id); SetSelectedSceneLight(SceneLightSelection::None); mySceneDirty = true; }
+		ImGui::SameLine();
+		if (ImGui::Button("+ Spot Light")) { auto [id, light] = GetActiveScene()->CreateSceneObject<SceneObject>(); light.SetName("Spot Light"); light.SetType(SceneObjectType::SpotLight); light.GetPosition() = {0.f, 150.f, 0.f}; light.GetLightRange() = 1500.f; light.GetEuler() = {0.f, 0.f, 0.f}; SceneSelection::GetActiveSceneSelection()->ClearSelection(); SceneSelection::GetActiveSceneSelection()->AddToSelection(id); SetSelectedSceneLight(SceneLightSelection::None); mySceneDirty = true; }
+		ImGui::Separator();
+	}
+
 	std::vector<bool> isFolderOpenStack;
 	const auto& allObjects = GetActiveScene()->GetSceneObjects();
 
@@ -46,6 +74,15 @@ void SceneObjectList::Draw()
 	isFolderOpenStack.clear();
 
 	int selectEveryThingBeyondLevel = INT_MAX;
+	std::vector<uint32_t> objectsToDelete;
+	if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
+		&& !ImGui::GetIO().WantTextInput
+		&& ImGui::IsKeyPressed(ImGuiKey_Delete))
+	{
+		const std::span<const uint32_t> selection = SceneSelection::GetActiveSceneSelection()->GetSelection();
+		for (const uint32_t id : selection)
+			if (allObjects.contains(id)) objectsToDelete.push_back(id);
+	}
 
 	const ImGuiPayload* pl = ImGui::GetDragDropPayload();
 	if (pl != nullptr && pl->IsDataType("scene-object-list-item"))
@@ -65,12 +102,14 @@ void SceneObjectList::Draw()
 
 				for (size_t i=0; i<size; ++i)
 				{
-					auto &object = *allObjects.find(dropped[i])->second;
+					const auto objectIt = allObjects.find(dropped[i]);
+					if (objectIt == allObjects.end() || !objectIt->second) continue;
+					auto& droppedObject = *objectIt->second;
 
-					if (ungroup != object.GetPath())
+					if (ungroup != droppedObject.GetPath())
 					{
 						std::shared_ptr<ChangeSceneObjectFolderCommand> command = std::make_shared<ChangeSceneObjectFolderCommand>(
-							dropped[i], ungroup, object.GetPath());
+							dropped[i], ungroup, droppedObject.GetPath());
 						CommandManager::DoCommand(command);
 					}
 				}
@@ -80,9 +119,13 @@ void SceneObjectList::Draw()
 		ImGui::PopStyleColor(2);
 	}
 
-	for (const std::pair<uint32_t, SceneObject*> p : mySortedObjects)
+	for (const uint32_t objectId : mySortedObjects)
 	{
-		const std::vector<StringId>* path = &myFolderPaths[p.second->GetPath()];
+		const auto currentObject = allObjects.find(objectId);
+		if (currentObject == allObjects.end() || !currentObject->second)
+			continue; // The cache predates a scene mutation; rebuild next frame.
+		SceneObject* object = currentObject->second.get();
+		const std::vector<StringId>* path = &myFolderPaths[object->GetPath()];
 
 		int sameSubsetCount = 0;
 		if (previousPath == path)
@@ -137,7 +180,9 @@ void SceneObjectList::Draw()
 
 							for (size_t i=0; i<size; ++i)
 							{
-								auto &object = *allObjects.find(dropped[i])->second;
+								const auto objectIt = allObjects.find(dropped[i]);
+								if (objectIt == allObjects.end() || !objectIt->second) continue;
+								auto& droppedObject = *objectIt->second;
 
 								char folder[128]{};
 								strcpy_s(folder, (*path)[0].GetString());
@@ -147,10 +192,10 @@ void SceneObjectList::Draw()
 								}
 								Tga::StringId pathbufferid = Tga::StringRegistry::RegisterOrGetString(folder);
 
-								if (Tga::StringRegistry::RegisterOrGetString(folder) != object.GetPath())
+								if (Tga::StringRegistry::RegisterOrGetString(folder) != droppedObject.GetPath())
 								{
 									std::shared_ptr<ChangeSceneObjectFolderCommand> command = std::make_shared<ChangeSceneObjectFolderCommand>(
-										dropped[i], pathbufferid, object.GetPath());
+										dropped[i], pathbufferid, droppedObject.GetPath());
 									CommandManager::DoCommand(command);
 								}
 							}
@@ -185,19 +230,77 @@ void SceneObjectList::Draw()
 		if (isParentOpen)
 		{
 			ImGuiTreeNodeFlags flags = itemFlags;
-			if (SceneSelection::GetActiveSceneSelection()->Contains(p.first))
+			if (SceneSelection::GetActiveSceneSelection()->Contains(objectId))
 				flags |= ImGuiTreeNodeFlags_Selected;
 
-			sprintf_s(buffer, ICON_LC_BOX " %s", p.second->GetName());
+			ImGui::PushID(objectId);
+			if (myRenameObject == objectId)
+			{
+				ImGui::SetNextItemWidth(-1);
+				if (myFocusRename) { ImGui::SetKeyboardFocusHere(); myFocusRename = false; }
+				const bool submitted = ImGui::InputText("##Rename", myRenameBuffer, IM_ARRAYSIZE(myRenameBuffer), ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_EnterReturnsTrue);
+				if (submitted || ImGui::IsItemDeactivatedAfterEdit())
+				{
+					if (myRenameBuffer[0] != '\0' && strcmp(myRenameBuffer, object->GetName()) != 0)
+						CommandManager::DoCommand(std::make_shared<ChangeSceneObjectNameCommand>(objectId, myRenameBuffer, object->GetName()));
+					myRenameObject = 0;
+				}
+				if (ImGui::IsKeyPressed(ImGuiKey_Escape)) myRenameObject = 0;
+			}
+			else
+			{
+				sprintf_s(buffer, ICON_LC_BOX " %s", object->GetName());
+				ImGui::TreeNodeEx(buffer, flags);
+			}
+			if (ImGui::BeginDragDropTarget())
+			{
+				if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(".tgmat"))
+				{
+					const fs::path materialPath = static_cast<const char*>(payload->Data);
+						const StringId modelName = "Model"_tgaid;
+						SceneProperty oldProperty{};
+						for (const SceneProperty& property : object->GetPropertyOverrides())
+							if (property.name == modelName) { oldProperty = property; break; }
 
-			ImGui::PushID(p.first);
-			ImGui::TreeNodeEx(buffer, flags);
+						// TGO definitions usually own the model path; a TGS instance
+						// commonly stores only per-instance overrides. Preserve the
+						// resolved value before replacing texture assignments.
+						SceneModel resolvedModel{};
+						std::vector<ScenePropertyDefinition> properties;
+						object->CalculateCombinedPropertySet(Editor::GetEditor()->GetSceneObjectDefinitionManager(), properties);
+						for (const ScenePropertyDefinition& property : properties)
+							if (property.name == modelName && property.type == GetPropertyType<CopyOnWriteWrapper<SceneModel>>())
+							{
+								resolvedModel = property.value.Get<CopyOnWriteWrapper<SceneModel>>()->Get();
+								break;
+							}
+						SceneProperty newProperty{};
+						newProperty.name = modelName;
+						newProperty.type = GetPropertyType<CopyOnWriteWrapper<SceneModel>>();
+						auto model = CopyOnWriteWrapper<SceneModel>::Create();
+						SceneModel& sceneModel = model.Edit();
+						sceneModel = resolvedModel;
+						for (int mesh = 0; mesh < MAX_MESHES_PER_MODEL; ++mesh)
+							sceneModel.materials[mesh] = StringRegistry::RegisterOrGetString(materialPath.generic_string());
+						newProperty.value = Property::Create<CopyOnWriteWrapper<SceneModel>>(model);
+						CommandManager::DoCommand(std::make_shared<ChangePropertyOverridesCommand>(objectId, newProperty, oldProperty));
+						mySceneDirty = true;
+				}
+				ImGui::EndDragDropTarget();
+			}
+
+			if (myRenameObject != objectId && ImGui::IsItemHovered() && ImGui::IsKeyPressed(ImGuiKey_F2))
+			{
+				strncpy_s(myRenameBuffer, object->GetName(), sizeof(myRenameBuffer));
+				myRenameObject = objectId;
+				myFocusRename = true;
+			}
 			if(ImGui::BeginDragDropSource()) 
 			{
-				if (!SceneSelection::GetActiveSceneSelection()->Contains(p.first))
+				if (!SceneSelection::GetActiveSceneSelection()->Contains(objectId))
 				{
 					SceneSelection::GetActiveSceneSelection()->ClearSelection();
-					SceneSelection::GetActiveSceneSelection()->AddToSelection(p.first);
+					SceneSelection::GetActiveSceneSelection()->AddToSelection(objectId);
 				}
 				ImGui::SetDragDropPayload("scene-object-list-item", (void*)SceneSelection::GetActiveSceneSelection()->GetSelection().data(), SceneSelection::GetActiveSceneSelection()->GetSelection().size_bytes());
 				ImGui::Text(buffer);
@@ -205,20 +308,50 @@ void SceneObjectList::Draw()
 			}
 			else if (ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Left))
 			{
-				if (ImGui::GetIO().KeyShift == false) 
+				if (ImGui::GetIO().KeyShift == false)
 				{
 					SceneSelection::GetActiveSceneSelection()->ClearSelection();
 				}
-				SceneSelection::GetActiveSceneSelection()->ToggleSelect(p.first);
+				SceneSelection::GetActiveSceneSelection()->ToggleSelect(objectId);
+				SetSelectedSceneLight(SceneLightSelection::None);
+			}
+			if (myRenameObject != objectId && ImGui::BeginPopupContextItem("SceneObjectContext"))
+			{
+				if (ImGui::MenuItem("Rename", "F2"))
+				{
+					strncpy_s(myRenameBuffer, object->GetName(), sizeof(myRenameBuffer));
+					myRenameObject = objectId;
+					myFocusRename = true;
+				}
+				if (ImGui::MenuItem("Duplicate"))
+				{
+				auto duplicate = std::make_shared<SceneObject>(*object);
+				std::string duplicateName = std::string(object->GetName()) + " Copy";
+					duplicate->SetName(duplicateName.c_str());
+					std::vector<std::shared_ptr<SceneObject>> objects{ duplicate };
+					auto command = std::make_shared<AddSceneObjectsCommand>();
+					command->AddObjects(objects);
+					CommandManager::DoCommand(command);
+				}
+				ImGui::Separator();
+				if (ImGui::MenuItem("Delete", "Del")) objectsToDelete.push_back(objectId);
+				ImGui::EndPopup();
 			}
 			ImGui::PopID();
 
 			if (selectEveryThingBeyondLevel != INT_MAX)
 			{
-				SceneSelection::GetActiveSceneSelection()->AddToSelection(p.first);
+				SceneSelection::GetActiveSceneSelection()->AddToSelection(objectId);
 			}
 		}
 		previousPath = path;
+	}
+
+	if (!objectsToDelete.empty())
+	{
+		auto command = std::make_shared<RemoveSceneObjectsCommand>();
+		command->AddObjects(objectsToDelete);
+		CommandManager::DoCommand(command);
 	}
 
 	while (!isFolderOpenStack.empty())
@@ -372,7 +505,7 @@ void SceneObjectList::BuildObjectList(const std::unordered_map<uint32_t, std::sh
 		}
 		
 
-		mySortedObjects.emplace_back(object.first, object.second.get());
+		mySortedObjects.push_back(object.first);
 
 		StringId folderPath = object.second->GetPath();
 		auto it = myFolderPaths.find(folderPath);
@@ -404,14 +537,16 @@ void SceneObjectList::BuildObjectList(const std::unordered_map<uint32_t, std::sh
 		mySceneDirty = false;
 	}
 
-	std::ranges::sort(mySortedObjects, [&](const std::pair<uint32_t, SceneObject*>& a, const std::pair<uint32_t, SceneObject*>& b)
+	std::ranges::sort(mySortedObjects, [&](const uint32_t a, const uint32_t b)
 	{
-		const StringId folderA = a.second->GetPath();
-		const StringId folderB = b.second->GetPath();
+		const SceneObject* objectA = aAllObjects.at(a).get();
+		const SceneObject* objectB = aAllObjects.at(b).get();
+		const StringId folderA = objectA->GetPath();
+		const StringId folderB = objectB->GetPath();
 
 		if (folderA == folderB)
 		{
-			return std::string_view(a.second->GetName()) < std::string_view(b.second->GetName());
+			return std::string_view(objectA->GetName()) < std::string_view(objectB->GetName());
 		}
 		return folderA < folderB;
 	});

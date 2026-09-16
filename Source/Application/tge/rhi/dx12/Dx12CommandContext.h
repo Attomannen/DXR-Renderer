@@ -99,12 +99,14 @@ namespace Tga::rhi::dx12
 		// change across the app's life, so binding them once/frame -- rather
 		// than tracking "did it change" -- is simplest and correct).
 		void OnBeginFrame();
+		void FlushBarriers();               // submits accumulated resource barriers
 
 	private:
 		ID3D12GraphicsCommandList* List();
 		void ResolveGraphicsPipeline();     // lazily builds/looks up the PSO for pending state, binds it
 		void FlushGraphicsTables();         // copies dirty SRV/Sampler tables into scratch, binds them
 		void FlushComputeTables();          // copies dirty SRV/UAV/Sampler tables into scratch, binds them
+		std::vector<D3D12_RESOURCE_BARRIER> myBarriers;
 
 		Dx12Device& myDevice;
 

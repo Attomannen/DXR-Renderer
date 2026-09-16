@@ -160,10 +160,33 @@ bool GraphicsEngine::IsInitiated()
 
 void Tga::GraphicsEngine::SetFullScreen(bool aFullScreen)
 {
-	DX11::SwapChain->SetFullscreenState(aFullScreen, nullptr);
+	rhi::IDevice* device = DX11::Rhi();
+	if (!device || !device->SetFullscreen(aFullScreen))
+	{
+		ERROR_PRINT("GraphicsEngine: fullscreen request failed");
+		return;
+	}
+	// Do not depend on a WM_SIZE message being delivered synchronously. The
+	// application will resize the swapchain and the deferred renderer follows at
+	// the next BeginFrame.
+	if (Application::GetInstance())
+		Application::GetInstance()->RequestResize();
 }
 bool GraphicsEngine::BeginFrame()
 {
+	// Application resizes the swapchain at the end of the previous frame.  The
+	// deferred renderer owns a separate resolution-dependent set of G-buffer,
+	// HDR, temporal, DXR and post-process resources, so it must follow on the
+	// next frame before any pass is recorded.  Previously only GameWorld::Init
+	// called OnResize(), leaving every off-screen target at its old size after a
+	// window resize or fullscreen transition.
+	if (myDeferredRenderer && myDeferredRenderer->IsReady())
+	{
+		const Vector2ui renderSize = Application::GetInstance()->GetRenderSize();
+		if (renderSize.x > 0 && renderSize.y > 0 && renderSize != myDeferredRenderer->GetResolution())
+			myDeferredRenderer->OnResize(renderSize);
+	}
+
 	myTextureManager->Update();
 
 	myGraphicsStateStack->BeginFrame();

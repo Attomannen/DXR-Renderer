@@ -2,7 +2,7 @@
 
 #include <memory>
 
-// Sponza benchmark harness.
+// Scene-driven render benchmark harness.
 //
 // Env vars (all optional):
 //   BENCH_FRAMES        >0 : run a deterministic fly-through for N frames, write
@@ -11,7 +11,8 @@
 //   BENCH_SPONZA_COPIES grid of Sponza copies to raise mesh / draw-call load (default 1).
 //   BENCH_LIGHTS        active point lights, capped at NUMBER_OF_LIGHTS_ALLOWED (default 8).
 //   BENCH_REPORT        report path (default "bench_report.json", next to the exe).
-//   BENCH_MODEL         model asset path (default "sponza/Sponza.fbx").
+//   BENCH_SCENE         scene path (without .tgs); when unset, the first .tgs
+//                       found under the game asset root is loaded.
 
 namespace Tga { class InputManager; }
 

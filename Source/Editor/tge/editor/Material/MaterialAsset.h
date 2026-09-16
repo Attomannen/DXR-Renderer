@@ -13,6 +13,13 @@ namespace Tga
 	// and here by the GameEditor's Material Editor.
 	struct MaterialAsset
 	{
+		// A material instance references a stable engine shader family instead of
+		// duplicating a shader per texture set.  The renderer currently ships the
+		// PBR master; keeping this explicit makes adding decal, foliage and glass
+		// masters a data change rather than a filename convention.
+		std::string masterMaterial = "PBR";
+		std::string surfaceType = "Opaque"; // Opaque, Masked, Transparent
+		float alphaCutoff      = 0.33f;
 		float baseColor[3]     = { 0.8f, 0.8f, 0.8f };
 		float roughness        = 0.5f;
 		float metalness        = 0.0f;
@@ -45,6 +52,9 @@ namespace Tga
 			};
 			if (j.contains("baseColor"))     arr3(j["baseColor"], baseColor);
 			if (j.contains("emissiveColor")) arr3(j["emissiveColor"], emissiveColor);
+			masterMaterial  = j.value("masterMaterial", masterMaterial);
+			surfaceType     = j.value("surfaceType", surfaceType);
+			alphaCutoff     = j.value("alphaCutoff", alphaCutoff);
 			roughness        = j.value("roughness", roughness);
 			metalness        = j.value("metalness", metalness);
 			ao               = j.value("ao", ao);
@@ -67,6 +77,9 @@ namespace Tga
 		bool Save(const std::string& path) const
 		{
 			nlohmann::json j;
+			j["masterMaterial"]  = masterMaterial;
+			j["surfaceType"]     = surfaceType;
+			j["alphaCutoff"]     = alphaCutoff;
 			j["baseColor"]        = { baseColor[0], baseColor[1], baseColor[2] };
 			j["roughness"]        = roughness;
 			j["metalness"]        = metalness;

@@ -4,10 +4,13 @@
 #include <mutex>
 #include <chrono>
 #include <thread>
+#include <algorithm>
+#include <cctype>
 
 #include <imgui.h>
 #include <tge/editor/imgui_widgets/imgui_widgets.h>
 #include <tge/settings/settings.h>
+#include <tge/log/Log.h>
 #include <tge/scene/SceneSerialize.h>
 
 #include <tge/editor/Editor.h>
@@ -15,6 +18,7 @@
 #include <tge/editor/ObjectDefinition/ObjectDefinitionDocument.h>
 #include <tge/editor/Scene/SceneDocument.h>
 #include <tge/editor/Material/MaterialDocument.h>
+#include <tge/editor/Import/ImportSettingsDocument.h>
 
 #include <IconFontHeaders/IconsLucide.h>
 #include <tge/editor/p4/p4.h>
@@ -89,6 +93,11 @@ void UpdateCacheThread(FileHierarchyCache* cache)
 					}
 				}
 			}
+			for (auto& [path, directory] : cache->pendingCache)
+			{
+				std::ranges::sort(directory.directories);
+				std::ranges::sort(directory.files);
+			}
 
 			{
 				std::lock_guard guard(cache->isAccessingCache);
@@ -130,6 +139,11 @@ StringId AssetBrowser::GetSelectedAsset()
 	return StringRegistry::RegisterOrGetString(mySelectedPath.string());
 }
 
+fs::path AssetBrowser::GetCurrentFolder() const
+{
+	return _current_path;
+}
+
 void AssetBrowser::DrawFileTree(const fs::path& parentPath)
 {
 	auto parentIt = myCache->activeCache.find(parentPath);
@@ -168,30 +182,25 @@ void AssetBrowser::DrawFileTree(const fs::path& parentPath)
 		}
 
 		bool node_open = ImGui::TreeNodeEx(path.filename().string().c_str(), node_flags);
-		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.f, 5.f));
-		ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 2.f);
-		ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.1f, 0.1f, .15f, 0.9f));
-		if (ImGui::BeginPopupContextWindow("File menu")) {
-			//if (ImGui::BeginPopupContextItem("bar")) // <-- use last item id as popup id
-			ImGui::Text("Menu");
-			ImGui::Separator();
-			ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-			if (ImGui::Selectable("Create folder"))
-			{
-				ImGui::CloseCurrentPopup();
-			}
-			if (ImGui::Selectable("Delete folder"))
-			{
-				ImGui::CloseCurrentPopup();
-			}
-			ImGui::PopStyleColor();
-			ImGui::EndPopup();
-		}
-		ImGui::PopStyleColor();
-		ImGui::PopStyleVar(2);
-
 		if (ImGui::IsItemClicked()) {
 			_current_path = path;
+		}
+		if (ImGui::BeginDragDropTarget())
+		{
+			const char* types[] = { ".tgo", ".tgs", ".tgm", ".tgmat", ".tgac", ".dds", ".fbx" };
+			for (const char* type : types)
+			{
+				if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(type))
+				{
+					fs::path source = fs::path(Tga::Settings::GameAssetRoot()) / static_cast<const char*>(payload->Data);
+					fs::path destination = path / source.filename();
+					std::error_code ec;
+					if (source != destination && !fs::exists(destination)) fs::rename(source, destination, ec);
+					if (ec) myAssetOperationError = "Could not move asset: " + ec.message();
+					break;
+				}
+			}
+			ImGui::EndDragDropTarget();
 		}
 
 		if (node_open) 
@@ -210,6 +219,39 @@ void AssetBrowser::Draw()
 	ImGui::SetNextWindowClass(Editor::GetEditor()->GetGlobalWindowClass());
 	ImGui::Begin("Asset Browser - Directories");
 	{
+		if (ImGui::Button(ICON_LC_FOLDER_PLUS " Create Folder"))
+		{
+			myNewFolderBuffer[0] = '\0';
+			myAssetOperationError.clear();
+			ImGui::OpenPopup("Create Folder");
+		}
+		if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+			ImGui::SetTooltip("Create a folder inside the selected asset directory.");
+		if (!myAssetOperationError.empty())
+		{
+			ImGui::TextColored(ImVec4(1.f, .45f, .25f, 1.f), "%s", myAssetOperationError.c_str());
+		}
+
+		if (ImGui::BeginPopupModal("Create Folder", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			ImGui::TextDisabled("Location: %s", _current_path.string().c_str());
+			ImGui::SetNextItemWidth(300.f);
+			ImGui::InputTextWithHint("Name", "New Folder", myNewFolderBuffer, IM_ARRAYSIZE(myNewFolderBuffer), ImGuiInputTextFlags_AutoSelectAll);
+			const bool validName = myNewFolderBuffer[0] != '\0' && std::string_view(myNewFolderBuffer).find_first_of("\\/:*?\"<>|") == std::string_view::npos;
+			ImGui::BeginDisabled(!validName);
+			if (ImGui::Button("Create", ImVec2(120.f, 0.f)))
+			{
+				std::error_code ec;
+				fs::create_directory(_current_path / myNewFolderBuffer, ec);
+				if (ec) myAssetOperationError = "Could not create folder: " + ec.message();
+				else ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndDisabled();
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel", ImVec2(120.f, 0.f))) ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+		}
+		ImGui::Separator();
 		ImGuiTreeNodeFlags node_flags = ImGuiTreeNodeFlags_SpanAvailWidth;
 		node_flags |= ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_OpenOnArrow;
 
@@ -228,6 +270,37 @@ void AssetBrowser::Draw()
 	ImGui::SetNextWindowClass(Editor::GetEditor()->GetGlobalWindowClass());
 	ImGui::Begin("Asset Browser - Files");
 	{
+		ImGui::SetNextItemWidth(-105.f);
+		ImGui::InputTextWithHint("##AssetSearch", "Search assets…", mySearchBuffer, IM_ARRAYSIZE(mySearchBuffer));
+		ImGui::SameLine();
+		const char* assetTypes[] = { "All", "Materials", "Textures", "Scenes", "Meshes", "Other" };
+		ImGui::SetNextItemWidth(100.f);
+		ImGui::Combo("##AssetType", &myAssetTypeFilter, assetTypes, IM_ARRAYSIZE(assetTypes));
+		const std::string search = mySearchBuffer;
+		const auto matchesFilter = [this](const fs::path& path)
+		{
+			const std::string extension = path.extension().string();
+			switch (myAssetTypeFilter)
+			{
+			case 1: return extension == ".tgmat";
+			case 2: return extension == ".dds";
+			case 3: return extension == ".tgs";
+			case 4: return extension == ".tgm" || extension == ".fbx";
+			case 5: return extension != ".tgmat" && extension != ".dds" && extension != ".tgs" && extension != ".tgm" && extension != ".fbx";
+			default: return true;
+			}
+		};
+		const auto matchesSearch = [&search, &matchesFilter](const fs::path& path)
+		{
+			if (!matchesFilter(path)) return false;
+			if (search.empty()) return true;
+			std::string name = path.filename().string();
+			std::string needle = search;
+			std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+			std::transform(needle.begin(), needle.end(), needle.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+			return name.find(needle) != std::string::npos;
+		};
+		ImGui::Separator();
 		auto parentIt = myCache->activeCache.find(_current_path);
 
 		if (parentIt != myCache->activeCache.end())
@@ -237,6 +310,10 @@ void AssetBrowser::Draw()
 
 			for (fs::path absPath : parentCache.files)
 			{
+				if (!matchesSearch(absPath))
+					continue;
+				// Use a stable, per-asset scope for menu and row controls.
+				ImGui::PushID(absPath.generic_string().c_str());
 				{
 					const std::string& root = Tga::Settings::GameAssetRoot();
 					fs::path path = fs::relative(absPath, root);
@@ -246,7 +323,13 @@ void AssetBrowser::Draw()
 
 					P4::FileInfo fileinfo = P4::GetFileInfo(path.string().c_str());
 
+					const std::string extension = path.extension().string();
 					std::string icon = ICON_LC_FILE;
+					if (extension == ".tgmat") icon = ICON_LC_PALETTE;
+					else if (extension == ".dds") icon = ICON_LC_IMAGE;
+					else if (extension == ".tgs") icon = ICON_LC_MAP;
+					else if (extension == ".tgm" || extension == ".fbx") icon = ICON_LC_CUBOID;
+					else if (extension == ".tgo" || extension == ".tgac") icon = ICON_LC_FILE_CODE;
 					if (fileinfo.action != P4::FileAction::None)
 					{
 						switch (fileinfo.action)
@@ -316,10 +399,40 @@ void AssetBrowser::Draw()
 						{
 							if (itemStatus.doubleClicked)
 							{
-								std::unique_ptr<MaterialDocument> document = std::make_unique<MaterialDocument>();
+								// Material preview setup touches graphics resources and can throw
+								// (for example when a shader/model asset is unavailable). Do not
+								// let an asset-browser double click tear down the entire editor.
+								try
+								{
+									std::unique_ptr<MaterialDocument> document = std::make_unique<MaterialDocument>();
+									document->Init(path.string());
+									Editor::GetEditor()->AddDocument(std::move(document));
+								}
+								catch (const std::exception& e)
+								{
+									ERROR_PRINT("Material editor: could not open '%s': %s", path.string().c_str(), e.what());
+								}
+								catch (...)
+								{
+									ERROR_PRINT("Material editor: could not open '%s': unknown exception", path.string().c_str());
+								}
+							}
+						}
+						if (absPath.extension() == ".tgm" && itemStatus.doubleClicked)
+						{
+							try
+							{
+								std::unique_ptr<ImportSettingsDocument> document = std::make_unique<ImportSettingsDocument>();
 								document->Init(path.string());
-
 								Editor::GetEditor()->AddDocument(std::move(document));
+							}
+							catch (const std::exception& e)
+							{
+								ERROR_PRINT("FBX import settings: could not open '%s': %s", path.string().c_str(), e.what());
+							}
+							catch (...)
+							{
+								ERROR_PRINT("FBX import settings: could not open '%s': unknown exception", path.string().c_str());
 							}
 						}
 					}
@@ -344,9 +457,78 @@ void AssetBrowser::Draw()
 
 					if (itemStatus.selectedAfter)
 						mySelectedPath = path;
+
+					if (itemStatus.contextClicked)
+					{
+						mySelectedPath = path;
+						ImGui::OpenPopup("AssetContext");
+					}
+					if (ImGui::BeginPopup("AssetContext"))
+					{
+			ImGui::TextDisabled("%s", path.filename().string().c_str());
+						ImGui::Separator();
+						if (ImGui::MenuItem("Copy Path"))
+							ImGui::SetClipboardText(path.string().c_str());
+						if (ImGui::MenuItem("Select"))
+							mySelectedPath = path;
+						if (absPath.extension() == ".fbx" && ImGui::MenuItem("Convert to TGO"))
+							ConvertFbxToTgo(absPath);
+						if (ImGui::MenuItem("Delete"))
+						{
+							myPendingDelete = absPath;
+						}
+						ImGui::EndPopup();
+					}
 				}
+				ImGui::PopID();
 			}
 		}
+
+	if (!myPendingDelete.empty()) ImGui::OpenPopup("Confirm Asset Delete");
+	if (ImGui::BeginPopupModal("Confirm Asset Delete", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+	{
+		ImGui::TextWrapped("Delete '%s'?", myPendingDelete.filename().string().c_str());
+		if (ImGui::Button("Delete", ImVec2(120.f, 0.f)))
+		{
+			std::error_code ec;
+			fs::remove(myPendingDelete, ec);
+			if (ec) myAssetOperationError = "Could not delete asset: " + ec.message();
+			else if (mySelectedPath == fs::relative(myPendingDelete, Tga::Settings::GameAssetRoot())) mySelectedPath.clear();
+			myPendingDelete.clear();
+			ImGui::CloseCurrentPopup();
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Cancel", ImVec2(120.f, 0.f))) { myPendingDelete.clear(); ImGui::CloseCurrentPopup(); }
+		ImGui::EndPopup();
+	}
 	}
 	ImGui::End();
+}
+
+void AssetBrowser::ConvertFbxToTgo(const fs::path& absoluteFbxPath)
+{
+	const fs::path root = fs::absolute(Settings::GameAssetRoot());
+	std::error_code ec;
+	const fs::path relFbx = fs::relative(absoluteFbxPath, root, ec);
+	if (ec || relFbx.empty() || relFbx.string() == "." || relFbx.is_absolute())
+	{
+		myAssetOperationError = "The FBX must be inside this project's asset folder.";
+		return;
+	}
+
+	const fs::path folder = relFbx.parent_path();
+	const fs::path texturesFolder = folder / "Textures";
+	const fs::path materialsFolder = folder / "Materials";
+	fs::create_directories(root / texturesFolder, ec);
+	if (ec) { myAssetOperationError = "Could not create Textures folder: " + ec.message(); return; }
+	fs::create_directories(root / materialsFolder, ec);
+	if (ec) { myAssetOperationError = "Could not create Materials folder: " + ec.message(); return; }
+
+	FbxCookRequest request;
+	request.fbx = relFbx.generic_string();
+	request.sourceFolder = texturesFolder.generic_string();
+	request.outputFolder = materialsFolder.generic_string();
+	request.generatedPrefab = (folder / (relFbx.stem().string() + ".tgo")).generic_string();
+	request.recursive = false;
+	myAssetOperationError = ImportSettingsDocument::RunCooker(request);
 }

@@ -160,9 +160,13 @@ void AnimationClipDocument::Update(float aTimeDelta, InputManager& inputManager)
 
 	sprintf_s(buffer, "%s%s###Document:%s", myName.GetString(), asterix, myPath.GetString());
 
-	if (!myIsDockingInitialized)
+	// See SceneDocument.cpp's identical guard: GetDocumentDockSpaceSize() can
+	// still be {0,0} on this document's opening frame, which asserts inside
+	// DockBuilderSetNodeSize -- wait for a real size instead.
+	const ImVec2 outerDockSize = Editor::GetEditor()->GetDocumentDockSpaceSize();
+	if (!myIsDockingInitialized && outerDockSize.x > 0.0f && outerDockSize.y > 0.0f)
 	{
-		ImGui::DockBuilderSetNodeSize(Editor::GetEditor()->GetDocumentDockSpaceId(), Editor::GetEditor()->GetDocumentDockSpaceSize());
+		ImGui::DockBuilderSetNodeSize(Editor::GetEditor()->GetDocumentDockSpaceId(), outerDockSize);
 		ImGui::DockBuilderDockWindow(buffer, Editor::GetEditor()->GetDocumentDockSpaceId());
 
 		ImGui::DockBuilderFinish(Editor::GetEditor()->GetDocumentDockSpaceId());
@@ -188,7 +192,7 @@ void AnimationClipDocument::Update(float aTimeDelta, InputManager& inputManager)
 		// todo: ImGui::GetContentRegionAvail() returns wrong result first time it seems. What to do instead?
 		ImGui::DockSpace(dockSpaceId, docSpaceSize, ImGuiDockNodeFlags_None, &myDocumentWindowClass);
 
-		if (!myIsDockingInitialized)
+		if (!myIsDockingInitialized && docSpaceSize.x > 0.0f && docSpaceSize.y > 0.0f)
 		{
 			ImGuiID center = 0;
 			ImGuiID right = 0;

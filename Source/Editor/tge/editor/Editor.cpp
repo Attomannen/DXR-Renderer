@@ -2,6 +2,8 @@
 
 #include <commdlg.h>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 
 #include <tge/editor/Editor.h>
 #include <IconFontHeaders/IconsLucide.h>
@@ -10,6 +12,7 @@
 #include <tge/input/InputManager.h>
 #include <tge/editor/CommandManager/CommandManager.h>
 #include <tge/graphics/DX11.h>
+#include <tge/settings/settings.h>
 #include <tge/imgui/ImGuiInterface.h>
 #include <tge/scene/SceneSerialize.h>
 
@@ -22,6 +25,7 @@
 #include <tge/editor/ObjectDefinition/ObjectDefinitionDocument.h>
 #include <tge/editor/Scene/SceneDocument.h>
 #include <tge/editor/Material/MaterialDocument.h>
+#include <tge/editor/Import/ImportSettingsDocument.h>
 #include <tge/editor/Scene/SceneSelection.h>
 #include <tge/editor/ScriptEditor/ScriptEditor.h>
 #include <tge/editor/Document/Document.h>
@@ -48,6 +52,13 @@
 static bool locImGuiDemoOpen = false;
 static bool locImGuiStyleEditorOpen = false;
 static bool locPerforceEnabled = false;
+static bool locTextureImporterOpen = false;
+static char locTextureInput[512]{};
+static char locTextureOutput[512]{};
+static bool locTextureNormalsDx = false;
+static bool locTextureRecursive = true;
+static bool locTextureForce = false;
+static std::string locTextureCookStatus;
 
 using namespace Tga;
 
@@ -209,6 +220,7 @@ bool Tga::Editor::ShowSavePromptModal()
 
 void Tga::Editor::CreateNewScene()
 {
+	const std::string initialFolder = myAssetBrowser.GetCurrentFolder().string();
 	FileDialog::SaveFile(
 		FileDialog::FileType::tgs,
 		[this](const char* path) {
@@ -228,12 +240,12 @@ void Tga::Editor::CreateNewScene()
 			std::unique_ptr<SceneDocument> sceneDocument = std::make_unique<SceneDocument>();
 			sceneDocument->Init(relativePath.string());
 			AddDocument(std::move(sceneDocument));
-		}
-	);
+		}, initialFolder.c_str());
 }
 
 void Tga::Editor::CreateNewObjectDefinition()
 {
+	const std::string initialFolder = myAssetBrowser.GetCurrentFolder().string();
 	FileDialog::SaveFile(
 		FileDialog::FileType::tgo,
 		[this](const char* path) {
@@ -251,12 +263,12 @@ void Tga::Editor::CreateNewObjectDefinition()
 			std::unique_ptr<ObjectDefinitionDocument> sceneDocument = std::make_unique<ObjectDefinitionDocument>();
 			sceneDocument->Init(p.string());
 			AddDocument(std::move(sceneDocument));
-		}
-	);
+		}, initialFolder.c_str());
 }
 
 void Tga::Editor::CreateNewMaterial()
 {
+	const std::string initialFolder = myAssetBrowser.GetCurrentFolder().string();
 	FileDialog::SaveFile(
 		FileDialog::FileType::tgmat,
 		[this](const char* path) {
@@ -271,12 +283,12 @@ void Tga::Editor::CreateNewMaterial()
 			std::unique_ptr<MaterialDocument> document = std::make_unique<MaterialDocument>();
 			document->Init(p.string());
 			AddDocument(std::move(document));
-		}
-	);
+		}, initialFolder.c_str());
 }
 
 void Tga::Editor::CreateNewAnimationClip()
 {
+	const std::string initialFolder = myAssetBrowser.GetCurrentFolder().string();
 	FileDialog::SaveFile(
 		FileDialog::FileType::tgac,
 		[this](const char* path) {
@@ -295,9 +307,86 @@ void Tga::Editor::CreateNewAnimationClip()
 			std::unique_ptr<AnimationClipDocument> sceneDocument = std::make_unique<AnimationClipDocument>();
 			sceneDocument->Init(p.string());
 			AddDocument(std::move(sceneDocument));
-		}
-	);
+		}, initialFolder.c_str());
 }
+
+void Tga::Editor::CreateNewImportSettings()
+{
+	const std::string initialFolder = myAssetBrowser.GetCurrentFolder().string();
+	FileDialog::SaveFile(FileDialog::FileType::tgm, [this](const char* path) {
+		fs::path p = path;
+		if (p.extension().empty()) p = p.replace_extension(".tgm");
+		// Init accepts an empty/new file and supplies safe defaults; saving it
+		// immediately makes the Project browser see the asset before it is edited.
+		std::ofstream(p) << "{\n  \"version\": 1,\n  \"Fbx\": \"\",\n  \"scale\": 1.0,\n  \"axisConversion\": \"EngineDefault\",\n  \"normalConvention\": \"OpenGL\",\n  \"materialRemaps\": {},\n  \"reimport\": {}\n}\n";
+		auto document = std::make_unique<ImportSettingsDocument>();
+		document->Init(p.string());
+		AddDocument(std::move(document));
+	}, initialFolder.c_str());
+}
+
+static void OpenTextureImporterFromSelection()
+{
+	const std::filesystem::path root = Tga::Settings::GameAssetRoot();
+	std::filesystem::path selected = Editor::GetEditor()->GetAssetBrowser().GetSelectedAsset().GetString();
+	std::filesystem::path folder = root / selected;
+	if (!std::filesystem::is_directory(folder)) folder = folder.parent_path();
+	if (folder.empty()) folder = root;
+	strncpy_s(locTextureInput, folder.string().c_str(), sizeof(locTextureInput) - 1);
+	strncpy_s(locTextureOutput, folder.string().c_str(), sizeof(locTextureOutput) - 1);
+	locTextureCookStatus.clear();
+	locTextureImporterOpen = true;
+}
+
+static void DrawTextureImporter()
+{
+	if (!locTextureImporterOpen) return;
+	ImGui::SetNextWindowSize(ImVec2(620, 0), ImGuiCond_FirstUseEver);
+	if (!ImGui::Begin("Texture Importer", &locTextureImporterOpen)) { ImGui::End(); return; }
+	ImGui::TextWrapped("Convert loose source maps into the engine DDS layout. Source names are detected as a convenience; use cook.json in this folder for explicit per-material channel mappings and overrides.");
+	ImGui::Separator();
+	ImGui::InputText("Source folder", locTextureInput, sizeof(locTextureInput));
+	ImGui::InputText("Cooked DDS output", locTextureOutput, sizeof(locTextureOutput));
+	ImGui::Checkbox("Source normals are DirectX", &locTextureNormalsDx);
+	ImGui::Checkbox("Include subfolders", &locTextureRecursive);
+	ImGui::Checkbox("Force recook", &locTextureForce);
+	ImGui::SeparatorText("Output packing");
+	ImGui::BulletText("_C.dds  BC7 sRGB: base colour RGB, opacity A");
+	ImGui::BulletText("_N.dds  BC5 linear: normal X/Y");
+	ImGui::BulletText("_M.dds  BC7 linear: ambient occlusion, roughness, metallic");
+	ImGui::BulletText("_FX.dds BC7 linear: emissive mask, height");
+	if (ImGui::Button("Cook textures", ImVec2(140, 0)))
+	{
+		// GameEditor normally runs with Bin as its working directory, so deriving
+		// from current_path()/Bin produced Bin/Bin/TextureCooker_Debug.exe. Resolve
+		// beside the actual host executable instead; this also survives launching
+		// the editor from Visual Studio or a shortcut with another working folder.
+		wchar_t modulePath[MAX_PATH]{};
+		GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
+		std::filesystem::path exe = std::filesystem::path(modulePath).parent_path() / "TextureCooker_Debug.exe";
+		if (!std::filesystem::exists(exe))
+			exe = std::filesystem::current_path() / "TextureCooker_Debug.exe";
+		if (!std::filesystem::exists(exe))
+		{
+			locTextureCookStatus = "TextureCooker_Debug.exe was not found beside GameEditor.";
+			ImGui::TextWrapped("%s", locTextureCookStatus.c_str());
+			ImGui::End();
+			return;
+		}
+		const std::string command = "\"" + exe.string() + "\" --in \"" + locTextureInput + "\" --out \"" + locTextureOutput + "\" --src-normals " + (locTextureNormalsDx ? "dx" : "gl") + (locTextureRecursive ? " --recursive" : "") + (locTextureForce ? " --force" : "");
+		std::vector<wchar_t> commandLine(command.begin(), command.end()); commandLine.push_back(L'\0');
+		STARTUPINFOW startup{}; startup.cb = sizeof(startup); PROCESS_INFORMATION process{};
+		if (CreateProcessW(nullptr, commandLine.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process))
+		{
+			CloseHandle(process.hThread); CloseHandle(process.hProcess);
+			locTextureCookStatus = "Texture cook started. Refresh the Project browser after it completes.";
+		}
+		else locTextureCookStatus = "Could not launch TextureCooker_Debug.exe.";
+	}
+	if (!locTextureCookStatus.empty()) ImGui::TextWrapped("%s", locTextureCookStatus.c_str());
+	ImGui::End();
+}
+
 void Tga::Editor::Update(float aTimeDelta, InputManager& inputManager)
 {
 	ImGuizmo::BeginFrame();
@@ -382,26 +471,6 @@ void Tga::Editor::Update(float aTimeDelta, InputManager& inputManager)
 				{
 					if (ImGui::BeginMenu("File"))
 					{
-						if (ImGui::MenuItem("New scene..."))
-						{
-							CreateNewScene();
-						}
-
-						if (ImGui::MenuItem("New object definition..."))
-						{
-							CreateNewObjectDefinition();
-						}
-
-						if (ImGui::MenuItem("New animation clip..."))
-						{
-							CreateNewAnimationClip();
-						}
-
-						if (ImGui::MenuItem("New material..."))
-						{
-							CreateNewMaterial();
-						}
-
 						if (ImGui::MenuItem("Save", "Ctrl+S"))
 						{
 							Save();
@@ -426,6 +495,21 @@ void Tga::Editor::Update(float aTimeDelta, InputManager& inputManager)
 					if (ImGui::BeginMenu("View"))
 					{
 						ImGui::MenuItem("Render Viewport Grid", NULL, &myIsViewportGridVisible);
+						ImGui::EndMenu();
+					}
+					if (ImGui::BeginMenu("Create"))
+					{
+						if (ImGui::MenuItem("Scene")) CreateNewScene();
+						if (ImGui::MenuItem("Object Definition")) CreateNewObjectDefinition();
+						if (ImGui::MenuItem("Animation Clip")) CreateNewAnimationClip();
+						if (ImGui::MenuItem("Material")) CreateNewMaterial();
+						if (ImGui::MenuItem("FBX Import Settings")) CreateNewImportSettings();
+						ImGui::EndMenu();
+					}
+					if (ImGui::BeginMenu("Assets"))
+					{
+						if (ImGui::MenuItem("Texture Importer..."))
+							OpenTextureImporterFromSelection();
 						ImGui::EndMenu();
 					}
 					// @todo: need to change this if we want it working, we need a document to get active scene
@@ -571,6 +655,7 @@ void Tga::Editor::Update(float aTimeDelta, InputManager& inputManager)
 			ImGui::ShowStyleEditor();
 			ImGui::End();
 		}
+		DrawTextureImporter();
 	}	
 }
 

@@ -17,7 +17,6 @@ dirs["editor_default_graphics"]	= os.realpath(dirs.root .. "Source/EditorDefault
 dirs["editor"]					= os.realpath(dirs.root .. "Source/Editor")
 dirs["graphics"]				= os.realpath(dirs.root .. "Source/Graphics")
 dirs["scene_script_core"]		= os.realpath(dirs.root .. "Source/SceneScriptCore")
-dirs["core_tests"]		        = os.realpath(dirs.root .. "Source/CoreTests")
 dirs["settings"]		= os.realpath(dirs.root .. "Bin/settings/")
 dirs["engine_assets"] 	= os.realpath(dirs.root .. "EngineAssets/")
 dirs["game"]			= os.realpath(dirs.root .. "Source/Game/")

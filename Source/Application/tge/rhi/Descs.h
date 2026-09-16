@@ -66,6 +66,9 @@ namespace Tga::rhi
 		ResolveDest             = 1 << 10,
 		ResolveSource           = 1 << 11,
 		Present                 = 1 << 12,
+		// Acceleration-structure result buffers are not ordinary UAV buffers.
+		// DXR build/copy/read operations require this explicit D3D12 state.
+		RaytracingAccelerationStructure = 1 << 13,
 		GenericRead = VertexAndConstantBuffer | IndexBuffer | NonPixelShaderResource
 		            | PixelShaderResource | CopySource,
 	};
@@ -110,6 +113,39 @@ namespace Tga::rhi
 		const char* debugName   = nullptr;
 	};
 
+	// Immutable triangle geometry used to build one bottom-level acceleration
+	// structure. The source buffers remain owned by the model; the BLAS merely
+	// references their GPU virtual addresses.
+	struct RaytracingBlasDesc
+	{
+		BufferHandle vertexBuffer;
+		BufferHandle indexBuffer;
+		uint32_t vertexCount = 0;
+		uint32_t vertexStride = 0;
+		uint32_t indexCount = 0;
+		Format indexFormat = Format::R32_UInt;
+		const char* debugName = nullptr;
+	};
+	struct RaytracingInstanceDesc
+	{
+		RaytracingBlasHandle blas;
+		uint32_t vertexSrv = 0, indexSrv = 0, materialIndex = 0;
+		uint32_t vertexStride = 0, positionOffset = 0, normalOffset = 0, uv0Offset = 0;
+		uint32_t tangentOffset = 0, binormalOffset = 0;
+		float transform[12] = {}; // row-major 3x4, matches D3D12 instance layout
+		float previousTransform[12] = {};
+		uint32_t motionHistoryValid = 0; // previous rendered rigid transform exists
+		uint32_t instanceId = 0;
+		uint8_t instanceMask = 0xFF;
+		// True only when this instance's material can never reject a candidate
+		// triangle -- RayTracingMaterialTable::IsRayOpaque mirrors the exact
+		// condition AcceptRayTriangle tests in DxrCommon.hlsli. The backend
+		// turns this into a per-instance FORCE_OPAQUE / FORCE_NON_OPAQUE flag,
+		// which is what lets traversal hardware resolve ordinary opaque
+		// geometry without exiting to the shader's Proceed() loop at all.
+		bool rayOpaque = false;
+	};
+
 	// ---- textures ---------------------------------------------------
 	enum class TextureBind : uint32_t
 	{
@@ -146,6 +182,10 @@ namespace Tga::rhi
 	// ---- views ----------------------------------------------------
 	constexpr uint32_t kAllMips = ~0u;
 	constexpr uint32_t kAllSlices = ~0u;
+	// Buffer views must state their interpretation explicitly. A raw view is
+	// addressed in 32-bit words by HLSL ByteAddressBuffer; it is not a
+	// structured view with a zero stride.
+	enum class BufferSrvType : uint8_t { Default, Structured, Raw };
 
 	struct SrvDesc
 	{
@@ -155,7 +195,7 @@ namespace Tga::rhi
 		uint32_t arraySize = kAllSlices;
 		Format   formatOverride = Format::Unknown;
 		bool     asCube = false;
-		bool     asStructuredOrRaw = false;   // buffer SRV
+		BufferSrvType bufferType = BufferSrvType::Default;
 		uint32_t bufferFirstElement = 0;
 		uint32_t bufferNumElements = 0;
 	};

@@ -14,6 +14,24 @@ namespace Tga::rhi
 		virtual ~IDevice() = default;
 
 		virtual Backend GetBackend() const = 0;
+		// Hardware/API capability, not a user setting.  DX11 always reports
+		// false; DX12 reports true only after Device5, CommandList4 and the
+		// Tier 1.1 feature query have all succeeded.
+		virtual bool SupportsRaytracingTier11() const = 0;
+		// Returns an invalid handle on backends without DXR. Creation is intended
+		// for immutable model geometry and may synchronously compact at load time.
+		virtual RaytracingBlasHandle CreateRaytracingBlas(const RaytracingBlasDesc&) = 0;
+		virtual void Destroy(RaytracingBlasHandle) = 0;
+		virtual void BuildRaytracingTlas(const RaytracingInstanceDesc*, uint32_t count) = 0;
+		virtual uint32_t RegisterRaySceneSrv(SrvHandle) = 0;
+		// Must be called after BuildRaytracingTlas and before any RayQuery
+		// dispatch. Root descriptors capture GPU virtual addresses at bind time;
+		// false means this frame has no valid ray-tracing scene.
+		virtual bool BindRaytracingSceneForCompute() = 0;
+		// Index of the command-buffer slot currently being recorded.  Resources
+		// written by the CPU and consumed by the GPU use this to select storage
+		// that cannot still be referenced by an earlier frame.
+		virtual uint32_t GetFrameIndex() const = 0;
 
 		// ---- resources ----
 		virtual BufferHandle  CreateBuffer(const BufferDesc&, const void* initialData = nullptr) = 0;
@@ -52,6 +70,9 @@ namespace Tga::rhi
 
 		// ---- swapchain / frame ----
 		virtual bool          Resize(uint32_t w, uint32_t h) = 0;
+		// Requests exclusive fullscreen on the backend's own swapchain.  Kept on
+		// IDevice because DX12 deliberately has no legacy DX11::SwapChain pointer.
+		virtual bool          SetFullscreen(bool enabled) = 0;
 		virtual TextureHandle GetBackBuffer() const = 0;
 		virtual RtvHandle     GetBackBufferRtv(bool srgb) const = 0;
 		virtual TextureHandle GetDefaultDepth() const = 0;

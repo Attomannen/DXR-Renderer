@@ -23,7 +23,8 @@
 // scenes like Sponza need this well above the old value of 4. CPU-only constant:
 // grows a few fixed-size pointer/StringId arrays (Model, ModelInstance,
 // AnimatedModelInstance, SceneModel, SceneModelMeshInfo) -- no GPU/HLSL coupling.
-#define MAX_MESHES_PER_MODEL 128
+// Bistro Exterior uses 132 materials; retain every mesh instead of truncating.
+#define MAX_MESHES_PER_MODEL 2048
 
 // do not change these without updating common.hlsli
 #define NUMBER_OF_LIGHTS_ALLOWED 8

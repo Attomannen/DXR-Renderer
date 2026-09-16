@@ -47,6 +47,13 @@ namespace Tga::rhi::dx11
 		~Dx11Device() override;
 
 		Backend GetBackend() const override { return Backend::DX11; }
+		bool SupportsRaytracingTier11() const override { return false; }
+		RaytracingBlasHandle CreateRaytracingBlas(const RaytracingBlasDesc&) override { return {}; }
+		void Destroy(RaytracingBlasHandle) override {}
+		void BuildRaytracingTlas(const RaytracingInstanceDesc*, uint32_t) override {}
+		uint32_t RegisterRaySceneSrv(SrvHandle) override { return 0; }
+		bool BindRaytracingSceneForCompute() override { return false; }
+		uint32_t GetFrameIndex() const override { return 0; }
 
 		BufferHandle  CreateBuffer(const BufferDesc&, const void* initialData) override;
 		TextureHandle CreateTexture(const TextureDesc&, const SubresourceData* initial, uint32_t initialCount) override;
@@ -76,6 +83,7 @@ namespace Tga::rhi::dx11
 		DynamicAlloc AllocateDynamicConstants(const void* data, uint32_t byteSize) override;
 
 		bool          Resize(uint32_t w, uint32_t h) override;
+		bool          SetFullscreen(bool enabled) override;
 		TextureHandle GetBackBuffer() const override { return myBackBufferTex; }
 		RtvHandle     GetBackBufferRtv(bool srgb) const override { return srgb ? myBackBufferRtvSrgb : myBackBufferRtvLinear; }
 		TextureHandle GetDefaultDepth() const override { return myDepthTex; }

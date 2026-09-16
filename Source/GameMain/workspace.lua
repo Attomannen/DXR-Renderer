@@ -21,7 +21,6 @@ include "."
 group "Engine"
 include (dirs.external)
 include (dirs.application)
-include (dirs.core_tests)
 include (dirs.graphics)
 include (dirs.core)
 include (dirs.scene_script_core)

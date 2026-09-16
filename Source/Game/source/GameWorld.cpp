@@ -6,6 +6,7 @@
 #include "CubemapPrefilter.h"
 #include <cstdio>
 #include <tge/render/DeferredRenderer.h>
+#include <tge/render/RayTracingMaterialTable.h>
 #include <tge/graphics/RenderTarget.h>
 #include <tge/graphics/DepthBuffer.h>
 #include <tge/render/RenderGraph.h>
@@ -60,6 +61,7 @@
 #include <string>
 #include <cctype>
 #include <functional>
+#include <unordered_map>
 #include <vector>
 
 using namespace Tga;
@@ -103,13 +105,14 @@ namespace
 	using json = nlohmann::json;
 
 	// Sentinel scene name for the procedural "engine room" (no .tgs on disk).
-	static const char* kBuiltinRoomScene = "<BuiltinRoom>";
 
 	// A fixed-parameter PBR material, matching DeferredRenderer::DebugMaterial +
 	// optional [C,N,M,FX] texture map paths. Serialised as .tgmat JSON by the
-	// GameEditor's Material Editor; loaded here for the built-in room + debug sphere.
+	// GameEditor's Material Editor; loaded here for the debug sphere.
 	struct MaterialDef
 	{
+		std::string surfaceType = "Opaque"; // Opaque, Masked, Transparent; authored in .tgmat
+		float alphaCutoff      = 0.33f;
 		float baseColor[3]     = { 0.8f, 0.8f, 0.8f };
 		float roughness        = 0.5f;
 		float metalness        = 0.0f;
@@ -129,6 +132,8 @@ namespace
 		};
 		if (j.contains("baseColor"))     arr3(j["baseColor"], out.baseColor);
 		if (j.contains("emissiveColor")) arr3(j["emissiveColor"], out.emissiveColor);
+		out.surfaceType      = j.value("surfaceType", out.surfaceType);
+		out.alphaCutoff      = j.value("alphaCutoff", out.alphaCutoff);
 		out.roughness        = j.value("roughness", out.roughness);
 		out.metalness        = j.value("metalness", out.metalness);
 		out.ao               = j.value("ao", out.ao);
@@ -159,12 +164,12 @@ namespace
 		return true;
 	}
 
-	// One renderable from a .tgo / scene object: model + explicit per-mesh textures
-	// ([C,N,M,FX] per material) + a world transform.
+	// One renderable from a .tgo / scene object: model + one .tgmat asset per
+	// mesh/material + a world transform.
 	struct SceneEntry
 	{
 		std::string fbx;
-		std::vector<std::array<std::string, 4>> textures;   // per mesh/material
+		std::vector<std::string> materials;
 		Matrix4x4f transform;                               // identity by default
 	};
 
@@ -180,19 +185,14 @@ namespace
 			out.fbx = v.value("path", "");
 			// tgo paths use backslashes; normalise for ResolveAssetPath
 			std::replace(out.fbx.begin(), out.fbx.end(), '\\', '/');
-			out.textures.clear();
-			if (v.contains("textures"))
+			out.materials.clear();
+			if (v.contains("materials"))
 			{
-				for (const json& row : v["textures"])
+				for (const json& material : v["materials"])
 				{
-					std::array<std::string, 4> t{ "", "", "", "" };
-					for (size_t i = 0; i < row.size() && i < 4; ++i)
-					{
-						std::string s = row[i].get<std::string>();
-						std::replace(s.begin(), s.end(), '\\', '/');
-						t[i] = s;
-					}
-					out.textures.push_back(t);
+					std::string path = material.get<std::string>();
+					std::replace(path.begin(), path.end(), '\\', '/');
+					out.materials.push_back(path);
 				}
 			}
 			return !out.fbx.empty();
@@ -210,6 +210,30 @@ namespace
 		return e;
 	}
 
+	// Scenes are the runtime entry point. When a caller has not selected one,
+	// pick the first one in a stable order instead of assuming a sample model is
+	// present in the asset tree.
+	std::optional<std::string> FindFirstTgsScene()
+	{
+		const fs::path root = Tga::Settings::GameAssetRoot();
+		std::error_code ec;
+		std::vector<fs::path> scenes;
+		for (const fs::directory_entry& item : fs::recursive_directory_iterator(root, ec))
+		{
+			if (item.is_regular_file() && LowerStr(item.path().extension().string()) == ".tgs")
+				scenes.push_back(item.path());
+		}
+		if (ec)
+		{
+			ERROR_PRINT("bench: cannot scan scenes under %s: %s", root.string().c_str(), ec.message().c_str());
+			return std::nullopt;
+		}
+		if (scenes.empty()) return std::nullopt;
+
+		std::sort(scenes.begin(), scenes.end());
+		return fs::relative(scenes.front(), root, ec).replace_extension().generic_string();
+	}
+
 	// Load a .tgs scene: <gameRoot>/<name>.tgs + its <name>.leveldata/ folder of
 	// object files. Each object references a .tgo (via "path") or carries the
 	// Model property inline, plus translation/rotation/scale.
@@ -217,14 +241,36 @@ namespace
 	{
 		std::vector<SceneEntry> out;
 		const fs::path root = fs::path(Tga::Settings::GameAssetRoot());
-		fs::path levelData = root / (name + ".leveldata");
+		const fs::path scenePath = root / fs::path(name).replace_extension(".tgs");
+		fs::path levelData = scenePath;
+		levelData.replace_extension(".leveldata");
 		std::error_code ec;
 		if (!fs::exists(levelData, ec))
 		{
-			// also try the name as given (may already include .tgs)
-			levelData = root / (fs::path(name).stem().string() + ".leveldata");
-			if (!fs::exists(levelData, ec)) { ERROR_PRINT("bench: no leveldata for scene '%s'", name.c_str()); return out; }
+			ERROR_PRINT("bench: no leveldata for scene '%s'", name.c_str());
+			return out;
 		}
+
+		// Lazily built once per scene load (only if an object actually needs
+		// "object-definition" resolution) and reused for every object, instead of
+		// re-walking the entire asset tree with recursive_directory_iterator for
+		// each individual object -- that was an O(objects * assetTreeSize) scan
+		// that dominated load time on scenes with many objects.
+		std::unordered_map<std::string, fs::path> tgoByStem;
+		bool tgoByStemBuilt = false;
+		auto buildTgoIndex = [&]()
+		{
+			if (tgoByStemBuilt) return;
+			tgoByStemBuilt = true;
+			std::error_code scanEc;
+			for (const fs::directory_entry& de : fs::recursive_directory_iterator(root, scanEc))
+			{
+				if (de.is_regular_file() && de.path().extension() == ".tgo")
+					tgoByStem.emplace(de.path().stem().string(), de.path());
+			}
+			if (scanEc)
+				ERROR_PRINT("bench: cannot scan object-definitions under %s: %s", root.string().c_str(), scanEc.message().c_str());
+		};
 
 		for (const fs::directory_entry& item : fs::directory_iterator(levelData, ec))
 		{
@@ -248,13 +294,9 @@ namespace
 				const std::string defName = obj["object-definition"].get<std::string>();
 				if (!defName.empty())
 				{
-					fs::path found;
-					for (const fs::directory_entry& de : fs::recursive_directory_iterator(root, ec))
-					{
-						if (de.is_regular_file() && de.path().extension() == ".tgo"
-							&& de.path().stem().string() == defName) { found = de.path(); break; }
-					}
-					if (!found.empty()) { if (auto le = LoadTgo(found)) { e = *le; haveModel = true; } }
+					buildTgoIndex();
+					auto found = tgoByStem.find(defName);
+					if (found != tgoByStem.end()) { if (auto le = LoadTgo(found->second)) { e = *le; haveModel = true; } }
 					else ERROR_PRINT("bench: object-definition '%s' not found under %s",
 						defName.c_str(), root.string().c_str());
 				}
@@ -284,9 +326,7 @@ struct GameWorld::Impl
 	int   benchFrames = 0;
 	int   warmupFrames = 60;
 	int   sponzaCopies = 1;
-	int   lightCount = 8;
 	std::string reportPath = "bench_report.json";
-	std::string modelPath = "sponza/Sponza.fbx";
 
 	// ---- scene
 	std::vector<ModelInstance> models;
@@ -309,6 +349,10 @@ struct GameWorld::Impl
 	DirectionalLight dirLight;
 	AmbientLight ambient;
 	Camera camera;
+	// The swap chain may change size while the game is running.  Keep the
+	// camera projection in sync with it so a wider/taller window changes the
+	// visible frustum instead of distorting the existing image.
+	Vector2ui cameraProjectionSize{ 0, 0 };
 	std::unique_ptr<InputManager> input;
 
 	Vector3f sceneCenter{ 0,0,0 };
@@ -319,7 +363,7 @@ struct GameWorld::Impl
 	Vector3f camPos{ 0, 200, -800 };
 	Vector3f camRot{ 10, 0, 0 };          // pitch, yaw, roll (deg)
 	bool     mouseTrapped = false;
-	float    flySpeed = 1200.f;
+	float    flySpeed = 600.f;
 
 	// ---- bench state
 	int   frame = 0;
@@ -336,6 +380,7 @@ struct GameWorld::Impl
 	std::vector<double> visibleInstances;   // per measured frame
 
 	DeferredRenderer* deferred = nullptr;   // engine-owned; see GraphicsEngine::GetDeferredRenderer()
+	std::map<const ModelInstance*, Matrix4x4f> previousRayTransforms;
 	bool useDeferred = true;
 	int  gbufChannel = 0;   // 0 = normal output, 1..8 = G-buffer debug view
 
@@ -351,6 +396,10 @@ struct GameWorld::Impl
 	// --- reflection probe (Phase 5 stage A): one probe, re-captured every N frames ---
 	std::unique_ptr<CubemapPrefilter> probePrefilter;
 	CubemapData probeBase, probePrefiltered;
+	// The authored sky stays at mip 0 in this cube, while its remaining mips
+	// contain GGX specular and cosine-convolved diffuse lighting. Unlike the
+	// dynamic local probe, it is safe to use for the DXR sky as well as IBL.
+	CubemapData worldEnvironmentPrefiltered;
 	std::unique_ptr<RenderTarget> probeFaceRt;
 	std::unique_ptr<DepthBuffer>  probeFaceDepth;
 	TextureResource* fallbackCube = nullptr;   // the env_* cube, used when the probe is off
@@ -359,34 +408,63 @@ struct GameWorld::Impl
 	bool  probeEnabled = true;
 
 	// --- emissive-GI irradiance volume (Phase 6 stage 1) ---
-	CubemapData giCube;
+	CubemapData giCube, giDepthCube;
 	std::unique_ptr<RenderTarget> giFaceRt;
 	std::unique_ptr<DepthBuffer>  giFaceDepth;
 	Vector3f giOrigin{ 0.f, 0.f, 0.f };
 	Vector3f giSpacing{ 200.f, 200.f, 200.f };
 	int   giCx = 8, giCy = 4, giCz = 8;
 	float giIntensity = 1.6f;
-	float giHysteresis = 0.85f;
+	float giHysteresis = 0.94f;
+	float giFireflyClamp = 12.0f;
 	bool  giEnabled = true;
+	bool  giShowVolumeBounds = true;   // draws the probe grid's outer bounds as a wireframe box
 	int   giCursor = 0;
 	int   giPrimeBatch = 8;     // probes/frame while first populating the volume
-	int   giTrickle = 1;        // probes per capture after priming (0 = stop)
-	int   giFrameSkip = 6;      // ...one capture every N frames after priming
+	int   giTrickle = 4;        // bounded RT probes/frame after priming
+	int   giFrameSkip = 1;      // DXR updates every frame; raster retains a cheaper cadence below
 	int   giSkipCount = 0;
 	bool  giPriming = true;
-	bool  giKeepUpdating = false;
+	bool  giKeepUpdating = true;
 	bool  giAutoReprime = true;   // re-prime when the sun / ambient changes
 	float giLightHash = 0.f;
+	int   giLightingRefreshProbeBudget = 0; // one fast-response sweep after a light edit
 	static constexpr int kGiFaceRes = 16;
 	int   probeInterval = 30;      // recapture cadence (frames); BENCH_PROBE_INTERVAL
 	int   probeCountdown = 0;
 	static constexpr int kProbeRes = 256;
+
+	bool RebuildWorldEnvironmentPrefilter()
+	{
+		worldEnvironmentPrefiltered.Reset();
+		if (!probePrefilter || !fallbackCube) return false;
+
+		// DX12 TextureResource intentionally does not expose its native texture
+		// descriptor. The shipped environments are 512px faces; on DX11 retain
+		// the exact source size so importance-sampling chooses the correct LOD.
+		uint32_t sourceResolution = 512;
+		if (DX11::Rhi() && DX11::Rhi()->GetBackend() == rhi::Backend::DX11 &&
+			fallbackCube->GetShaderResourceView())
+		{
+			sourceResolution = std::max(1u, fallbackCube->CalculateTextureSize().x);
+		}
+
+		if (!probePrefilter->GeneratePrefilteredCubemap(
+			fallbackCube->GetSrv(), sourceResolution, 128, 128, worldEnvironmentPrefiltered))
+		{
+			ERROR_PRINT("environment IBL: prefilter failed; DXR will use the source cubemap.");
+			return false;
+		}
+		return true;
+	}
 
 	// --- material preview debug sphere ---
 	ModelInstance debugBall;
 	bool debugBallValid = false;
 	bool showDebugBall = false;
 	DeferredRenderer::DebugMaterial debugMat;
+	bool pillarMaterialOverride = true;
+	DeferredRenderer::DebugMaterial pillarMat;
 	Vector3f debugBallPos{ 0.f, 0.f, 0.f };
 	float debugBallRadius = 45.f;      // desired world-space radius
 	float debugBallModelRadius = 1.f;  // FBX bounds radius (from the model)
@@ -408,31 +486,39 @@ struct GameWorld::Impl
 	bool  orbitBallsEmitLight = true;
 	float orbitAngle = 0.f;          // accumulated orbit phase (radians)
 	float animTime = 0.f;            // wall-clock seconds, advanced in Update()
+	// Last positions consumed by the GI cache. They intentionally update after
+	// tracing, so dynamic-probe scheduling can dirty both sides of an emitter's
+	// movement on the following frame.
+	std::vector<Vector3f> giPreviousEmissivePositions;
+	std::vector<uint8_t> giDynamicDirtyMask;
+	uint32_t giDynamicProbeCursor = 0;
 
-	// --- built-in procedural room (<BuiltinRoom> scene) ---
-	// 6 primitive-plane surfaces: 0 floor, 1 ceiling, 2..5 walls (-X,+X,-Z,+Z).
-	std::vector<ModelInstance> roomSurfaces;
-	Vector3f roomSize{ 1600.f, 900.f, 1600.f };
-	bool roomSealed = true;   // <BuiltinRoom>: closed box, no sun / no sky IBL
-	bool roomLamps = true;    // <BuiltinRoom>: 4 neutral ceiling fill lamps
-	// Any scene: skip the fallback rainbow point-light rig / kill sun + sky IBL.
-	bool autoLightRig = true;
 	bool sealScene = false;
 	// Procedural interior detection: fade sun + sky-IBL by GI-probe sky visibility.
 	// 0 = off, 1 = full. Needs GI enabled + the volume covering the play space.
 	float autoSeal = 0.f;
-	DeferredRenderer::DebugMaterial roomMat[6];
-	char roomTgmatPath[260] = "";
 	char dbgTgmatPath[260] = "";
-	int  roomEditSurface = 0;
-	bool roomInitDone = false;
 	bool  wantShadows = true, wantSSAO = true, wantClustered = true, wantPostFx = true;
 	bool  wantLocalShadows = true;   // point/spot shadow atlas
 	bool  wantSSR = true;
+	// The active renderer mode. DXR owns primary shading when true; raster
+	// lighting options are visibly disabled rather than silently mixed in.
+	bool  dxrRenderer = true;
+	// Raster probe capture is the authoritative shipping path while the DXR
+	// integration is rebuilt.  The old inline path mixed a separate lighting
+	// model into the same SH buffer as the raster capture, so its output could
+	// not be compared or tuned reliably.  DXR remains available as an explicit
+	// validation mode, but can no longer replace the frame by default.
+	bool  giUseRT = true;
+	bool  giBatchProbes = true;   // BENCH_GI_BATCH=0 reverts to one dispatch per probe (A/B)
+	int   giRTRayCount = 256;
+	// RT probe capture waits for the current frame's TLAS construction.
+	bool  giRtCapturePending = false;
 	bool  debugUiOpen = true;
 	bool  showLightMarkers = true;
 	bool  showPerfOverlay = true;
 	std::string screenshotPath;
+	int  shotFrame = 0;   // BENCH_SHOT_FRAME; 0 = default (end of run)
 	bool screenshotTaken = false;
 
 	GpuProfiler gpu;
@@ -474,6 +560,7 @@ struct GameWorld::Impl
 	// -> auto orbit around a point low in the scene.
 	enum class CamMode { Fixed, Spin, Orbit } camMode = CamMode::Orbit;
 	float camSpinDeg = 35.f;   // BENCH_SPIN: half-sweep for "spin" mode
+	float camOrbitHeight = -1.f;  // BENCH_ORBIT_HEIGHT: fraction of sceneExtents.y; <0 = oscillate
 	bool  orbitRoom = false;   // BENCH_CAM=room: orbit the scene centre even with a saved camera
 
 	void SetScriptedCamera()
@@ -502,8 +589,12 @@ struct GameWorld::Impl
 		// else a point ~1/4 up from the floor (not the bounds centre, which can sit high).
 		const Vector3f look = (camLoaded && !orbitRoom) ? camPos
 			: sceneCenter + Vector3f{ 0, -sceneExtents.y * 0.25f, 0 };
+		// BENCH_ORBIT_HEIGHT pins the orbit height (fraction of scene half-height)
+		// instead of letting it oscillate over the run, so camera height can be held
+		// constant while something else is A/B tested against it.
+		const float orbitY = camOrbitHeight >= 0.f ? camOrbitHeight : (0.10f + 0.08f * std::sin(ang * 0.5f));
 		Vector3f pos = look + Vector3f{ std::cos(ang) * orbitRadius,
-		                                sceneExtents.y * (0.10f + 0.08f * std::sin(ang * 0.5f)),
+		                                sceneExtents.y * orbitY,
 		                                std::sin(ang) * orbitRadius };
 
 		Vector3f dir = look - pos;
@@ -550,7 +641,7 @@ struct GameWorld::Impl
 		if (input->IsKeyHeld('A')) move = move - right;
 		if (input->IsKeyHeld('E')) move.y += 1.f;
 		if (input->IsKeyHeld('Q')) move.y -= 1.f;
-		const float speed = flySpeed * (input->IsKeyHeld(VK_SHIFT) ? 4.f : 1.f);
+		const float speed = flySpeed * (input->IsKeyHeld(VK_SHIFT) ? 4.f : .4f);
 		camPos = camPos + move * speed * dt;
 
 		if (mouseTrapped && !uiMouse)
@@ -588,6 +679,7 @@ struct GameWorld::Impl
 	bool LoadCamera()
 	{
 		std::ifstream in(camFile);
+		if (!in) in.open(fs::path(Settings::GameAssetRoot()) / camFile);
 		if (!in) return false;
 		std::string s((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 		float p[3] = { 0,0,0 }, r[3] = { 0,0,0 };
@@ -602,18 +694,15 @@ struct GameWorld::Impl
 		return true;
 	}
 
-	// Optional authored point lights: bench_lights_<scene>.json =
-	//   { "lights": [ { "pos":[x,y,z], "color":[r,g,b], "intensity":6,
-	//                   "range":<world>, "radius":20 }, ... ] }
-	// color is 0..1; final RGB = color * intensity * BENCH_EXPOSURE. Falls back to
-	// the procedural rig when the file is absent/empty. Capped at
-	// NUMBER_OF_LIGHTS_ALLOWED until Phase 3 lifts it.
+	// Local lights are scene data. This reads the selected .tgs's
+	// `lighting.lights` array only; a scene without that array has no local lights.
 	bool LoadLights(const std::string& file, float sceneRadius, float exposure)
 	{
 		std::ifstream in(file);
 		if (!in) return false;
 		nlohmann::json j;
 		try { in >> j; } catch (...) { ERROR_PRINT("bench: bad light file %s", file.c_str()); return false; }
+		if (j.contains("lighting")) j = j["lighting"];
 		if (!j.contains("lights") || !j["lights"].is_array()) return false;
 
 		auto a3 = [](const nlohmann::json& v, Vector3f d) {
@@ -627,7 +716,7 @@ struct GameWorld::Impl
 		{
 			if (n >= DeferredRenderer::kMaxLights) { ++skipped; continue; }
 			PointLight p;
-			const Vector3f pos = L.contains("pos")   ? a3(L["pos"],   Vector3f{ 0,0,0 }) : Vector3f{ 0,0,0 };
+			const Vector3f pos = a3(L.value("pos", L.value("position", nlohmann::json::array({0,0,0}))), Vector3f{0,0,0});
 			const Vector3f col = L.contains("color") ? a3(L["color"], Vector3f{ 1,1,1 }) : Vector3f{ 1,1,1 };
 			const float intensity = L.value("intensity", 6.0f) * exposure;
 			p.position = pos;
@@ -649,17 +738,26 @@ struct GameWorld::Impl
 				ex.spotCosOuter = std::cos(outer);
 				ex.spotCosInner = std::cos(std::min(inner, outer - 0.01f));
 			}
+			if (L.contains("spot") && L["spot"].is_boolean() && L["spot"].get<bool>()) {
+				Vector3f dir = a3(L.value("direction", nlohmann::json::array({0,-1,0})), Vector3f{0,-1,0});
+				const float len = dir.Length();
+				ex.spotDir = len > 1e-4f ? dir / len : Vector3f{0,-1,0};
+				const float outer = std::clamp(L.value("outerAngle", 35.0f), 0.1f, 89.9f);
+				const float inner = std::clamp(L.value("innerAngle", 20.0f), 0.0f, outer);
+				ex.spotCosOuter = std::cos(outer * 3.14159265f / 180.0f);
+				ex.spotCosInner = std::cos(inner * 3.14159265f / 180.0f);
+			}
 			lightExtra.push_back(ex);
 			++n;
 		}
 		INFO_PRINT("bench: %d authored light(s) from %s%s", n, file.c_str(),
 			skipped ? "  (some skipped: over kMaxLights)" : "");
-		return n > 0;
+		return true;
 	}
 
 	std::string currentScene = "TEST";
 
-	bool IsBuiltinRoom() const { return currentScene == kBuiltinRoomScene; }
+	bool IsPillarTest() const { return fs::path(currentScene).stem().string() == "PillarTest"; }
 
 	// Begin a fresh GI prime: wipe the SH buffer so the sweep is deterministic
 	// (no history blended in -- fixes "re-prime gives a different result each time").
@@ -667,57 +765,9 @@ struct GameWorld::Impl
 	{
 		giCursor = 0;
 		giPriming = true;
+		giDynamicDirtyMask.clear();
+		giPreviousEmissivePositions.clear();
 		if (deferred && deferred->HasGi()) deferred->ClearGi();
-	}
-
-	// Assemble the 6 primitive-plane surfaces of the procedural room into `models`.
-	// Order: 0 floor, 1 ceiling, 2 wall -X, 3 wall +X, 4 wall -Z, 5 wall +Z.
-	// Normals point into the room; the draw path forces no-face-culling so winding
-	// never matters. Surface materials live in roomMat[] (edited in ImGui / .tgmat).
-	void BuildBuiltinRoom(ModelFactory& mf)
-	{
-		std::shared_ptr<Model> plane = mf.GetModel("Plane");   // engine built-in, 100x100 XZ, +Y normal
-		if (!plane) { ERROR_PRINT("BuiltinRoom: 'Plane' primitive missing"); return; }
-
-		const float hx = roomSize.x * 0.5f, hy = roomSize.y * 0.5f, hz = roomSize.z * 0.5f;
-		const float sx = roomSize.x / 100.f, sy = roomSize.y / 100.f, sz = roomSize.z / 100.f;
-
-		struct Surf { Vector3f scale; Matrix4x4f rot; Vector3f pos; };
-		const Surf surfs[6] = {
-			{ { sx, 1.f, sz }, Matrix4x4f::CreateIdentityMatrix(),          { 0.f,  0.f,  0.f } }, // floor  (+Y)
-			{ { sx, 1.f, sz }, Matrix4x4f::CreateRotationAroundX(180.f),    { 0.f, roomSize.y, 0.f } }, // ceiling (-Y)
-			{ { sy, 1.f, sz }, Matrix4x4f::CreateRotationAroundZ(-90.f),    { -hx, hy, 0.f } },    // wall -X (+X)
-			{ { sy, 1.f, sz }, Matrix4x4f::CreateRotationAroundZ(90.f),     {  hx, hy, 0.f } },    // wall +X (-X)
-			{ { sx, 1.f, sy }, Matrix4x4f::CreateRotationAroundX(90.f),     { 0.f, hy, -hz } },    // wall -Z (+Z)
-			{ { sx, 1.f, sy }, Matrix4x4f::CreateRotationAroundX(-90.f),    { 0.f, hy,  hz } },    // wall +Z (-Z)
-		};
-
-		roomSurfaces.clear();
-		roomSurfaces.resize(6);
-		if (!roomInitDone)
-		{
-			// Defaults: bright glossy floor, mid-grey rough ceiling + walls.
-			for (int i = 0; i < 6; ++i)
-			{
-				roomMat[i] = DeferredRenderer::DebugMaterial{};
-				roomMat[i].metalness = 0.f;
-				roomMat[i].ao = 1.f;
-				if (i == 0) { roomMat[i].baseColor[0] = roomMat[i].baseColor[1] = roomMat[i].baseColor[2] = 0.9f; roomMat[i].roughness = 0.05f; }
-				else        { roomMat[i].baseColor[0] = roomMat[i].baseColor[1] = roomMat[i].baseColor[2] = 0.5f; roomMat[i].roughness = 1.0f; }
-			}
-			roomInitDone = true;
-		}
-
-		for (int i = 0; i < 6; ++i)
-		{
-			roomSurfaces[i].Init(plane);
-			Matrix4x4f m = Matrix4x4f::CreateFromScale(surfs[i].scale) * surfs[i].rot;
-			m.SetPosition(surfs[i].pos);
-			roomSurfaces[i].SetTransform(m);
-			models.push_back(roomSurfaces[i]);
-			opaqueMeshes.push_back(std::vector<int>{ 0 });
-			transparentMeshes.push_back(std::vector<int>{});
-		}
 	}
 
 	// (Re)load everything that depends on the scene: instances, sub-mesh split,
@@ -725,7 +775,30 @@ struct GameWorld::Impl
 	// switch scenes (free-fly). aEnv = honour BENCH_* overrides (Init only).
 	bool LoadSceneContent(const std::string& sceneName, bool aEnv)
 	{
+		previousRayTransforms.clear();
+		if (deferred) deferred->ResetTemporalHistory();
+		if (sceneName != currentScene) {
+			sunPitch = 55.f; sunYaw = -35.f; sunIntensity = 1.f;
+			sunColor[0] = 1.f; sunColor[1] = 0.96f; sunColor[2] = 0.88f;
+			ambientColor[0] = 0.35f; ambientColor[1] = 0.42f; ambientColor[2] = 0.55f;
+		}
 		currentScene = sceneName;
+		std::ifstream lightingFile(fs::path(Settings::GameAssetRoot()) / fs::path(sceneName).replace_extension(".tgs"));
+		if (lightingFile) {
+			try {
+				json document; lightingFile >> document;
+				if (document.contains("lighting")) {
+					const auto& lighting = document["lighting"];
+					sunPitch = lighting.value("sunPitch", sunPitch);
+					sunYaw = lighting.value("sunYaw", sunYaw);
+					sunIntensity = lighting.value("sunIntensity", sunIntensity);
+					for (int i = 0; i < 3; ++i) {
+						if (lighting.contains("sunColor") && lighting["sunColor"].size() == 3) sunColor[i] = lighting["sunColor"][i].get<float>();
+						if (lighting.contains("ambientColor") && lighting["ambientColor"].size() == 3) ambientColor[i] = lighting["ambientColor"][i].get<float>();
+					}
+				}
+			} catch (const std::exception& e) { ERROR_PRINT("Scene lighting: %s", e.what()); }
+		}
 
 		models.clear();
 		opaqueMeshes.clear();
@@ -738,33 +811,15 @@ struct GameWorld::Impl
 		ModelFactory& mf = ModelFactory::GetInstance();
 		auto& texMgr = GraphicsEngine::GetInstance()->GetTextureManager();
 
-		if (sceneName == kBuiltinRoomScene)
-		{
-			const auto tRoom0 = std::chrono::high_resolution_clock::now();
-			BuildBuiltinRoom(mf);
-			modelLoadMs = std::chrono::duration<double, std::milli>(
-				std::chrono::high_resolution_clock::now() - tRoom0).count();
-			if (models.empty()) { ERROR_PRINT("BuiltinRoom: build failed"); return false; }
-		}
-		else
-		{
 		std::vector<SceneEntry> entries;
 		if (!sceneName.empty())
 		{
 			entries = LoadTgs(sceneName);
 			INFO_PRINT("bench: scene '%s' -> %zu object(s)", sceneName.c_str(), entries.size());
 		}
-		else if (modelPath.size() > 4 && modelPath.substr(modelPath.size() - 4) == ".tgo")
-		{
-			if (auto e = LoadTgo(fs::path(Settings::GameAssetRoot()) / modelPath)) entries.push_back(*e);
-		}
-		else
-		{
-			SceneEntry e; e.fbx = modelPath; entries.push_back(e);
-		}
 		if (entries.empty())
 		{
-			ERROR_PRINT("bench: nothing to load (model='%s' scene='%s')", modelPath.c_str(), sceneName.c_str());
+			ERROR_PRINT("bench: scene '%s' contains no loadable objects", sceneName.c_str());
 			return false;
 		}
 
@@ -776,6 +831,24 @@ struct GameWorld::Impl
 		{
 			std::shared_ptr<Model> model = mf.GetModel(e.fbx.c_str());
 			if (!model) { ERROR_PRINT("bench: failed to load '%s'", e.fbx.c_str()); continue; }
+			const int meshCount = std::min((int)model->GetMeshCount(), MAX_MESHES_PER_MODEL);
+			// Surface type is authored per scene material.  Keep the legacy name
+			// override as a fallback for old scenes, but never let it be the only
+			// route by which a .tgmat becomes transparent in raster or DXR.
+			std::vector<bool> authoredTransparent(meshCount, false);
+			// Masked (real alpha cutout, e.g. foliage/fences) is distinct from
+			// Opaque so AcceptRayTriangle can skip the texture sample entirely
+			// for ordinary opaque geometry -- see FixedMaterial::kRayOpaque.
+			std::vector<bool> authoredMasked(meshCount, false);
+			for (int m = 0; m < meshCount && m < (int)e.materials.size(); ++m)
+			{
+				if (e.materials[m].empty()) continue;
+				MaterialDef material;
+				if (!LoadTgmat(fs::path(Settings::GameAssetRoot()) / e.materials[m], material)) continue;
+				const std::string st = LowerStr(material.surfaceType);
+				authoredTransparent[m] = st == "transparent";
+				authoredMasked[m] = st == "masked";
+			}
 
 			const int copies = tileCopies ? sponzaCopies : 1;
 			const float sizeXZ0 = std::max(sceneExtents.x, sceneExtents.z) * 2.f;
@@ -786,15 +859,19 @@ struct GameWorld::Impl
 				ModelInstance mi;
 				mi.Init(model);
 
-				const int meshCount = std::min((int)model->GetMeshCount(), MAX_MESHES_PER_MODEL);
-				for (int m = 0; m < meshCount && m < (int)e.textures.size(); ++m)
+				for (int m = 0; m < meshCount && m < (int)e.materials.size(); ++m)
+				{
+					if (e.materials[m].empty()) continue;
+					MaterialDef material;
+					const fs::path materialPath = fs::path(Settings::GameAssetRoot()) / e.materials[m];
+					if (!LoadTgmat(materialPath, material)) continue;
 					for (int j = 0; j < 4; ++j)
 					{
-						if (e.textures[m][j].empty()) continue;
+						if (material.maps[j].empty()) continue;
 						const TextureSrgbMode sm = (j == 0) ? TextureSrgbMode::ForceSrgbFormat : TextureSrgbMode::ForceNoSrgbFormat;
-						if (Tga::Texture* t = texMgr.GetTexture(e.textures[m][j].c_str(), sm))
-							mi.SetTexture(m, j, t);
+						if (Tga::Texture* t = texMgr.GetTexture(material.maps[j].c_str(), sm)) mi.SetTexture(m, j, t);
 					}
+				}
 
 				const int gx = i % side, gz = i / side;
 				const float ox = tileCopies ? (gx - (side - 1) * 0.5f) * step : 0.f;
@@ -809,7 +886,16 @@ struct GameWorld::Impl
 				for (int m = 0; m < meshCount; ++m)
 				{
 					const char* mat = model->GetMaterialName(m).GetString();
-					(MatchesAny(mat ? mat : "", transparentMatKeys) ? tr : op).push_back(m);
+					const bool transparent = authoredTransparent[m] || MatchesAny(mat ? mat : "", transparentMatKeys);
+					// The same classification controls the raster forward pass and
+					// the material record consulted by every inline RayQuery.  Forward
+					// alpha blend cannot provide a reliable hit distance/transmittance,
+					// so let it composite after DXR instead of treating glass as opaque.
+					using FM = RayTracingMaterialTable::FixedMaterial;
+					const uint32_t rayVisibility = transparent ? FM::kRayTransparent
+						: authoredMasked[m] ? FM::kRayMasked : FM::kRayOpaque;
+					RayTracingMaterialTable::SetRayVisibility(model->GetMeshData(m).rayGeometry.materialIndex, rayVisibility);
+					(transparent ? tr : op).push_back(m);
 				}
 				if (!tr.empty()) anyTransparent = true;
 				opaqueMeshes.push_back(std::move(op));
@@ -818,7 +904,6 @@ struct GameWorld::Impl
 		}
 		modelLoadMs = std::chrono::duration<double, std::milli>(
 			std::chrono::high_resolution_clock::now() - tLoad0).count();
-		} // end else (non-BuiltinRoom scene load)
 		if (models.empty()) { ERROR_PRINT("bench: no instances created"); return false; }
 
 		// Scene bounds = union of every instance's world-space AABB.
@@ -846,10 +931,10 @@ struct GameWorld::Impl
 			}
 		}
 
-		// Material-preview debug sphere (Source/Game/data/Sphere/Sphere.fbx).
+		// Material-preview debug sphere (Source/Game/data/Primitives/Sphere.fbx).
 		if (!debugBallValid)
 		{
-			if (std::shared_ptr<Model> sph = mf.GetModel("Sphere/Sphere.fbx"))
+			if (std::shared_ptr<Model> sph = mf.GetModel("Primitives/Sphere.fbx"))
 			{
 				debugBall.Init(sph);
 				debugBallValid = true;
@@ -858,7 +943,7 @@ struct GameWorld::Impl
 				orbitBalls.resize(kMaxOrbitBalls);
 				for (ModelInstance& mi : orbitBalls) mi.Init(sph);
 			}
-			else ERROR_PRINT("material preview: Sphere/Sphere.fbx not found");
+			else ERROR_PRINT("material preview: Primitives/Sphere.fbx not found");
 		}
 		debugBallPos = sceneCenter - Vector3f{ 0.f, sceneExtents.y * 0.2f, 0.f };
 
@@ -878,63 +963,8 @@ struct GameWorld::Impl
 		float exposure = 1.0f;
 		if (aEnv) if (const char* e = std::getenv("BENCH_EXPOSURE")) exposure = std::max(0.01f, (float)atof(e));
 
-		const std::string defLightFile = sceneName.empty() ? std::string("bench_lights.json")
-		                                                   : ("bench_lights_" + sceneName + ".json");
-		const std::string lightFile = aEnv ? EnvStr("BENCH_LIGHTFILE", defLightFile.c_str()) : defLightFile;
-
-		if (sceneName == kBuiltinRoomScene)
-		{
-			// Optional neutral fill: 4 soft white lamps just below the ceiling.
-			if (roomLamps)
-			{
-				const float intensity = 1.6f * exposure * (sceneRadius / 1200.f) * (sceneRadius / 1200.f);
-				const float ox = sceneExtents.x * 0.45f, oz = sceneExtents.z * 0.45f;
-				const Vector3f lamp[4] = {
-					{ sceneCenter.x - ox, roomSize.y * 0.86f, sceneCenter.z - oz },
-					{ sceneCenter.x + ox, roomSize.y * 0.86f, sceneCenter.z - oz },
-					{ sceneCenter.x - ox, roomSize.y * 0.86f, sceneCenter.z + oz },
-					{ sceneCenter.x + ox, roomSize.y * 0.86f, sceneCenter.z + oz },
-				};
-				for (const Vector3f& lp : lamp)
-				{
-					PointLight p;
-					p.position = lp;
-					p.color = Color{ intensity, intensity * 0.97f, intensity * 0.92f, 1.f };
-					p.range = sceneRadius * 1.6f;
-					p.radius = sceneRadius * 0.02f;
-					pointLights.push_back(p);
-					lightExtra.push_back({});
-				}
-			}
-		}
-		else if (!LoadLights(lightFile, sceneRadius, exposure) && autoLightRig)
-		{
-			const float span = sceneExtents.x * 0.7f;
-			const float rel = sceneRadius / 1600.f;
-			const float intensity = 2.0f * exposure * rel * rel;
-			static const float kPalette[6][3] = {
-				{ 1.00f, 0.30f, 0.25f }, { 1.00f, 0.65f, 0.20f }, { 0.35f, 1.00f, 0.40f },
-				{ 0.25f, 0.80f, 1.00f }, { 0.45f, 0.45f, 1.00f }, { 0.90f, 0.35f, 1.00f },
-			};
-			const int latSide = std::max(1, (int)std::ceil(std::cbrt((float)lightCount)));
-			const float rangeScale = lightCount <= 8 ? 1.1f
-				: std::max(0.5f, 1.1f * std::cbrt(8.f / (float)lightCount));
-			for (int i = 0; i < lightCount; ++i)
-			{
-				const int gx = i % latSide, gy = (i / latSide) % latSide, gz = i / (latSide * latSide);
-				auto frac = [latSide](int g) { return latSide > 1 ? (float)g / (float)(latSide - 1) - 0.5f : 0.f; };
-				PointLight p;
-				p.position = sceneCenter + Vector3f{ frac(gx) * 1.6f * span,
-				                                     frac(gy) * sceneExtents.y * 1.2f,
-				                                     frac(gz) * sceneExtents.z * 1.4f };
-				const float* c = kPalette[i % 6];
-				p.color = Color{ c[0] * intensity, c[1] * intensity, c[2] * intensity, 1.f };
-				p.range = sceneRadius * rangeScale;
-				p.radius = sceneRadius * 0.01f;
-				pointLights.push_back(p);
-				lightExtra.push_back({});
-			}
-		}
+		const fs::path tgsPath = fs::path(Settings::GameAssetRoot()) / fs::path(sceneName).replace_extension(".tgs");
+		LoadLights(tgsPath.string(), sceneRadius, exposure);
 
 		// Start camera: the scene's placed camera file if present, else orbit-derived.
 		const std::string defCamFile = sceneName.empty() ? std::string("bench_camera.json")
@@ -994,7 +1024,7 @@ struct GameWorld::Impl
 		std::ofstream o(reportPath);
 		o.setf(std::ios::fixed); o.precision(4);
 		o << "{\n";
-		o << "  \"model\": \"" << modelPath << "\",\n";
+		o << "  \"scene\": \"" << currentScene << "\",\n";
 		o << "  \"renderer\": \"" << (useDeferred ? "deferred" : "forward") << "\",\n";
 		o << "  \"model_load_ms\": " << modelLoadMs << ",\n";
 		o << "  \"first_frame_ms\": " << firstFrameMs << ",\n";
@@ -1123,7 +1153,7 @@ struct GameWorld::Impl
 			for (ModelInstance& m : models) mdl.DrawPbr(m);
 		};
 
-		if (probePrefilter->CaptureSceneToCubemap(*probeFaceRt, faceCb, probeBase))
+		if (probePrefilter->CaptureSceneToCubemap(*probeFaceRt, probeFaceDepth.get(), faceCb, probeBase))
 		{
 			probePrefilter->GeneratePrefilteredCubemap(
 				probeBase.GetSrv(), probeBase.size, 128, 128, probePrefiltered);
@@ -1141,15 +1171,21 @@ struct GameWorld::Impl
 	void CaptureGiProbesImpl(GraphicsEngine& ge)
 	{
 		DeferredRenderer* dr = deferred;
-		if (!dr || !dr->HasGi() || !probePrefilter || !giFaceRt || !giFaceDepth || !fallbackCube) return;
+		if (!dr || !dr->HasGi()) return;
+
+		// Ray-traced capture (DeferredRenderer::GiProjectProbeRT) needs none of
+		// the raster prerequisites below -- no cubemap render target, no sky
+		// shaders, no per-face scene redraw. Falls back to the raster path if
+		// DXR isn't actually available even though the toggle is on.
+		const bool useRT = giUseRT && dr->HasGiRT();
+		if (!useRT && (!probePrefilter || !giFaceRt || !giFaceDepth || !fallbackCube)) return;
 
 		auto& gss = ge.GetGraphicsStateStack();
 		auto& mdl = ge.GetModelDrawer();
 		const Camera savedCam = gss.GetCamera();
 
-		// A sealed built-in room has no sky: don't bake the skybox into GI, and let
-		// the probes see the emissive spheres so the bounce takes their colour.
-		const bool sealed = (IsBuiltinRoom() && roomSealed) || sealScene;
+		// A sealed scene has no sky during capture.
+		const bool sealed = sealScene;
 
 		AmbientLight capAmb = ambient;
 		capAmb.cubemap = sealed ? nullptr : fallbackCube;
@@ -1162,17 +1198,126 @@ struct GameWorld::Impl
 		if (total <= 0) return;
 
 		const bool primingNow = giPriming;   // fixed for the whole batch (deterministic replace)
-		const int batch = giPriming ? giPrimeBatch : giTrickle;
+		const bool lightingRefresh = !primingNow && giLightingRefreshProbeBudget > 0;
+		const bool dynamicEmissiveGi = showOrbitBalls && debugBallValid && orbitBallsEmitLight
+			&& debugMat.emissiveStrength > 0.01f;
+		// This is a coarse, world-space SH volume (200-unit cells by default),
+		// not a surface cache. Writing a fast-moving local emitter into it creates
+		// broad trilinear lobes that cannot move smoothly. Dynamic emissive proxy
+		// lights are evaluated directly by the DXR camera pass; keep this cache
+		// for stable indirect/environment transport until it has a proper
+		// surface-cache representation.
+		const bool dynamicCacheUpdate = false;
+		// A probe trace shades every hit and casts its own shadow rays. Updating
+		// four 64-ray probes every frame was a full secondary DXR workload, yet
+		// its changing low-frequency result was still only an approximation. Keep
+		// dynamic GI amortized: one probe closest to the emitters, at a reduced
+		// ray budget, while the ordinary round-robin path remains available for
+		// explicitly requested continuous GI updates.
+		// Raster capture is six scene draws/probe, so retain its conservative
+		// one-probe cadence.  Inline DXR can afford a small bounded batch every
+		// frame, which makes emissive/direct changes start propagating immediately.
+		// Maintain an approximately constant trace budget when a low ray count
+		// is selected, so each probe gets fresh temporal samples quickly.
+		const int rtBatch = std::clamp(1024 / std::max(giRTRayCount, 1), 1, 32);
+		const int batch = giPriming ? (useRT ? std::max(giPrimeBatch, rtBatch) : giPrimeBatch)
+			: (useRT ? std::max(giTrickle, rtBatch) : 1);
+		std::vector<int> prioritizedProbes;
+		std::vector<DeferredRenderer::GiProbeBatchEntry> rtBatchEntries;
+		if (useRT) rtBatchEntries.reserve((size_t)std::max(batch, 1));
+		if (dynamicCacheUpdate && !primingNow)
+		{
+			std::vector<Vector3f> emitters;
+			if (dynamicEmissiveGi)
+			{
+				const int emitterCount = std::clamp(orbitBallCount, 1, kMaxOrbitBalls);
+				emitters.reserve(emitterCount);
+				for (int i = 0; i < emitterCount && i < (int)orbitBalls.size(); ++i)
+					emitters.push_back(orbitBalls[i].GetTransform().GetPosition());
+			}
+
+			// Probes sample a trilinear volume, so both the old and new emitter
+			// neighbourhoods must be refreshed. Only prioritizing the new nearest
+			// probe left cached radiance at the old location, which was the source
+			// of the visible lighting trails/boiling.
+			if ((dynamicEmissiveGi || !giPreviousEmissivePositions.empty()) && giDynamicDirtyMask.size() != (size_t)total)
+				giDynamicDirtyMask.assign(total, 0);
+			const float influence = std::max({ giSpacing.x, giSpacing.y, giSpacing.z }) * 1.75f + orbitBallRadius;
+			const float influenceSq = influence * influence;
+			for (int p = 0; p < total; ++p)
+			{
+				const int px = p % giCx;
+				const int py = (p / giCx) % giCy;
+				const int pz = p / (giCx * giCy);
+				const Vector3f candidateProbePos = giOrigin + Vector3f{ px * giSpacing.x, py * giSpacing.y, pz * giSpacing.z };
+				float nearestDistanceSq = std::numeric_limits<float>::max();
+				for (const Vector3f& emitter : emitters)
+					nearestDistanceSq = std::min(nearestDistanceSq, (candidateProbePos - emitter).LengthSqr());
+				for (const Vector3f& previousEmitter : giPreviousEmissivePositions)
+					nearestDistanceSq = std::min(nearestDistanceSq, (candidateProbePos - previousEmitter).LengthSqr());
+				if (nearestDistanceSq <= influenceSq)
+					giDynamicDirtyMask[p] = 1;
+			}
+			if (dynamicEmissiveGi)
+				giPreviousEmissivePositions = std::move(emitters);
+			else
+				giPreviousEmissivePositions.clear(); // retain the mask until it is drained
+
+			for (int attempt = 0; attempt < total; ++attempt)
+			{
+				const int candidate = (int)(giDynamicProbeCursor++ % (uint32_t)total);
+				if (giDynamicDirtyMask[candidate])
+				{
+					giDynamicDirtyMask[candidate] = 0;
+					prioritizedProbes.push_back(candidate);
+					break;
+				}
+			}
+		}
 		for (int n = 0; n < batch; ++n)
 		{
-			const int p = giCursor;
-			giCursor = giCursor + 1;
-			if (giCursor >= total) { giCursor = 0; giPriming = false; }
+			int p = 0;
+			if (n < (int)prioritizedProbes.size())
+			{
+				p = prioritizedProbes[n];
+			}
+			else
+			{
+				// Keep one round-robin update in the dynamic batch so distant probes
+				// retain a valid background solution while nearby probes follow emitters.
+				// Bound the search so a deliberately tiny debug volume cannot loop
+				// forever when every probe is part of the prioritized set.
+				int attempts = 0;
+				do
+				{
+					p = giCursor;
+					giCursor = (giCursor + 1) % total;
+					++attempts;
+				} while (attempts < total && std::find(prioritizedProbes.begin(), prioritizedProbes.end(), p) != prioritizedProbes.end());
+				if (giCursor == 0) giPriming = false;
+			}
 
 			const int px = p % giCx;
 			const int py = (p / giCx) % giCy;
 			const int pz = p / (giCx * giCy);
 			const Vector3f pos = giOrigin + Vector3f{ px * giSpacing.x, py * giSpacing.y, pz * giSpacing.z };
+
+			if (useRT)
+			{
+				// No cubemap, no per-face scene redraw -- just ray-trace straight
+				// from the probe position. Priming still replaces deterministically;
+				// the live trickle still blends, same semantics as the raster path.
+				// Dirty dynamic-cache cells discard most of their old solution when
+				// actually refreshed. This removes light at the emitter's prior
+				// position without invalidating the global volume.
+				// Collect rather than dispatch: hysteresis and ray count are
+				// loop-invariant, so the whole batch goes out as one dispatch
+				// after this loop instead of one barrier-separated,
+				// single-thread-group dispatch per probe.
+				rtBatchEntries.push_back({ pos, p });
+				if (lightingRefresh && giLightingRefreshProbeBudget > 0) --giLightingRefreshProbeBudget;
+				continue;
+			}
 
 			auto faceCb = [&](uint32_t face)
 			{
@@ -1216,12 +1361,27 @@ struct GameWorld::Impl
 				for (ModelInstance& m : models) m.Render(psh, ff);
 			};
 
-			if (probePrefilter->CaptureSceneToCubemap(*giFaceRt, faceCb, giCube))
+			if (probePrefilter->CaptureSceneToCubemap(*giFaceRt, giFaceDepth.get(), faceCb, giCube, &giDepthCube))
 			{
 				// Priming replaces (deterministic); only the live trickle blends.
-				const float hyst = primingNow ? 0.0f : giHysteresis;
+				const float hyst = primingNow ? 0.0f : ((dynamicCacheUpdate || lightingRefresh) ? std::min(giHysteresis, 0.2f) : giHysteresis);
 				dr->GiProjectProbe(giCube.GetSrv(), p, hyst, kGiFaceRes);
+				if (lightingRefresh && giLightingRefreshProbeBudget > 0) --giLightingRefreshProbeBudget;
 			}
+		}
+
+		if (!rtBatchEntries.empty())
+		{
+			const float hyst = primingNow ? 0.0f : ((dynamicCacheUpdate || lightingRefresh) ? std::min(giHysteresis, 0.2f) : giHysteresis);
+			const int rayCount = dynamicCacheUpdate ? std::min(giRTRayCount, 24) : giRTRayCount;
+			if (giBatchProbes)
+				dr->GiProjectProbeBatchRT(rtBatchEntries.data(), (int)rtBatchEntries.size(), hyst, rayCount, giFireflyClamp);
+			else
+				// A/B only (BENCH_GI_BATCH=0), same role as BENCH_CLUSTERED's
+				// brute-force path: one Dispatch(1,1,1) per probe, each a single
+				// 64-thread group with a full UAV barrier after it.
+				for (const DeferredRenderer::GiProbeBatchEntry& e : rtBatchEntries)
+					dr->GiProjectProbeRT(e.position, e.index, hyst, rayCount, giFireflyClamp);
 		}
 
 		gss.SetCamera(savedCam);
@@ -1249,9 +1409,7 @@ void GameWorld::Init()
 	s.sponzaCopies = std::max(1, EnvInt("BENCH_SPONZA_COPIES", 1));
 	// Deferred path uses a structured light buffer (no 8-light cap); the forward /
 	// transparent path still only sees the first NUMBER_OF_LIGHTS_ALLOWED.
-	s.lightCount   = std::clamp(EnvInt("BENCH_LIGHTS", 8), 0, DeferredRenderer::kMaxLights);
 	s.reportPath   = EnvStr("BENCH_REPORT", "bench_report.json");
-	s.modelPath    = EnvStr("BENCH_MODEL", "sponza/Sponza.fbx");
 
 	if (const char* r = std::getenv("BENCH_ROT_X")) s.modelRotX = (float)atof(r);
 
@@ -1286,18 +1444,24 @@ void GameWorld::Init()
 
 	const Vector2ui res = Application::GetInstance()->GetRenderSize();
 	s.camera.SetPerspectiveProjection(90.f, { (float)res.x, (float)res.y }, 1.f, 100000.f);
+	s.cameraProjectionSize = res;
 
 	// Load the scene (instances, bounds, light rig, start camera). Runtime scene
 	// switching (ImGui) calls this again with aEnv = false.
-	if (const char* v = std::getenv("BENCH_ROOM_SIZE"))
-	{
-		float a = (float)atof(v);
-		if (a > 1.f) s.roomSize = { a, a * 0.56f, a };
-	}
-	s.autoLightRig = EnvInt("BENCH_AUTOLIGHTS", 1) != 0;
 	s.sealScene    = EnvInt("BENCH_SEAL", 0) != 0;
 	if (const char* v = std::getenv("BENCH_AUTOSEAL")) s.autoSeal = std::clamp((float)atof(v), 0.f, 1.f);
-	s.currentScene = EnvStr("BENCH_SCENE", "TEST");
+	s.currentScene = EnvStr("BENCH_SCENE", "");
+	if (s.currentScene.empty())
+	{
+		auto firstScene = FindFirstTgsScene();
+		if (!firstScene)
+		{
+			ERROR_PRINT("bench: no .tgs scene found under %s", Settings::GameAssetRoot().c_str());
+			return;
+		}
+		s.currentScene = *firstScene;
+		INFO_PRINT("bench: BENCH_SCENE not set; loading first scene '%s'", s.currentScene.c_str());
+	}
 	if (!s.LoadSceneContent(s.currentScene, true))
 		return;
 
@@ -1308,6 +1472,9 @@ void GameWorld::Init()
 
 	// --- reflection probe (Phase 5 stage A) ---
 	s.showDebugBall = EnvInt("BENCH_MATBALL", 0) != 0;
+	s.pillarMaterialOverride = EnvInt("BENCH_PILLAR_OVERRIDE", 1) != 0;
+	if (const char* value = std::getenv("BENCH_PILLAR_ROUGHNESS")) s.pillarMat.roughness = std::clamp((float)atof(value), 0.f, 1.f);
+	if (const char* value = std::getenv("BENCH_PILLAR_METALNESS")) s.pillarMat.metalness = std::clamp((float)atof(value), 0.f, 1.f);
 	if (const char* e = std::getenv("BENCH_MATBALL_EM"))
 	{
 		float r = 0, g = 0, b = 0, st = 8.f;
@@ -1372,6 +1539,9 @@ void GameWorld::Init()
 			RenderTarget::Create({ (unsigned)Impl::kGiFaceRes, (unsigned)Impl::kGiFaceRes }, rhi::Format::R16G16B16A16_Float));
 		s.giFaceDepth = std::make_unique<DepthBuffer>(
 			DepthBuffer::Create({ (unsigned)Impl::kGiFaceRes, (unsigned)Impl::kGiFaceRes }));
+		// Precompute the selected authored sky once. This gives DXR the same
+		// physically filtered IBL representation already used by raster probes.
+		s.RebuildWorldEnvironmentPrefilter();
 	}
 	else
 	{
@@ -1384,24 +1554,32 @@ void GameWorld::Init()
 	// --- emissive-GI volume grid: auto from scene bounds, or bench_gi_<scene>.json ---
 	s.giEnabled = EnvInt("BENCH_GI", 1) != 0;
 	s.giPrimeBatch = std::max(1, EnvInt("BENCH_GI_PRIME", 8));
+	s.giBatchProbes = EnvInt("BENCH_GI_BATCH", 1) != 0;
 	if (auto* dr = (s.useDeferred && GraphicsEngine::GetInstance()) ? &GraphicsEngine::GetInstance()->GetDeferredRenderer() : nullptr)
 		dr->GetTunables().giViz = EnvInt("BENCH_GI_VIZ", 0) != 0;
 	{
-		// Volume = scene AABB exactly. The outer probe ring then sits *on* the
-		// bounding geometry (outer walls / floor / ceiling) rather than floating
-		// outside it: full GI coverage for open scenes, and boundary probes are
-		// embedded in the boundary geometry so auto-seal sky-visibility stays
-		// correct for interior surfaces. (Override with bench_gi_<scene>.json.)
+		// Volume covers the scene AABB, but the probes themselves must sit half a
+		// cell inside it. A probe on a floor/wall immediately captures that same
+		// surface (especially in the 16x16 raster cubemap fallback), producing a
+		// perfectly regular lattice of bright dots at the probe spacing.
+		// Boundary receivers still sample the interior ring via the clamped lookup.
+		// (Override with bench_gi_<scene>.json.)
 		const Vector3f ext = s.sceneExtents;
 		const Vector3f mn = s.sceneCenter - ext;
-		auto axis = [](float span) { return std::clamp((int)std::round(span / 360.f) + 1, 2, 10); };
+		// Keep the automatic volume dense enough that nearby colored surfaces can
+		// contribute locally to the receiver.  The old 10x6x10 ceiling left the
+		// Sponza scene with ~2 km probe spacing, which made red/green bounce read
+		// as a faint scene-wide wash instead of believable shadow color bleed.
+		// 16x8x16 is 2048 probes, safely below kMaxGiProbes (4096), and explicit
+		// bench_gi_<scene>.json files still override this layout when needed.
+		auto axis = [](float span) { return std::clamp((int)std::round(span / 360.f) + 1, 2, 16); };
 		s.giCx = axis(2.f * ext.x);
-		s.giCy = std::clamp(axis(2.f * ext.y), 2, 6);
+		s.giCy = std::clamp(axis(2.f * ext.y), 2, 8);
 		s.giCz = axis(2.f * ext.z);
-		s.giOrigin = mn;
-		s.giSpacing = { (2.f * ext.x) / std::max(1, s.giCx - 1),
-		                (2.f * ext.y) / std::max(1, s.giCy - 1),
-		                (2.f * ext.z) / std::max(1, s.giCz - 1) };
+		s.giSpacing = { (2.f * ext.x) / std::max(1, s.giCx),
+		                (2.f * ext.y) / std::max(1, s.giCy),
+		                (2.f * ext.z) / std::max(1, s.giCz) };
+		s.giOrigin = mn + s.giSpacing * 0.5f;
 		const std::string gf = s.currentScene.empty() ? std::string("bench_gi.json")
 		                                              : ("bench_gi_" + s.currentScene + ".json");
 		std::ifstream in(gf);
@@ -1436,6 +1614,7 @@ void GameWorld::Init()
 	}
 
 	s.useDeferred = EnvInt("BENCH_DEFERRED", 1) != 0;
+	s.dxrRenderer = EnvInt("BENCH_DXR_RENDERER", 1) != 0;
 	s.gbufChannel = std::clamp(EnvInt("BENCH_GBUF", 0), 0, 9);
 	s.wantClustered = EnvInt("BENCH_CLUSTERED", 1) != 0;
 	s.wantSSAO      = EnvInt("BENCH_SSAO", 1) != 0;
@@ -1445,9 +1624,12 @@ void GameWorld::Init()
 	s.wantSSR       = EnvInt("BENCH_SSR", 1) != 0;
 	if (const char* p = std::getenv("BENCH_SUN_PITCH")) s.sunPitch = (float)atof(p);
 	if (const char* y = std::getenv("BENCH_SUN_YAW"))   s.sunYaw   = (float)atof(y);
+	if (const char* v = std::getenv("BENCH_SUN_INTENSITY")) s.sunIntensity = std::max(0.f,(float)atof(v));
 	if (auto* dr = (s.useDeferred && GraphicsEngine::GetInstance()) ? &GraphicsEngine::GetInstance()->GetDeferredRenderer() : nullptr)
 		dr->GetTunables().shadowShowCascades = EnvInt("BENCH_SHADOW_VIZ", 0) != 0;
 	s.screenshotPath = EnvStr("BENCH_SCREENSHOT", "");
+	s.shotFrame = EnvInt("BENCH_SHOT_FRAME", 0);
+	s.camOrbitHeight = EnvStr("BENCH_ORBIT_HEIGHT", "").empty() ? -1.f : (float)atof(EnvStr("BENCH_ORBIT_HEIGHT", "").c_str());
 	if (s.useDeferred)
 	{
 		// The engine owns the deferred renderer now; the bench just drives it.
@@ -1459,7 +1641,48 @@ void GameWorld::Init()
 			auto& tun = dr.GetTunables();
 			tun.bloomEnabled = EnvInt("BENCH_BLOOM", 1) != 0;
 			if (const char* v = std::getenv("BENCH_BLOOM_INTENSITY")) tun.bloomIntensity = (float)atof(v);
-			tun.exposureAuto = EnvInt("BENCH_AUTOEXPOSURE", 0) != 0;
+			tun.dxrLightingView = EnvInt("BENCH_LIGHTING_VIEW", 0);
+			tun.dxrTextureFiltering = EnvInt("BENCH_RAY_TEXTURE_FILTER", 1) != 0;
+			tun.fogEnabled = EnvInt("BENCH_FOG", 1) != 0;
+			if (const char* v = std::getenv("BENCH_FOG_DENSITY")) tun.fogDensity = (float)atof(v);
+			tun.volumetricEnabled = EnvInt("BENCH_VOLUMETRIC", 1) != 0;
+			tun.volumetricSteps = std::clamp(EnvInt("BENCH_VOLUMETRIC_STEPS", tun.volumetricSteps), 8, 64);
+			tun.atmosphereDebugView = EnvInt("BENCH_ATMOSPHERE_VIEW", 0);
+			tun.taaEnabled = EnvInt("BENCH_TAA", 1) != 0;
+			tun.taaJitter = EnvInt("BENCH_TAA_JITTER", 1) != 0;
+			// BENCH_DXR_DENOISER=1 turns on DLSS Ray Reconstruction, which replaces
+			// the native temporal resolve with a real ray denoiser. Mirrors what the
+			// ImGui checkbox does: RR runs as a 1:1 DLAA-shaped pass, not upscaling.
+			// 0 = native temporal, 1 = DLAA, 2..5 = DLSS Quality..Ultra Performance.
+			tun.dlssMode = std::clamp(EnvInt("BENCH_DLSS_MODE", 0), 0, 5);
+			tun.dlaaEnabled = tun.dlssMode == 1;
+			if (EnvInt("BENCH_DXR_DENOISER", 0) != 0)
+			{
+				tun.rayReconstructionEnabled = true;
+				tun.dlaaEnabled = true;
+				tun.dlssMode = 1;
+			}
+			// dlssMode selects the DXR render resolution, and that is baked into
+			// the targets when they are created -- which is why the ImGui combo
+			// recreates them on every change. Without this, the ray pass keeps
+			// rendering at full resolution while DLSS is told it is upscaling:
+			// strictly more work than native, which is exactly backwards and
+			// makes the more aggressive modes measure SLOWER than the gentle ones.
+			if (tun.dlssMode != 0) dr.RecreateDxrTargets();
+			tun.specularAaEnabled = EnvInt("BENCH_SPECULAR_AA", 1) != 0;
+			tun.taaDebugView = EnvInt("BENCH_TAA_VIEW", 0);
+			tun.dxrAmbientOcclusion = EnvInt("BENCH_DXR_AO", 1) != 0;
+			tun.dxrAoSamples = std::clamp(EnvInt("BENCH_DXR_AO_SAMPLES", tun.dxrAoSamples), 1, 8);
+			tun.dxrIndirectGi = EnvInt("BENCH_DXR_GI", 1) != 0;
+			tun.dxrDirectLighting = EnvInt("BENCH_DXR_DIRECT", 1) != 0;
+			// Reflections are the largest single term in the per-pixel ray
+			// budget (each sample traces a ray AND re-runs the full direct
+			// shade on its hit), so they need their own A/B knob like the
+			// other big passes above.
+			tun.dxrReflections = EnvInt("BENCH_DXR_REFLECTIONS", 1) != 0;
+			tun.dxrReflectionSamples = std::clamp(EnvInt("BENCH_DXR_REFLECTION_SAMPLES", 4), 1, 4);
+			if (const char* rc = std::getenv("BENCH_DXR_REFLECTION_CUTOFF")) tun.dxrReflectionRoughnessCutoff = std::clamp((float)atof(rc), 0.f, 1.f);
+			tun.exposureAuto = EnvInt("BENCH_AUTOEXPOSURE", 1) != 0;
 			tun.contactShadows = EnvInt("BENCH_CONTACT", 1) != 0;
 			tun.contactViz = EnvInt("BENCH_CONTACT_VIZ", 0) != 0;
 			tun.localShadowViz = EnvInt("BENCH_LOCALSH_VIZ", 0) != 0;
@@ -1475,8 +1698,8 @@ void GameWorld::Init()
 	}
 	if (const char* a = std::getenv("BENCH_AMBIENT")) s.ambientScale = (float)atof(a);
 
-	INFO_PRINT("Sponza bench: model '%s'  center(%.0f,%.0f,%.0f) extents(%.0f,%.0f,%.0f)  copies=%d  lights=%d  benchFrames=%d",
-		s.modelPath.c_str(), s.sceneCenter.x, s.sceneCenter.y, s.sceneCenter.z,
+	INFO_PRINT("Scene bench: scene '%s'  center(%.0f,%.0f,%.0f) extents(%.0f,%.0f,%.0f)  copies=%d  lights=%d  benchFrames=%d",
+		s.currentScene.c_str(), s.sceneCenter.x, s.sceneCenter.y, s.sceneCenter.z,
 		s.sceneExtents.x, s.sceneExtents.y, s.sceneExtents.z, s.sponzaCopies, (int)s.pointLights.size(), s.benchFrames);
 
 	int totalTr = 0, totalOp = 0;
@@ -1522,16 +1745,26 @@ void GameWorld::DrawDebugUI()
 #ifndef _RETAIL
 	Impl& s = *myImpl;
 	if (!s.debugUiOpen) return;
-
-	ImGui::SetNextWindowSize(ImVec2(340, 0), ImGuiCond_FirstUseEver);
-	ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_FirstUseEver);
-	if (ImGui::Begin("Render tuning", &s.debugUiOpen))
+	const bool uiCapture = s.benchFrames > 0 && EnvInt("BENCH_DEBUG_UI",0) != 0;
+	if (uiCapture) { ImGui::GetIO().IniFilename = nullptr; ImGui::SetNextWindowCollapsed(false, ImGuiCond_Always); }
+	ImGui::SetNextWindowSize(ImVec2(540, 740), uiCapture ? ImGuiCond_Always : ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSizeConstraints(ImVec2(440, 380), ImVec2(900, 1200));
+	ImGui::SetNextWindowPos(ImVec2(std::max(12.f, ImGui::GetIO().DisplaySize.x - 554.f), 12), uiCapture ? ImGuiCond_Always : ImGuiCond_FirstUseEver);
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14,12));
+	ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8,5));
+	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8,7));
+	if (ImGui::Begin("Debug###RenderSettings", &s.debugUiOpen))
 	{
-		ImGui::Text("%.1f FPS  (%.2f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
-		ImGui::TextDisabled("RMB look - WASD move - Shift fast - F5 save cam");
-		ImGui::Separator();
-
-		// --- scene picker: every *.tgs under the game data root ---
+		ImGui::PushItemWidth(-175);
+		if (ImGui::BeginTabBar("DebugTabs"))
+		{
+		if (ImGui::BeginTabItem("Scene"))
+		{
+		// --- scene picker: every *.tgs under the game data root, recursively ---
+		// Scenes live in subfolders (e.g. data/Scenes/*.tgs), matching
+		// FindFirstTgsScene()'s scan used at startup -- LoadSceneContent()
+		// resolves names the same way (root / name + ".tgs"), so the listed
+		// name must keep its subfolder-relative path, not just the stem.
 		{
 			static std::vector<std::string> sceneList;
 			static bool scanned = false;
@@ -1540,274 +1773,556 @@ void GameWorld::DrawDebugUI()
 				scanned = true;
 				std::error_code ec;
 				const std::filesystem::path root = Tga::Settings::GameAssetRoot();
-				for (const auto& de : std::filesystem::directory_iterator(root, ec))
-					if (de.is_regular_file() && de.path().extension() == ".tgs")
-						sceneList.push_back(de.path().stem().string());
+				for (const auto& de : std::filesystem::recursive_directory_iterator(root, ec))
+				if (de.is_regular_file() && de.path().extension() == ".tgs")
+				sceneList.push_back(std::filesystem::relative(de.path(), root, ec).replace_extension().generic_string());
 				std::sort(sceneList.begin(), sceneList.end());
-				sceneList.insert(sceneList.begin(), kBuiltinRoomScene);   // procedural room, always available
 			}
 			int cur = 0;
 			for (int i = 0; i < (int)sceneList.size(); ++i)
-				if (sceneList[i] == s.currentScene) cur = i;
+			if (sceneList[i] == s.currentScene) cur = i;
 			std::vector<const char*> items;
 			for (auto& n : sceneList) items.push_back(n.c_str());
 			if (!items.empty() && ImGui::Combo("Scene", &cur, items.data(), (int)items.size())
-			    && sceneList[cur] != s.currentScene)
+			&& sceneList[cur] != s.currentScene)
 			{
 				s.LoadSceneContent(sceneList[cur], false);
 				s.frame = 0;
 			}
 		}
-
-		// Scene lighting: the fallback "rainbow" point-light rig only makes sense
-		// for the headline Sponza benchmark. Turn it off for authored rooms, and
-		// "Seal" to also drop the sun + sky IBL so the room is dark until you light it.
-		if (ImGui::Checkbox("Auto light rig", &s.autoLightRig))
-			s.LoadSceneContent(s.currentScene, false);
-		ImGui::SameLine();
-		ImGui::Checkbox("Seal (no sun / sky)", &s.sealScene);
-		ImGui::SliderFloat("Auto-seal interiors (GI)", &s.autoSeal, 0.f, 1.f, "%.2f");
-		ImGui::Separator();
-
-		ImGui::Checkbox("Deferred", &s.useDeferred);
-		const char* views[] = { "Lit", "Albedo", "Normal", "Roughness", "Metalness",
-		                        "Baked AO", "Emissive", "Depth", "SSAO" };
-		ImGui::Combo("View", &s.gbufChannel, views, IM_ARRAYSIZE(views));
-		ImGui::Checkbox("Perf overlay", &s.showPerfOverlay);
-
-		if (ImGui::CollapsingHeader("Material preview", ImGuiTreeNodeFlags_DefaultOpen))
-		{
-			ImGui::Checkbox("Show debug sphere", &s.showDebugBall);
-			if (s.debugBallValid)
-			{
-				DeferredRenderer::DebugMaterial& dm = s.debugMat;
-				ImGui::ColorEdit3("Base colour", dm.baseColor);
-				ImGui::SliderFloat("Roughness", &dm.roughness, 0.f, 1.f, "%.3f");
-				ImGui::SliderFloat("Metalness", &dm.metalness, 0.f, 1.f, "%.3f");
-				ImGui::SliderFloat("AO", &dm.ao, 0.f, 1.f, "%.3f");
-				ImGui::ColorEdit3("Emissive colour", dm.emissiveColor);
-				ImGui::SliderFloat("Emissive strength", &dm.emissiveStrength, 0.f, 16.f, "%.2f");
-				ImGui::InputTextWithHint("##dbgtgmat", "path/to/foo.tgmat", s.dbgTgmatPath, sizeof(s.dbgTgmatPath));
-				ImGui::SameLine();
-				if (ImGui::Button("Load .tgmat##dbg"))
-					LoadTgmatInto(s.dbgTgmatPath, s.debugMat);
-				ImGui::Checkbox("Emits light (area light proxy)", &s.debugBallEmitsLight);
-				if (s.debugBallEmitsLight)
-				{
-					ImGui::SliderFloat("Emissive light gain", &s.debugEmissiveLightGain, 0.f, 0.15f, "%.3f");
-					ImGui::Checkbox("Proxy casts shadow (costly)", &s.debugEmissiveCastShadow);
-				}
-				ImGui::Separator();
-				ImGui::Checkbox("Follow camera", &s.debugBallFollowCam);
-				ImGui::SliderFloat("Sphere radius", &s.debugBallRadius, 5.f, 400.f, "%.0f");
-				if (!s.debugBallFollowCam)
-					ImGui::DragFloat3("Sphere pos", &s.debugBallPos.x, 5.f);
-
-				ImGui::Separator();
-				ImGui::Checkbox("Orbiting spheres", &s.showOrbitBalls);
-				if (s.showOrbitBalls)
-				{
-					ImGui::TextDisabled("share the material above");
-					ImGui::SliderInt("Count", &s.orbitBallCount, 1, Impl::kMaxOrbitBalls);
-					ImGui::SliderFloat("Orbit radius", &s.orbitPathRadius, 10.f, 8000.f, "%.0f");
-					ImGui::SliderFloat("Orbit height", &s.orbitHeight, -2000.f, 2000.f, "%.0f");
-					ImGui::SliderFloat("Ball radius", &s.orbitBallRadius, 4.f, 400.f, "%.0f");
-					ImGui::SliderFloat("Orbit speed", &s.orbitSpeed, -3.f, 3.f, "%.2f rad/s");
-					ImGui::Checkbox("Orbiting spheres emit light", &s.orbitBallsEmitLight);
-				}
-			}
-			else ImGui::TextDisabled("Sphere/Sphere.fbx not loaded");
+		ImGui::EndTabItem();
 		}
-		if (s.IsBuiltinRoom() && ImGui::CollapsingHeader("Built-in room", ImGuiTreeNodeFlags_DefaultOpen))
+		if (ImGui::BeginTabItem("Render Tuning"))
 		{
-			if (ImGui::DragFloat3("Room size", &s.roomSize.x, 10.f, 100.f, 20000.f, "%.0f"))
-				s.LoadSceneContent(kBuiltinRoomScene, false);   // rebuild surfaces at the new size
-			ImGui::Checkbox("Sealed (no sun / sky IBL)", &s.roomSealed);
-			if (ImGui::Checkbox("Ceiling fill lamps", &s.roomLamps))
-				s.LoadSceneContent(kBuiltinRoomScene, false);
-			ImGui::SameLine();
-			if (ImGui::SmallButton("Re-prime GI")) s.StartGiPrime();
-
-			const char* faces[6] = { "Floor", "Ceiling", "Wall -X", "Wall +X", "Wall -Z", "Wall +Z" };
-			ImGui::Combo("Surface", &s.roomEditSurface, faces, 6);
-			int i = std::clamp(s.roomEditSurface, 0, 5);
-			DeferredRenderer::DebugMaterial& rm = s.roomMat[i];
-			ImGui::ColorEdit3("Base colour##room", rm.baseColor);
-			ImGui::SliderFloat("Roughness##room", &rm.roughness, 0.f, 1.f, "%.3f");
-			ImGui::SliderFloat("Metalness##room", &rm.metalness, 0.f, 1.f, "%.3f");
-			ImGui::SliderFloat("AO##room", &rm.ao, 0.f, 1.f, "%.3f");
-			ImGui::ColorEdit3("Emissive colour##room", rm.emissiveColor);
-			ImGui::SliderFloat("Emissive strength##room", &rm.emissiveStrength, 0.f, 16.f, "%.2f");
-			ImGui::InputTextWithHint("##roomtgmat", "path/to/foo.tgmat", s.roomTgmatPath, sizeof(s.roomTgmatPath));
-			ImGui::SameLine();
-			if (ImGui::Button("Load .tgmat##room"))
-				LoadTgmatInto(s.roomTgmatPath, rm);
-			if (ImGui::Button("Apply to all surfaces"))
-				for (int k = 0; k < 6; ++k) s.roomMat[k] = rm;
-		}
-		if (ImGui::CollapsingHeader("Sun / directional", ImGuiTreeNodeFlags_DefaultOpen))
-		{
-			ImGui::SliderFloat("Pitch", &s.sunPitch, -89.f, 89.f, "%.1f deg");
-			ImGui::SliderFloat("Yaw",   &s.sunYaw, -180.f, 180.f, "%.1f deg");
-			ImGui::ColorEdit3("Colour", s.sunColor);
-			ImGui::SliderFloat("Intensity", &s.sunIntensity, 0.f, 4.f);
-			ImGui::SliderFloat("Softness",  &s.sunSoftness, 0.f, 1.f);
-		}
-		if (ImGui::CollapsingHeader("Ambient / IBL"))
-		{
-			ImGui::ColorEdit3("Ambient", s.ambientColor);
-			ImGui::SliderFloat("IBL scale", &s.ambientScale, 0.f, 4.f, "%.2f");
-			static const char* kCubes[] = { "horizonCubeMap", "env_studio", "env_powerplant", "env_slipway" };
-			if (ImGui::Combo("Cubemap", &s.cubemapIdx, kCubes, IM_ARRAYSIZE(kCubes)))
-				s.fallbackCube = GraphicsEngine::GetInstance()->GetTextureManager()
-					.GetTexture((std::string("Textures/") + kCubes[s.cubemapIdx] + ".dds").c_str(),
-						TextureSrgbMode::None);
-			ImGui::Checkbox("Reflection probe", &s.probeEnabled);
-			ImGui::SliderInt("Probe interval", &s.probeInterval, 1, 240);
-			if (ImGui::Button("Recapture now")) s.probeCountdown = 0;
-			ImGui::DragFloat3("Probe pos", &s.probePos.x, 5.f);
-			ImGui::DragFloat3("Probe box (half)", &s.probeBox.x, 5.f, 1.f, 100000.f);
-		}
-		if (ImGui::CollapsingHeader("Emissive GI", ImGuiTreeNodeFlags_DefaultOpen))
-		{
-			ImGui::Checkbox("Enabled##gi", &s.giEnabled);
-			ImGui::Text("%d x %d x %d = %d probes", s.giCx, s.giCy, s.giCz, s.giCx * s.giCy * s.giCz);
-			ImGui::SliderFloat("Intensity##gi", &s.giIntensity, 0.f, 4.f, "%.2f");
-			ImGui::SliderFloat("Hysteresis", &s.giHysteresis, 0.f, 0.99f, "%.2f");
-			ImGui::Text(s.giPriming ? "priming... probe %d / %d" : "primed (%d probes)",
-				s.giCursor, s.giCx * s.giCy * s.giCz);
-			ImGui::SliderInt("Prime batch", &s.giPrimeBatch, 1, 32);
-			ImGui::Checkbox("Keep updating (dynamic)", &s.giKeepUpdating);
-			if (s.giKeepUpdating) ImGui::SliderInt("Trickle skip", &s.giFrameSkip, 1, 30);
-			ImGui::DragFloat3("Volume origin", &s.giOrigin.x, 10.f);
-			ImGui::DragFloat3("Probe spacing", &s.giSpacing.x, 5.f, 1.f, 100000.f);
-			ImGui::Checkbox("Auto re-prime on light change", &s.giAutoReprime);
-			if (ImGui::Button("Re-prime volume")) s.StartGiPrime();
-			if (s.deferred) ImGui::Checkbox("Show GI term", &s.deferred->GetTunables().giViz);
-		}
-
 		DeferredRenderer::Tunables* tun = s.deferred ? &s.deferred->GetTunables() : nullptr;
+		const bool available = s.deferred && DX11::Rhi()->SupportsRaytracingTier11();
+		ImGui::Text("%.1f FPS  |  %.2f ms", ImGui::GetIO().Framerate, 1000.f / std::max(1.f, ImGui::GetIO().Framerate));
+		ImGui::SameLine();
+		ImGui::TextColored(s.dxrRenderer ? ImVec4(.35f,1.f,.55f,1.f) : ImVec4(.65f,.8f,1.f,1.f), s.dxrRenderer ? "DXR" : "Raster");
 
-		if (ImGui::CollapsingHeader("Shadows", ImGuiTreeNodeFlags_DefaultOpen))
-		{
-			ImGui::Checkbox("Directional CSM", &s.wantShadows);
-			if (tun)
-			{
-				ImGui::SliderFloat("Normal offset", &tun->shadowNormalOffset, 0.f, 8.f, "%.1f tx");
-				ImGui::SliderFloat("Depth bias", &tun->shadowDepthBias, 0.f, 20.f, "%.1f wu");
-				ImGui::SliderFloat("Strength", &tun->shadowStrength, 0.f, 1.f);
-				ImGui::Checkbox("Contact shadows", &tun->contactShadows);
-				if (tun->contactShadows)
-				{
-					ImGui::SliderFloat("Contact length", &tun->contactLength, 2.f, 150.f, "%.0f wu");
-					ImGui::SliderFloat("Contact thickness", &tun->contactThickness, 2.f, 100.f, "%.0f wu");
-					ImGui::Checkbox("Show contact term", &tun->contactViz);
-				}
-				ImGui::Checkbox("Show cascades", &tun->shadowShowCascades);
-				ImGui::Separator();
-				ImGui::Checkbox("Point/spot shadows", &s.wantLocalShadows);
-				if (s.wantLocalShadows)
-				{
-					ImGui::SliderInt("Max casters", &tun->localShadowMaxCasters, 0, 8);
-					ImGui::SliderInt("Max point casters", &tun->localShadowMaxPoints, 0, tun->localShadowMaxCasters);
-				}
-			}
+		ImGui::BeginDisabled(!available);
+		if (ImGui::Checkbox("DXR rendering", &s.dxrRenderer)) {
+			s.deferred->SetDxrRenderer(s.dxrRenderer);
+			if (s.dxrRenderer) { s.useDeferred=true; s.gbufChannel=0; s.giUseRT=true; s.StartGiPrime(); }
 		}
-		if (ImGui::CollapsingHeader("SSR", ImGuiTreeNodeFlags_DefaultOpen))
-		{
-			ImGui::Checkbox("Enabled##ssr", &s.wantSSR);
-			if (tun)
-			{
-				ImGui::SliderFloat("Max distance", &tun->ssrMaxDistance, 50.f, 4000.f, "%.0f");
-				ImGui::SliderFloat("Thickness", &tun->ssrThickness, 2.f, 120.f, "%.0f");
-				ImGui::SliderFloat("Roughness cutoff", &tun->ssrRoughnessCutoff, 0.05f, 1.f, "%.2f");
-				ImGui::SliderFloat("Strength##ssr", &tun->ssrStrength, 0.f, 2.f, "%.2f");
-				ImGui::SliderInt("March steps", &tun->ssrSteps, 8, 128);
-				ImGui::SliderInt("Refine steps", &tun->ssrRefineSteps, 0, 8);
-			}
-		}
-		if (ImGui::CollapsingHeader("SSAO", ImGuiTreeNodeFlags_DefaultOpen))
-		{
-			ImGui::Checkbox("Enabled##ssao", &s.wantSSAO);
-			if (tun)
-			{
-				ImGui::SliderFloat("AO radius", &tun->ssaoRadius, 4.f, 200.f);
-				ImGui::SliderFloat("AO bias", &tun->ssaoBias, 0.f, 4.f);
-				ImGui::SliderFloat("AO intensity", &tun->ssaoIntensity, 0.f, 4.f);
-				ImGui::SliderFloat("AO power", &tun->ssaoPower, 0.5f, 4.f);
-			}
-		}
-		if (ImGui::CollapsingHeader("Lights", ImGuiTreeNodeFlags_DefaultOpen))
-		{
-			ImGui::Checkbox("Clustered culling", &s.wantClustered);
-			ImGui::Checkbox("Show light markers", &s.showLightMarkers);
-			ImGui::Text("%d local light(s)", (int)s.pointLights.size());
-			ImGui::Separator();
-
-			const float kR2D = 57.29578f, kD2R = 0.01745329f;
-			for (int i = 0; i < (int)s.pointLights.size(); ++i)
-			{
-				Impl::LightExtra* ex = (i < (int)s.lightExtra.size()) ? &s.lightExtra[i] : nullptr;
-				const bool isSpot = ex && ex->spotCosOuter > 0.f;
-				ImGui::PushID(i);
-				if (ImGui::TreeNodeEx("l", ImGuiTreeNodeFlags_DefaultOpen, "%s %d",
-					isSpot ? "Spot" : "Point", i))
-				{
-					ImGui::DragFloat3("Translation", &s.pointLights[i].position.x, 2.0f);
-					if (isSpot)
+		ImGui::EndDisabled();
+		if (!available) ImGui::TextDisabled("DXR requires a DX12 device with Tier 1.1 support.");
+		if (s.dxrRenderer && s.deferred && !s.deferred->IsDxrRenderer())
+		ImGui::TextColored(ImVec4(1,.4f,.3f,1), "DXR shader is unavailable; check the log.");
+		ImGui::Separator();
+		const bool sealed = s.sealScene;
+		auto beginTab = [&](const char* label) {
+			const bool select = s.benchFrames > 0 && EnvStr("BENCH_DEBUG_TAB", "") == std::string(label);
+			if (!ImGui::BeginTabItem(label, nullptr, select ? ImGuiTabItemFlags_SetSelected : 0)) return false;
+			ImGui::BeginChild(label, ImVec2(0,0), false);
+			return true;
+		};
+		auto endTab = [&]() { ImGui::EndChild(); ImGui::EndTabItem(); };
+		if (ImGui::BeginTabBar("RenderSettingsTabs")) {
+			if (beginTab("Render")) {
+				if (s.dxrRenderer && available && tun) {
+					ImGui::SeparatorText("Ray-traced direct lighting");
+					ImGui::Checkbox("Direct lighting + ray shadows", &tun->dxrDirectLighting);
+					ImGui::Checkbox("Environment diffuse + specular", &tun->dxrEnvironmentLighting);
+					ImGui::TextDisabled("Edit sun and environment on the Lighting tab.");
+					ImGui::SliderFloat("Ambient floor", &tun->dxrAmbientIntensity, 0.f, 1.f, "%.3f");
+					ImGui::SeparatorText("Reflections and occlusion");
+					ImGui::Checkbox("Ray-traced reflections", &tun->dxrReflections);
+					ImGui::BeginDisabled(!tun->dxrReflections);
+					ImGui::SliderFloat("Roughness cutoff", &tun->dxrReflectionRoughnessCutoff, 0.05f, 1.f, "%.2f");
+					ImGui::SliderInt("Reflection rays / pixel", &tun->dxrReflectionSamples, 1, 4);
+					ImGui::SetItemTooltip("0 = unbounded. A reflection ray that hits nothing traverses the entire BVH before falling back to the environment cube, so bounding this is a real win at grazing angles where rays skim far across the scene.");
+					ImGui::EndDisabled();
+					ImGui::Checkbox("Ray-traced ambient occlusion", &tun->dxrAmbientOcclusion);
+					ImGui::BeginDisabled(!tun->dxrAmbientOcclusion);
+					ImGui::SliderFloat("AO distance", &tun->dxrAoDistance, 5.f, 400.f, "%.0f wu");
+					ImGui::SliderFloat("AO strength", &tun->dxrAoStrength, 0.f, 1.f, "%.2f");
+					ImGui::SliderInt("AO rays / pixel", &tun->dxrAoSamples, 1, 8);
+					ImGui::SetItemTooltip("Measured as the most expensive single term in the DXR frame. "
+						"The temporal resolve converges low counts; raise only if AO looks noisy when still.");
+					ImGui::EndDisabled();
+					if (ImGui::Checkbox("Ray texture filtering", &tun->dxrTextureFiltering)) s.StartGiPrime();
+					ImGui::SeparatorText("Image stability");
+					ImGui::Checkbox("Temporal anti-aliasing", &tun->taaEnabled);
+					ImGui::BeginDisabled(!tun->taaEnabled);
+					ImGui::Checkbox("Sub-pixel jitter", &tun->taaJitter);
+					ImGui::SetItemTooltip("Halton sample offset. Off reproduces the old fixed grid: temporal accumulation still runs, but no geometric detail is recovered and DLSS quality suffers.");
+					ImGui::EndDisabled();
+					const char* dlssModes[] = { "Native temporal", "DLAA", "DLSS Quality", "DLSS Balanced", "DLSS Performance", "DLSS Ultra Performance" };
+					if (ImGui::Combo("NVIDIA DLSS mode (RTX)", &tun->dlssMode, dlssModes, IM_ARRAYSIZE(dlssModes)))
 					{
-						if (ImGui::DragFloat3("Direction", &ex->spotDir.x, 0.02f, -1.f, 1.f))
-						{
-							float l = ex->spotDir.Length();
-							if (l > 1e-4f) ex->spotDir = ex->spotDir / l;
-						}
-						float outerDeg = std::acos(std::clamp(ex->spotCosOuter, -1.f, 1.f)) * kR2D;
-						float innerDeg = std::acos(std::clamp(ex->spotCosInner, -1.f, 1.f)) * kR2D;
-						if (ImGui::SliderFloat("Outer", &outerDeg, 4.f, 80.f, "%.0f deg"))
-							ex->spotCosOuter = std::cos(outerDeg * kD2R);
-						if (ImGui::SliderFloat("Inner", &innerDeg, 2.f, 78.f, "%.0f deg"))
-							ex->spotCosInner = std::cos(std::min(innerDeg, outerDeg - 1.f) * kD2R);
+						tun->dlaaEnabled = tun->dlssMode == 1;
+						if (tun->dlssMode >= 2) tun->rayReconstructionEnabled = false;
+						s.deferred->RecreateDxrTargets();
+						s.deferred->ResetTemporalHistory();
+						s.StartGiPrime();
 					}
-					ImGui::DragFloat("Range", &s.pointLights[i].range, 10.f, 20.f, 20000.f, "%.0f");
-					ImGui::TreePop();
+					ImGui::TextDisabled("DLSS SR modes render DXR at lower resolution and reconstruct HDR at display resolution.");
+					if (ImGui::Checkbox("DLSS Ray Reconstruction denoiser (RTX)", &tun->rayReconstructionEnabled))
+					{
+						// RR is a DLSS extension and owns the temporal accumulation.
+						if (tun->rayReconstructionEnabled) { tun->dlaaEnabled = true; tun->dlssMode = 1; }
+						s.deferred->RecreateDxrTargets();
+						s.deferred->ResetTemporalHistory();
+						s.StartGiPrime();
+					}
+					ImGui::TextDisabled("Uses ray-traced radiance plus albedo, specular albedo, normal/roughness, depth and motion guides.");
+					bool specularChanged = ImGui::Checkbox("Specular anti-aliasing", &tun->specularAaEnabled);
+					ImGui::BeginDisabled(!tun->specularAaEnabled);
+					specularChanged |= ImGui::SliderFloat("Specular AA strength", &tun->specularAaStrength, 0.0f, 1.0f, "%.2f");
+					ImGui::EndDisabled();
+					if (specularChanged) { s.deferred->ResetTemporalHistory(); s.StartGiPrime(); }
+					ImGui::BeginDisabled(!tun->taaEnabled);
+					ImGui::SliderFloat("TAA history weight", &tun->taaHistoryWeight, 0.0f, 0.95f, "%.2f");
+					ImGui::SliderFloat("TAA stationary weight", &tun->taaStationaryWeight, 0.0f, 0.98f, "%.2f");
+
+					ImGui::EndDisabled();
+
+				} else if (!s.dxrRenderer) {
+					ImGui::Checkbox("Deferred rendering", &s.useDeferred);
+					ImGui::BeginDisabled(s.dxrRenderer);
+					if (ImGui::CollapsingHeader("Shadows", ImGuiTreeNodeFlags_DefaultOpen))
+					{
+						ImGui::Checkbox("Directional CSM", &s.wantShadows);
+						if (tun)
+						{
+							ImGui::SliderFloat("Normal offset", &tun->shadowNormalOffset, 0.f, 8.f, "%.1f tx");
+							ImGui::SliderFloat("Depth bias", &tun->shadowDepthBias, 0.f, 20.f, "%.1f wu");
+							ImGui::SliderFloat("Strength", &tun->shadowStrength, 0.f, 1.f);
+							ImGui::Checkbox("Contact shadows", &tun->contactShadows);
+							if (tun->contactShadows)
+							{
+								ImGui::SliderFloat("Contact length", &tun->contactLength, 2.f, 150.f, "%.0f wu");
+								ImGui::SliderFloat("Contact thickness", &tun->contactThickness, 2.f, 100.f, "%.0f wu");
+								ImGui::Checkbox("Show contact term", &tun->contactViz);
+							}
+							ImGui::Checkbox("Show cascades", &tun->shadowShowCascades);
+							ImGui::Separator();
+							ImGui::Checkbox("Point/spot shadows", &s.wantLocalShadows);
+							if (s.wantLocalShadows)
+							{
+								ImGui::SliderInt("Max casters", &tun->localShadowMaxCasters, 0, 8);
+								ImGui::SliderInt("Max point casters", &tun->localShadowMaxPoints, 0, tun->localShadowMaxCasters);
+							}
+						}
+					}
+					ImGui::EndDisabled();
+					ImGui::BeginDisabled(s.dxrRenderer);
+					if (ImGui::CollapsingHeader("SSR", ImGuiTreeNodeFlags_DefaultOpen))
+					{
+						ImGui::Checkbox("Enabled##ssr", &s.wantSSR);
+						if (tun)
+						{
+							ImGui::BeginDisabled(!s.wantSSR);
+							ImGui::SliderFloat("Max distance", &tun->ssrMaxDistance, 50.f, 4000.f, "%.0f");
+							ImGui::SliderFloat("Thickness", &tun->ssrThickness, 2.f, 120.f, "%.0f");
+							ImGui::SliderFloat("Roughness cutoff", &tun->ssrRoughnessCutoff, 0.05f, 1.f, "%.2f");
+							ImGui::SliderFloat("Strength##ssr", &tun->ssrStrength, 0.f, 2.f, "%.2f");
+							ImGui::SliderInt("March steps", &tun->ssrSteps, 8, 128);
+							ImGui::SliderInt("Refine steps", &tun->ssrRefineSteps, 0, 8);
+							ImGui::EndDisabled();
+						}
+					}
+					ImGui::EndDisabled();
+					ImGui::BeginDisabled(s.dxrRenderer);
+					if (ImGui::CollapsingHeader("SSAO", ImGuiTreeNodeFlags_DefaultOpen))
+					{
+						ImGui::Checkbox("Enabled##ssao", &s.wantSSAO);
+						if (tun)
+						{
+							ImGui::BeginDisabled(!s.wantSSAO);
+							ImGui::SliderFloat("AO radius", &tun->ssaoRadius, 4.f, 200.f);
+							ImGui::SliderFloat("AO bias", &tun->ssaoBias, 0.f, 4.f);
+							ImGui::SliderFloat("AO intensity", &tun->ssaoIntensity, 0.f, 4.f);
+							ImGui::SliderFloat("AO power", &tun->ssaoPower, 0.5f, 4.f);
+							ImGui::EndDisabled();
+						}
+					}
+					ImGui::EndDisabled();
+
 				}
-				ImGui::PopID();
+				endTab();
 			}
-		}
-		if (ImGui::CollapsingHeader("Post FX", ImGuiTreeNodeFlags_DefaultOpen))
-		{
-			ImGui::Checkbox("Enabled##postfx", &s.wantPostFx);
-			if (tun)
-			{
-				ImGui::Checkbox("Bloom##toggle", &tun->bloomEnabled);
-				ImGui::SameLine();
-				ImGui::TextDisabled(tun->bloomEnabled ? "(on)" : "(off - sliders inert)");
-				ImGui::BeginDisabled(!tun->bloomEnabled);
-				ImGui::SliderFloat("Bloom threshold", &tun->bloomThreshold, 0.1f, 8.f, "%.2f");
-				ImGui::SliderFloat("Bloom knee", &tun->bloomKnee, 0.f, 1.f, "%.2f");
-				ImGui::SliderFloat("Bloom intensity", &tun->bloomIntensity, 0.f, 0.5f, "%.3f");
-				if (tun->bloomThreshold < 1.0f)
-					ImGui::TextColored(ImVec4(1, 0.7f, 0.3f, 1),
-						"threshold this low blooms lit surfaces, not just highlights");
+			if (beginTab("Lighting")) {
+				if (ImGui::CollapsingHeader("Scene lighting", ImGuiTreeNodeFlags_DefaultOpen)) {
+					if (ImGui::Checkbox("Seal scene (no sun or sky)", &s.sealScene)) { s.StartGiPrime(); if(s.deferred) s.deferred->ResetTemporalHistory(); }
+					ImGui::BeginDisabled(!s.giEnabled || sealed);
+					ImGui::SliderFloat("Interior sky occlusion", &s.autoSeal,0.f,1.f,"%.2f");
+					ImGui::EndDisabled();
+				}
+				if (ImGui::CollapsingHeader("Sun / directional", ImGuiTreeNodeFlags_DefaultOpen))
+				{
+					ImGui::BeginDisabled(sealed);
+					ImGui::SliderFloat("Pitch", &s.sunPitch, -89.f, 89.f, "%.1f deg");
+					ImGui::SliderFloat("Yaw",   &s.sunYaw, -180.f, 180.f, "%.1f deg");
+					ImGui::ColorEdit3("Colour", s.sunColor);
+					ImGui::SliderFloat("Intensity", &s.sunIntensity, 0.f, 4.f);
+					if (!s.dxrRenderer) ImGui::SliderFloat("Softness", &s.sunSoftness, 0.f, 1.f);
+					ImGui::EndDisabled();
+					if (sealed) ImGui::TextDisabled("Sun is disabled by scene sealing.");
+				}
+				if (ImGui::CollapsingHeader("Ambient / IBL"))
+				{
+					ImGui::BeginDisabled(sealed);
+					ImGui::ColorEdit3("Ambient", s.ambientColor);
+					ImGui::SliderFloat("IBL scale", &s.ambientScale, 0.f, 4.f, "%.2f");
+					static const char* kCubes[] = { "horizonCubeMap", "env_studio", "env_powerplant", "env_slipway" };
+					if (ImGui::Combo("Cubemap", &s.cubemapIdx, kCubes, IM_ARRAYSIZE(kCubes)))
+					{
+						s.fallbackCube = GraphicsEngine::GetInstance()->GetTextureManager()
+							.GetTexture((std::string("Textures/") + kCubes[s.cubemapIdx] + ".dds").c_str(),
+							TextureSrgbMode::None);
+						s.RebuildWorldEnvironmentPrefilter();
+					}
+					ImGui::EndDisabled();
+					if (!s.dxrRenderer)
+					{
+						ImGui::Checkbox("Reflection probe", &s.probeEnabled);
+						ImGui::SliderInt("Probe interval", &s.probeInterval, 1, 240);
+						if (ImGui::Button("Recapture now")) s.probeCountdown = 0;
+						ImGui::DragFloat3("Probe pos", &s.probePos.x, 5.f);
+						ImGui::DragFloat3("Probe box (half)", &s.probeBox.x, 5.f, 1.f, 100000.f);
+					}
+					else ImGui::TextDisabled("DXR uses a GGX/diffuse prefiltered copy of the selected sky.");
+				}
+				if (ImGui::CollapsingHeader("Indirect lighting", ImGuiTreeNodeFlags_DefaultOpen))
+				{
+					bool giOn = s.giEnabled && (!s.dxrRenderer || !tun || tun->dxrIndirectGi);
+					if (ImGui::Checkbox("Enabled##gi", &giOn)) {
+						s.giEnabled = giOn;
+						if (s.dxrRenderer && tun) { tun->dxrIndirectGi = giOn; s.giUseRT = true; }
+						s.StartGiPrime();
+					}
+					ImGui::BeginDisabled(!giOn);
+					ImGui::Text("%d x %d x %d = %d probes", s.giCx, s.giCy, s.giCz, s.giCx * s.giCy * s.giCz);
+					ImGui::SliderFloat("Intensity##gi", &s.giIntensity, 0.f, 4.f, "%.2f");
+					if (ImGui::TreeNode("Advanced probe settings")) {
+						ImGui::SliderFloat("Hysteresis", &s.giHysteresis, 0.f, 0.99f, "%.2f");
+						ImGui::SliderFloat("Firefly clamp", &s.giFireflyClamp, 1.f, 128.f, "%.1f HDR");
+						if (s.dxrRenderer && tun)
+						{
+							ImGui::SliderFloat("Infinite bounce", &tun->dxrGiInfiniteBounce, 0.f, 2.f, "%.2f");
+							if (ImGui::IsItemHovered())
+								ImGui::SetTooltip("Feeds each probe's own irradiance back into new probe\nupdates so light can bounce more than once. 0 disables\nit (single-bounce only); ~1 approximates a plausible\nsecond bounce. Ramps in naturally as the volume primes.");
+						}
+						ImGui::Text(s.giPriming ? "priming... probe %d / %d" : "primed (%d probes)",
+						s.giCursor, s.giCx * s.giCy * s.giCz);
+						ImGui::SliderInt("Prime batch", &s.giPrimeBatch, 1, 32);
+						ImGui::Checkbox("Keep updating (dynamic)", &s.giKeepUpdating);
+						if (s.giKeepUpdating) ImGui::SliderInt("Trickle skip", &s.giFrameSkip, 1, 30);
+						ImGui::DragFloat3("Volume origin", &s.giOrigin.x, 10.f);
+						ImGui::DragFloat3("Probe spacing", &s.giSpacing.x, 5.f, 1.f, 100000.f);
+						ImGui::Checkbox("Auto re-prime on light change", &s.giAutoReprime);
+						ImGui::TreePop();
+					}
+					if (s.dxrRenderer) ImGui::SliderInt("Rays per probe", &s.giRTRayCount, 8, 512);
+					ImGui::Checkbox("Show volume bounds", &s.giShowVolumeBounds);
+					if (ImGui::Button("Re-prime volume")) s.StartGiPrime();
+					if (s.deferred && !s.dxrRenderer) ImGui::Checkbox("Show GI term", &s.deferred->GetTunables().giViz);
+					ImGui::EndDisabled();
+				}
+				if (ImGui::CollapsingHeader("Lights", ImGuiTreeNodeFlags_DefaultOpen))
+				{
+					if (!s.dxrRenderer) ImGui::Checkbox("Clustered culling", &s.wantClustered);
+
+					ImGui::Text("%d local light(s)", (int)s.pointLights.size());
+					ImGui::Separator();
+
+					const float kR2D = 57.29578f, kD2R = 0.01745329f;
+					for (int i = 0; i < (int)s.pointLights.size(); ++i)
+					{
+						Impl::LightExtra* ex = (i < (int)s.lightExtra.size()) ? &s.lightExtra[i] : nullptr;
+						const bool isSpot = ex && ex->spotCosOuter > 0.f;
+						ImGui::PushID(i);
+						if (ImGui::TreeNodeEx("l", 0, "%s %d",
+						isSpot ? "Spot" : "Point", i))
+						{
+							ImGui::DragFloat3("Translation", &s.pointLights[i].position.x, 2.0f);
+							if (isSpot)
+							{
+								if (ImGui::DragFloat3("Direction", &ex->spotDir.x, 0.02f, -1.f, 1.f))
+								{
+									float l = ex->spotDir.Length();
+									if (l > 1e-4f) ex->spotDir = ex->spotDir / l;
+								}
+								float outerDeg = std::acos(std::clamp(ex->spotCosOuter, -1.f, 1.f)) * kR2D;
+								float innerDeg = std::acos(std::clamp(ex->spotCosInner, -1.f, 1.f)) * kR2D;
+								if (ImGui::SliderFloat("Outer", &outerDeg, 4.f, 80.f, "%.0f deg"))
+								ex->spotCosOuter = std::cos(outerDeg * kD2R);
+								if (ImGui::SliderFloat("Inner", &innerDeg, 2.f, 78.f, "%.0f deg"))
+								ex->spotCosInner = std::cos(std::min(innerDeg, outerDeg - 1.f) * kD2R);
+							}
+							ImGui::ColorEdit3("Colour / intensity", &s.pointLights[i].color.r, ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float);
+							ImGui::DragFloat("Range", &s.pointLights[i].range, 10.f, 20.f, 20000.f, "%.0f");
+							ImGui::TreePop();
+						}
+						ImGui::PopID();
+					}
+				}
+
+				endTab();
+			}
+			if (beginTab("Materials")) {
+				if (ImGui::CollapsingHeader("Material preview", ImGuiTreeNodeFlags_DefaultOpen))
+				{
+					ImGui::Checkbox("Show debug sphere", &s.showDebugBall);
+					if (s.debugBallValid)
+					{
+						DeferredRenderer::DebugMaterial& dm = s.debugMat;
+						ImGui::ColorEdit3("Base colour", dm.baseColor);
+						ImGui::SliderFloat("Roughness", &dm.roughness, 0.f, 1.f, "%.3f");
+						ImGui::SliderFloat("Metalness", &dm.metalness, 0.f, 1.f, "%.3f");
+						ImGui::SliderFloat("AO", &dm.ao, 0.f, 1.f, "%.3f");
+						ImGui::ColorEdit3("Emissive colour", dm.emissiveColor);
+						ImGui::SliderFloat("Emissive strength", &dm.emissiveStrength, 0.f, 16.f, "%.2f");
+						ImGui::InputTextWithHint("##dbgtgmat", "path/to/foo.tgmat", s.dbgTgmatPath, sizeof(s.dbgTgmatPath));
+						ImGui::SameLine();
+						if (ImGui::Button("Load .tgmat##dbg"))
+						LoadTgmatInto(s.dbgTgmatPath, s.debugMat);
+						ImGui::Checkbox("Emits light (area light proxy)", &s.debugBallEmitsLight);
+						if (s.debugBallEmitsLight)
+						{
+							ImGui::SliderFloat("Emissive light gain", &s.debugEmissiveLightGain, 0.f, 0.15f, "%.3f");
+							if (!s.dxrRenderer) ImGui::Checkbox("Proxy casts shadow (costly)", &s.debugEmissiveCastShadow);
+							else ImGui::TextDisabled("Proxy lights use ray-traced shadows.");
+						}
+						ImGui::Separator();
+						ImGui::Checkbox("Follow camera", &s.debugBallFollowCam);
+						ImGui::SliderFloat("Sphere radius", &s.debugBallRadius, 5.f, 400.f, "%.0f");
+						if (!s.debugBallFollowCam)
+						ImGui::DragFloat3("Sphere pos", &s.debugBallPos.x, 5.f);
+
+						ImGui::Separator();
+						ImGui::Checkbox("Orbiting spheres", &s.showOrbitBalls);
+						if (s.showOrbitBalls)
+						{
+							ImGui::TextDisabled("share the material above");
+							ImGui::SliderInt("Count", &s.orbitBallCount, 1, Impl::kMaxOrbitBalls);
+							ImGui::SliderFloat("Orbit radius", &s.orbitPathRadius, 10.f, 8000.f, "%.0f");
+							ImGui::SliderFloat("Orbit height", &s.orbitHeight, -2000.f, 2000.f, "%.0f");
+							ImGui::SliderFloat("Ball radius", &s.orbitBallRadius, 4.f, 400.f, "%.0f");
+							ImGui::SliderFloat("Orbit speed", &s.orbitSpeed, -3.f, 3.f, "%.2f rad/s");
+							ImGui::Checkbox("Orbiting spheres emit light", &s.orbitBallsEmitLight);
+						}
+					}
+					else ImGui::TextDisabled("Primitives/Sphere.fbx not loaded");
+				}
+				if (s.IsPillarTest() && ImGui::CollapsingHeader("Pillar Test material", ImGuiTreeNodeFlags_DefaultOpen))
+				{
+					ImGui::Checkbox("Override atlas material", &s.pillarMaterialOverride);
+					if (s.pillarMaterialOverride)
+					{
+						ImGui::ColorEdit3("Base colour##pillar", s.pillarMat.baseColor);
+						ImGui::SliderFloat("Roughness##pillar", &s.pillarMat.roughness, 0.f, 1.f, "%.3f");
+						ImGui::SliderFloat("Metalness##pillar", &s.pillarMat.metalness, 0.f, 1.f, "%.3f");
+						ImGui::SliderFloat("AO##pillar", &s.pillarMat.ao, 0.f, 1.f, "%.3f");
+						ImGui::ColorEdit3("Emissive colour##pillar", s.pillarMat.emissiveColor);
+						ImGui::SliderFloat("Emissive strength##pillar", &s.pillarMat.emissiveStrength, 0.f, 16.f, "%.2f");
+					}
+				}
+				if (tun && ImGui::CollapsingHeader("Glass refraction", ImGuiTreeNodeFlags_DefaultOpen))
+				{
+					ImGui::SliderFloat("Index of refraction", &tun->glassIor, 1.01f, 2.50f, "%.3f");
+					ImGui::SliderFloat("Refraction strength", &tun->glassRefractionScale, 0.f, 3.f, "%.2f");
+					ImGui::SliderFloat("Glass thickness (cm)", &tun->glassThickness, 0.f, 100.f, "%.1f");
+					ImGui::SliderFloat("Absorption", &tun->glassAbsorption, 0.f, 4.f, "%.2f");
+					ImGui::TextDisabled("Applies to materials matched by BENCH_TRANSPARENT_MATS.");
+				}
+
+				endTab();
+			}
+			if (beginTab("Atmosphere")) {
+				ImGui::BeginDisabled(!s.useDeferred);
+				if (tun && ImGui::CollapsingHeader("Atmosphere"))
+				{
+					bool atmosphereChanged = false;
+					atmosphereChanged |= ImGui::Checkbox("Height fog", &tun->fogEnabled);
+					ImGui::BeginDisabled(!tun->fogEnabled);
+					atmosphereChanged |= ImGui::SliderFloat("Fog density / m", &tun->fogDensity, 0.f, 0.05f, "%.4f");
+					atmosphereChanged |= ImGui::SliderFloat("Height falloff / m", &tun->fogHeightFalloff, 0.f, 0.2f, "%.3f");
+					atmosphereChanged |= ImGui::DragFloat("Base height (m)", &tun->fogBaseHeight, 0.1f);
+					atmosphereChanged |= ImGui::SliderFloat("Fog start (m)", &tun->fogStartDistance, 0.f, 50.f);
+					atmosphereChanged |= ImGui::SliderFloat("Fog range (m)", &tun->fogMaxDistance, 10.f, 1000.f);
+					atmosphereChanged |= ImGui::ColorEdit3("Fog colour (linear)", tun->fogColor);
+					atmosphereChanged |= ImGui::Checkbox("Fog affects sky", &tun->fogAffectSky);
+					atmosphereChanged |= ImGui::Checkbox("Volumetric sunlight", &tun->volumetricEnabled);
+					ImGui::BeginDisabled(!tun->volumetricEnabled);
+					atmosphereChanged |= ImGui::SliderFloat("Sun scattering", &tun->volumetricStrength, 0.f, 2.f);
+					atmosphereChanged |= ImGui::SliderFloat("Forward scattering", &tun->volumetricAnisotropy, 0.f, 0.8f);
+					atmosphereChanged |= ImGui::SliderFloat("Sunlight range (m)", &tun->volumetricDistance, 5.f, 300.f);
+					atmosphereChanged |= ImGui::SliderInt("Sunlight steps", &tun->volumetricSteps, 8, 64);
+					atmosphereChanged |= ImGui::Checkbox("Sun disk", &tun->sunDiskEnabled);
+					ImGui::BeginDisabled(!tun->sunDiskEnabled);
+					float sunDiskDegrees = tun->sunDiskAngularRadius * (180.f / 3.14159265f);
+					if (ImGui::SliderFloat("Sun angular radius (deg)", &sunDiskDegrees, 0.05f, 2.0f, "%.2f")) {
+						tun->sunDiskAngularRadius = sunDiskDegrees * (3.14159265f / 180.f);
+						atmosphereChanged = true;
+					}
+					atmosphereChanged |= ImGui::SliderFloat("Sun disk intensity", &tun->sunDiskIntensity, 0.f, 100.f);
+					ImGui::EndDisabled();
+					ImGui::EndDisabled();
+					atmosphereChanged |= ImGui::Combo("Atmosphere view", &tun->atmosphereDebugView, "Beauty\0Transmittance\0Scattered sunlight\0");
+					ImGui::EndDisabled();
+					if (atmosphereChanged && s.deferred) s.deferred->ResetTemporalHistory();
+				}
+
 				ImGui::EndDisabled();
-				ImGui::SeparatorText("Exposure");
-				ImGui::Checkbox("Auto exposure", &tun->exposureAuto);
-				if (tun->exposureAuto)
-				{
-					ImGui::SliderFloat("Key", &tun->exposureKey, 0.02f, 0.6f, "%.3f");
-					ImGui::SliderFloat("Min", &tun->exposureMin, 0.01f, 2.f, "%.2f");
-					ImGui::SliderFloat("Max", &tun->exposureMax, 1.f, 32.f, "%.1f");
-					ImGui::SliderFloat("Adapt speed", &tun->exposureSpeed, 0.25f, 10.f, "%.2f");
-				}
-				else
-				{
-					ImGui::SliderFloat("Exposure", &tun->manualExposure, 0.05f, 8.f, "%.2f");
-				}
-				ImGui::SliderFloat("EV comp", &tun->exposureComp, -4.f, 4.f, "%.2f");
+				if (!s.useDeferred) ImGui::TextDisabled("Requires the deferred renderer.");
+				endTab();
 			}
+			if (beginTab("Post FX")) {
+				ImGui::BeginDisabled(!s.useDeferred);
+				if (ImGui::CollapsingHeader("Post FX", ImGuiTreeNodeFlags_DefaultOpen))
+				{
+					ImGui::Checkbox("Enabled##postfx", &s.wantPostFx);
+					if (tun)
+					{
+						ImGui::BeginDisabled(!s.wantPostFx);
+						ImGui::Checkbox("Bloom##toggle", &tun->bloomEnabled);
+						ImGui::SameLine();
+						ImGui::TextDisabled(tun->bloomEnabled ? "(on)" : "(off - sliders inert)");
+						ImGui::BeginDisabled(!tun->bloomEnabled);
+						ImGui::SliderFloat("Bloom threshold", &tun->bloomThreshold, 0.1f, 8.f, "%.2f");
+						ImGui::SliderFloat("Bloom knee", &tun->bloomKnee, 0.f, 1.f, "%.2f");
+						ImGui::SliderFloat("Bloom intensity", &tun->bloomIntensity, 0.f, 0.5f, "%.3f");
+						if (tun->bloomThreshold < 1.0f)
+						ImGui::TextColored(ImVec4(1, 0.7f, 0.3f, 1),
+						"threshold this low blooms lit surfaces, not just highlights");
+						ImGui::EndDisabled();
+						ImGui::SeparatorText("Exposure");
+						ImGui::Checkbox("Auto exposure", &tun->exposureAuto);
+						if (tun->exposureAuto)
+						{
+							ImGui::SliderFloat("Key", &tun->exposureKey, 0.02f, 0.6f, "%.3f");
+							ImGui::SliderFloat("Min", &tun->exposureMin, 0.01f, 2.f, "%.2f");
+							ImGui::SliderFloat("Max", &tun->exposureMax, 1.f, 32.f, "%.1f");
+							ImGui::SliderFloat("Adapt speed", &tun->exposureSpeed, 0.25f, 10.f, "%.2f");
+						}
+						else
+						{
+							ImGui::SliderFloat("Exposure", &tun->manualExposure, 0.05f, 8.f, "%.2f");
+						}
+						ImGui::SliderFloat("EV comp", &tun->exposureComp, -4.f, 4.f, "%.2f");
+						ImGui::EndDisabled();
+					}
+				}
+				ImGui::EndDisabled();
+				if (!s.useDeferred) ImGui::TextDisabled("Requires the deferred renderer.");
+				endTab();
+			}
+			if (beginTab("Debug")) {
+				ImGui::Checkbox("Performance overlay", &s.showPerfOverlay);
+				ImGui::Checkbox("Light markers", &s.showLightMarkers);
+				ImGui::TextDisabled("RMB look / WASD move / Shift fast / F5 save camera");
+				if (s.dxrRenderer && tun) {
+					ImGui::BeginDisabled(!tun->taaEnabled);
+					ImGui::Combo("TAA view", &tun->taaDebugView, "Resolved\0Reprojected history\0History rejection\0");
+					if (ImGui::Button("Reset TAA history")) s.deferred->ResetTemporalHistory();
+					ImGui::EndDisabled();
+					ImGui::Combo("Lighting view", &tun->dxrLightingView, "Beauty\0Ambient occlusion\0Environment\0Diffuse GI\0Albedo\0Material AO / roughness / metalness\0Texture mip\0Motion vectors / validity\0Inverse device depth\0Specular AA adjustment / roughness\0Raw sun visibility\0Geometric normal\0Shading normal\0Sun shading without shadows\0Sun geometric facing\0Raw GI amplified 5000x (debug)\0");
+
+				} else {
+					const char* views[] = {"Lit","Albedo","Normal","Roughness","Metalness","Baked AO","Emissive","Depth","SSAO"};
+					ImGui::Combo("G-buffer view", &s.gbufChannel, views, IM_ARRAYSIZE(views));
+					if (s.deferred && !s.dxrRenderer && ImGui::CollapsingHeader("Experimental raster / DXR integration"))
+					{
+						const bool dxrAvailable = DX11::Rhi()->SupportsRaytracingTier11();
+						ImGui::BeginDisabled(!dxrAvailable);
+						if (!dxrAvailable)
+						{
+							ImGui::TextDisabled("(DXR tier 1.1 not available on this device/backend)");
+						}
+						else
+						{
+							static bool dxrSunShadows = false;
+							if (ImGui::Checkbox("DXR sun shadows", &dxrSunShadows)) s.deferred->SetDxrSunShadows(dxrSunShadows);
+							ImGui::Checkbox("Show DXR sun visibility", &s.deferred->GetTunables().dxrSunShadowDebug);
+							const bool rtGiAvailable = s.deferred->HasGiRT();
+							ImGui::BeginDisabled(!rtGiAvailable);
+							if (ImGui::Checkbox("Experimental DXR GI capture", &s.giUseRT))
+							{
+								// A source change must restart the volume; mixing old raster probes
+								// with new ray-traced probes produces an invalid lighting result.
+								s.StartGiPrime();
+							}
+							if (s.giUseRT) ImGui::SliderInt("GI rays per probe", &s.giRTRayCount, 8, 512);
+							ImGui::TextDisabled("Authoritative frame: deferred HDR + %s",
+							s.giUseRT ? "experimental DXR GI" : "raster GI");
+							ImGui::EndDisabled();
+							if (!rtGiAvailable)
+							ImGui::TextDisabled("(GI probe volume not initialized -- enable Emissive GI first)");
+						}
+						ImGui::EndDisabled();
+					}
+
+				}
+				endTab();
+			}
+			ImGui::EndTabBar();
 		}
+		ImGui::EndTabItem();
+		}
+		ImGui::EndTabBar();
+		}
+		ImGui::PopItemWidth();
 	}
 	ImGui::End();
+	ImGui::PopStyleVar(3);
+
+	// --- GI probe volume bounds, projected onto the screen as a pink box ---
+	// A LineDrawer-based 3D world-space box was tried first and drawn earlier
+	// in the frame (right after SetCamera), but it was never visible: this
+	// engine's DXR path renders the whole frame via a full-screen compute
+	// dispatch that overwrites the color target afterward rather than
+	// compositing on top of prior raster draws, so anything drawn before it
+	// gets silently stomped. This overlay instead uses the exact same
+	// screen-space projection as the point-light markers just below, drawn
+	// from ImGui's background draw list -- which is composited after the
+	// game's render pass regardless of which renderer (raster or DXR) was
+	// used, so it is actually visible either way. Also cheaper: one CPU-side
+	// matrix multiply per corner instead of 12 separate GPU draw calls.
+	if (s.giShowVolumeBounds && s.giEnabled)
+	{
+		const Matrix4x4f viewProj = Matrix4x4f::GetFastInverse(s.camera.GetTransform()) * s.camera.GetProjection();
+		const ImVec2 disp = ImGui::GetIO().DisplaySize;
+		ImDrawList* dl = ImGui::GetBackgroundDrawList();
+
+		// giOrigin is probe (0,0,0)'s position, already inset half a cell from
+		// the volume's true edge (see the auto-sizing comment where giOrigin
+		// is computed), so the box spans from half a cell before the first
+		// probe to half a cell past the last one on each axis.
+		const Vector3f half = s.giSpacing * 0.5f;
+		const Vector3f boxMin = s.giOrigin - half;
+		const Vector3f boxMax = s.giOrigin + Vector3f{
+			s.giSpacing.x * (float)(s.giCx - 1), s.giSpacing.y * (float)(s.giCy - 1), s.giSpacing.z * (float)(s.giCz - 1) } + half;
+		const Vector3f corners[8] = {
+			{ boxMin.x, boxMin.y, boxMin.z }, { boxMax.x, boxMin.y, boxMin.z },
+			{ boxMax.x, boxMin.y, boxMax.z }, { boxMin.x, boxMin.y, boxMax.z },
+			{ boxMin.x, boxMax.y, boxMin.z }, { boxMax.x, boxMax.y, boxMin.z },
+			{ boxMax.x, boxMax.y, boxMax.z }, { boxMin.x, boxMax.y, boxMax.z },
+		};
+
+		bool visible[8]; ImVec2 screen[8];
+		for (int i = 0; i < 8; ++i)
+		{
+			const Vector3f& p = corners[i];
+			Vector4f clip = Vector4f(p.x, p.y, p.z, 1.f) * viewProj;
+			visible[i] = clip.w > 0.001f;
+			if (visible[i])
+			{
+				const float nx = clip.x / clip.w, ny = clip.y / clip.w;
+				screen[i] = { (nx * 0.5f + 0.5f) * disp.x, (0.5f - ny * 0.5f) * disp.y };
+			}
+		}
+		// 4 bottom edges, 4 top edges, 4 verticals connecting them.
+		static const int kEdges[12][2] = {
+			{0,1},{1,2},{2,3},{3,0}, {4,5},{5,6},{6,7},{7,4}, {0,4},{1,5},{2,6},{3,7}
+		};
+		const ImU32 pink = IM_COL32(255, 0, 255, 255);
+		for (const auto& edge : kEdges)
+			if (visible[edge[0]] && visible[edge[1]])
+				dl->AddLine(screen[edge[0]], screen[edge[1]], pink, 2.f);
+	}
 
 	// --- world-space light markers projected onto the screen ---
 	if (s.showLightMarkers && !s.pointLights.empty())
@@ -1854,6 +2369,16 @@ void GameWorld::Render()
 	GraphicsEngine& ge = *GraphicsEngine::GetInstance();
 	GraphicsStateStack& gss = ge.GetGraphicsStateStack();
 
+	// Application updates its render size after the OS resize message has been
+	// processed.  Rebuild the perspective matrix before submitting this frame;
+	// otherwise the old aspect ratio is rasterized across the new backbuffer.
+	const Vector2ui renderSize = Application::GetInstance()->GetRenderSize();
+	if (renderSize != s.cameraProjectionSize && renderSize.x != 0 && renderSize.y != 0)
+	{
+		s.camera.SetPerspectiveProjection(90.f, { static_cast<float>(renderSize.x), static_cast<float>(renderSize.y) }, 1.f, 100000.f);
+		s.cameraProjectionSize = renderSize;
+	}
+
 	// DX12 screenshot capture: DX11's own path (further down, in the
 	// screenshotPath block) reaches into DX11::SwapChain/DX11::Context
 	// directly, both null under DX12 -- CaptureBackBufferPng is the DX12-only
@@ -1864,7 +2389,12 @@ void GameWorld::Render()
 	if (rhi::IDevice* dev = DX11::Rhi(); dev && dev->GetBackend() == rhi::Backend::DX12 &&
 		!s.screenshotPath.empty() && !s.screenshotTaken)
 	{
-		const int shotFrame = s.benchFrames > 3 ? s.benchFrames - 2 : 120;
+		// BENCH_SHOT_FRAME pins the capture to a chosen frame instead of the end
+		// of the run. The scripted camera is parameterised by fraction-of-run and
+		// the orbit completes two full loops, so the default (benchFrames - 2)
+		// always lands back at the starting angle -- which for Sponza is inside a
+		// wall. Any other viewpoint needs an explicit frame.
+		const int shotFrame = s.shotFrame > 0 ? s.shotFrame : (s.benchFrames > 3 ? s.benchFrames - 2 : 120);
 		if (s.frame >= shotFrame)
 		{
 			s.screenshotTaken = true;
@@ -1875,7 +2405,7 @@ void GameWorld::Render()
 	}
 
 	// Interactive tuning panel (free-fly runs only) — updates s.* live.
-	if (s.benchFrames == 0)
+	if (s.benchFrames == 0 || EnvInt("BENCH_DEBUG_UI", 0) != 0)
 	{
 		DrawDebugUI();
 		s.DrawPerfOverlayImpl();
@@ -1887,21 +2417,27 @@ void GameWorld::Render()
 	s.dirLight.softness = s.sunSoftness;
 	s.ambient.color = Color{ s.ambientColor[0] * s.ambientScale, s.ambientColor[1] * s.ambientScale, s.ambientColor[2] * s.ambientScale };
 
-	// A sealed built-in room gets no exterior sun and no sky IBL -- only the
-	// ceiling lamps, the emissive orbit/debug spheres and GI light it.
-	const bool sealedRoom = (s.IsBuiltinRoom() && s.roomSealed) || s.sealScene;
+	// A sealed scene gets no exterior sun and no sky IBL.
+	const bool sealedRoom = s.sealScene;
 	if (sealedRoom)
 	{
 		s.dirLight.color = Color{ 0.f, 0.f, 0.f, 1.f };
 		s.ambient.color  = Color{ 0.015f, 0.016f, 0.018f, 1.f };   // faint floor so corners aren't crushed
 	}
 
+	if (s.deferred) {
+		auto& lighting = s.deferred->GetTunables();
+		lighting.dxrSunIntensity = 3.14159265f;
+		lighting.dxrSunTint[0] = s.dirLight.color.r;
+		lighting.dxrSunTint[1] = s.dirLight.color.g;
+		lighting.dxrSunTint[2] = s.dirLight.color.b;
+	}
 	gss.SetCamera(s.camera);
 	gss.SetDirectionalLight(s.dirLight);
 	gss.ClearPointLights();
 
 	// Reflection probe: re-capture every N frames, then point the IBL at it.
-	if (s.probeEnabled && s.probePrefilter && !sealedRoom)
+	if (s.probeEnabled && s.probePrefilter && !sealedRoom && !s.dxrRenderer)
 	{
 		if (--s.probeCountdown <= 0)
 		{
@@ -1930,21 +2466,35 @@ void GameWorld::Render()
 				+ (s.sunColor[0] + s.sunColor[1] * 2.f + s.sunColor[2] * 3.f) * 20.f
 				+ (s.ambientColor[0] + s.ambientColor[1] + s.ambientColor[2]) * s.ambientScale * 50.f
 				+ (float)s.cubemapIdx * 100.f
-				+ (sealedRoom ? 777.f : 0.f) + (s.roomLamps ? 55.f : 0.f));
+				+ (sealedRoom ? 777.f : 0.f));
 			if (h != s.giLightHash)
 			{
 				s.giLightHash = h;
-				if (!s.giPriming) s.StartGiPrime();
+				if (!s.giPriming)
+				{
+					if (s.giUseRT)
+					{
+						// Do not clear the whole cache while the user drags a sun.
+						// Refresh one sweep with low hysteresis instead, so existing
+						// indirect light remains stable and the new result converges.
+						s.giKeepUpdating = true;
+						s.giSkipCount = 0;
+						s.giLightingRefreshProbeBudget = s.giCx * s.giCy * s.giCz;
+					}
+					else s.StartGiPrime();
+				}
 			}
 		}
 		if (s.giPriming)
 		{
-			s.CaptureGiProbesImpl(ge);
+			if (s.giUseRT) s.giRtCapturePending = true;
+			else s.CaptureGiProbesImpl(ge);
 		}
 		else if (s.giKeepUpdating && --s.giSkipCount <= 0)
 		{
 			s.giSkipCount = std::max(1, s.giFrameSkip);
-			s.CaptureGiProbesImpl(ge);
+			if (s.giUseRT) s.giRtCapturePending = true;
+			else s.CaptureGiProbesImpl(ge);
 		}
 	}
 
@@ -1987,6 +2537,11 @@ void GameWorld::Render()
 	// Forward / transparent path: still capped at the engine's cbuffer size.
 	for (int i = 0; i < (int)s.pointLights.size() && i < NUMBER_OF_LIGHTS_ALLOWED; ++i)
 		gss.AddPointLight(s.pointLights[i]);
+
+	// DXR uses DeferredRenderer as its resource/presentation host too.  Force it
+	// on before this setup branch so an old forward-renderer setting can never
+	// prevent the DXR mode request from reaching BuildFrame.
+	if (s.dxrRenderer && s.deferred) s.useDeferred = true;
 
 	// Deferred path: all lights via the structured buffer (no cap) + froxel cull.
 	if (s.useDeferred && s.deferred)
@@ -2063,25 +2618,171 @@ void GameWorld::Render()
 		s.deferred->SetLocalShadows(s.wantLocalShadows);
 		s.deferred->SetSSR(s.wantSSR);
 		s.deferred->SetPostFx(s.wantPostFx);
+		s.deferred->SetDxrRenderer(s.dxrRenderer);
 		s.deferred->SetShadowLight(s.dirLight.transform.GetForward(), s.sceneCenter, s.sceneExtents.Length());
 		s.deferred->SetCamera(s.camera);
+		if (s.frame == EnvInt("BENCH_TAA_RESET_FRAME", -1)) s.deferred->ResetTemporalHistory();
 		// Box-parallax the IBL against the probe influence box when a probe is live.
 		const bool boxOn = s.probeEnabled && s.probePrefilter && s.probePrefiltered.resource != nullptr;
 		s.deferred->SetReflectionProbeBox(s.probePos, s.probeBox, boxOn);
 		s.deferred->SetGiVolume(s.giOrigin, s.giSpacing, s.giCx, s.giCy, s.giCz,
 			s.giIntensity, s.giEnabled && s.deferred->HasGi(),
 			(s.giEnabled && !sealedRoom) ? s.autoSeal : 0.f);
+		// Full DXR must use the authored world environment, never the dynamic
+		// reflection-probe capture held in ambient.cubemap. That capture is
+		// intentionally low-resolution and prefiltered for local raster
+		// reflections; using it as a primary-ray sky creates the huge blurry
+		// blue blobs visible in the DXR renderer and corrupts its IBL energy.
+		// A sealed room deliberately receives no exterior sky bounce.
+		const Color& ambientTint = s.ambient.color;
+		const rhi::SrvHandle dxrEnvironment = s.worldEnvironmentPrefiltered.IsValid()
+			? s.worldEnvironmentPrefiltered.GetSrv()
+			: ((!sealedRoom && s.fallbackCube) ? s.fallbackCube->GetSrv() : rhi::SrvHandle{});
+		s.deferred->SetGiEnvironment(
+			!sealedRoom ? dxrEnvironment : rhi::SrvHandle{},
+			{ ambientTint.r, ambientTint.g, ambientTint.b }, !sealedRoom);
 	}
 
 	gss.Push();
 	gss.SetBlendState(BlendState::Disabled);
 	gss.SetAlphaTestThreshold(0.33f);   // so masked decals cut out (opaque albedo is alpha=1)
-	if (std::getenv("BENCH_NOCULLFACE") || s.IsBuiltinRoom())
+	if (std::getenv("BENCH_NOCULLFACE"))
 		gss.SetRasterizerState(RasterizerState::NoFaceCulling);   // room planes are viewed from the inside
 
 	const Frustum frustum = CalculateFrustum(s.camera);
 	ModelDrawer& md = ge.GetModelDrawer();
 	md.SetCullFrustum((s.frustumCull && s.models.size() > 1) ? &frustum : nullptr);
+
+	// Phase-1 TLAS validation: include every static scene mesh, not only the
+	// raster-visible subset. RayQuery must see off-screen occluders as well.
+	// Matrix4x4f uses row vectors, while D3D12's 3x4 instance transform is the
+	// equivalent column-vector form, hence the explicit transpose below.
+	if (rhi::IDevice* dxr = DX11::Rhi(); dxr && dxr->SupportsRaytracingTier11())
+	{
+		std::vector<rhi::RaytracingInstanceDesc> rayInstances;
+		std::map<const ModelInstance*, Matrix4x4f> nextRayTransforms;
+		bool raySceneStationary = true;
+		uint32_t instanceId = 0;
+		auto fixedMaterialIndex = [](StringId name, const DeferredRenderer::DebugMaterial& material)
+		{
+			const uint32_t index = RayTracingMaterialTable::GetOrAssignMaterialIndex(name);
+			RayTracingMaterialTable::FixedMaterial fixed;
+			for (int i = 0; i < 3; ++i)
+			{
+				fixed.baseColor[i] = material.baseColor[i];
+				fixed.emissiveColor[i] = material.emissiveColor[i];
+			}
+			fixed.roughness = material.roughness;
+			fixed.metalness = material.metalness;
+			fixed.ao = material.ao;
+			fixed.emissiveStrength = material.emissiveStrength;
+			RayTracingMaterialTable::SetFixedMaterial(index, fixed);
+			return index;
+		};
+		auto addInstance = [&](const ModelInstance& instance, uint32_t materialOverride = 0u)
+		{
+			const std::shared_ptr<Model> model = instance.GetModel();
+			if (!model) return;
+			const Matrix4x4f& m = instance.GetTransform();
+			const auto previous = s.previousRayTransforms.find(&instance);
+			const bool historyValid = previous != s.previousRayTransforms.end();
+			const Matrix4x4f& previousM = historyValid ? previous->second : m;
+			raySceneStationary = raySceneStationary && historyValid && previousM == m;
+			nextRayTransforms.emplace(&instance, m);
+			size_t meshIndex = 0;
+			for (const Model::MeshData& mesh : model->GetMeshDataList())
+			{
+				const size_t textureMeshIndex = meshIndex++;
+				if (!mesh.rayGeometry.blas.IsValid()) continue;
+				rhi::RaytracingInstanceDesc d = {};
+				 d.blas = mesh.rayGeometry.blas; d.instanceId = instanceId++;
+				d.vertexSrv = dxr->RegisterRaySceneSrv(mesh.rayGeometry.vertexRawSrv);
+				d.indexSrv = dxr->RegisterRaySceneSrv(mesh.rayGeometry.indexRawSrv);
+				d.materialIndex = materialOverride != 0u ? materialOverride : mesh.rayGeometry.materialIndex;
+				if (materialOverride == 0u && textureMeshIndex < MAX_MESHES_PER_MODEL)
+				{
+					// TGO texture overrides belong to the instance, not the shared
+					// mesh -- but only when the instance actually HAS one. This used
+					// to run unconditionally for every mesh of every ordinary
+					// instance (the far more common case: no per-instance texture
+					// override at all, ModelInstance::myTextures all null), silently
+					// replacing the mesh's real, texture-bearing materialIndex
+					// (already correctly set just above from
+					// AssignDefaultMaterials's work) with a brand-new, empty,
+					// per-instance record every frame. DecodeHit's fallback for a
+					// record with no albedo/normal/orm/emissive SRV and
+					// useFixedMaterial == 0 is a flat, saturated colour hashed from
+					// materialIndex alone (DxrCommon.hlsli) -- i.e. every mesh
+					// instance in the whole scene rendering as an arbitrary flat
+					// hue with no relation to its actual texture, which is exactly
+					// the "checkerboard-looking mosaic of flat colours" bug.
+					const auto textures = instance.GetTextures(textureMeshIndex);
+					const bool hasOverride = textures[0] || textures[1] || textures[2] || textures[3];
+					if (hasOverride)
+					{
+						const std::string name = "dxr/scene/" + s.currentScene + "/instance/" + std::to_string(d.instanceId);
+						d.materialIndex = RayTracingMaterialTable::GetOrAssignMaterialIndex(StringRegistry::RegisterOrGetString(name));
+						RayTracingMaterialTable::SetMaterialTextures(d.materialIndex, {
+							textures[0] ? textures[0]->GetSrv() : rhi::SrvHandle{},
+							textures[1] ? textures[1]->GetSrv() : rhi::SrvHandle{},
+							textures[2] ? textures[2]->GetSrv() : rhi::SrvHandle{},
+							textures[3] ? textures[3]->GetSrv() : rhi::SrvHandle{} });
+					}
+				}
+				// After every branch that can still change materialIndex above
+				// (the TGO per-instance texture override rewrites it), so this
+				// classifies the record the shader will actually decode.
+				d.rayOpaque = RayTracingMaterialTable::IsRayOpaque(d.materialIndex);
+				d.vertexStride = mesh.rayGeometry.vertexStride;
+				d.positionOffset = mesh.rayGeometry.positionOffset;
+				d.normalOffset = mesh.rayGeometry.normalOffset;
+				d.uv0Offset = mesh.rayGeometry.uv0Offset;
+				d.tangentOffset = mesh.rayGeometry.tangentOffset;
+				d.binormalOffset = mesh.rayGeometry.binormalOffset;
+				for (uint32_t row = 0; row < 3; ++row)
+					for (uint32_t col = 0; col < 4; ++col)
+					{
+						d.transform[row * 4 + col] = m(col + 1, row + 1);
+						d.previousTransform[row * 4 + col] = previousM(col + 1, row + 1);
+					}
+				d.motionHistoryValid = historyValid ? 1u : 0u;
+				rayInstances.push_back(d);
+			}
+		};
+
+			const uint32_t pillarMaterial = s.IsPillarTest() && s.pillarMaterialOverride
+				? fixedMaterialIndex("dxr/debug/pillar"_tgaid, s.pillarMat) : 0u;
+			for (const ModelInstance& instance : s.models) addInstance(instance, pillarMaterial);
+
+		const uint32_t debugMaterial = s.debugBallValid && (s.showDebugBall || s.showOrbitBalls)
+			? fixedMaterialIndex("dxr/debug/sphere"_tgaid, s.debugMat) : 0u;
+
+		// The orbiting/debug spheres are drawn separately from s.models (see
+		// their own .Render() calls further down) and were never fed into the
+		// TLAS -- they simply didn't exist for any ray to hit. Same visibility
+		// gating as the raster path so DXR sees exactly what raster would draw.
+		if (s.showOrbitBalls && s.debugBallValid)
+		{
+			// Same active-count bound the raster draw loop uses further down
+			// (orbitBalls is a fixed-size pool; not all slots are "live").
+			const int n = std::clamp(s.orbitBallCount, 1, Impl::kMaxOrbitBalls);
+			for (int i = 0; i < n && i < (int)s.orbitBalls.size(); ++i) addInstance(s.orbitBalls[i], debugMaterial);
+		}
+		if (s.showDebugBall && s.debugBallValid)
+			addInstance(s.debugBall, debugMaterial);
+
+		dxr->BuildRaytracingTlas(rayInstances.data(), (uint32_t)rayInstances.size());
+		if (s.deferred) s.deferred->SetRaySceneStationary(raySceneStationary && nextRayTransforms.size() == s.previousRayTransforms.size());
+		s.previousRayTransforms = std::move(nextRayTransforms);
+	}
+
+	// The ray-traced probe scheduler deferred capture until the current TLAS
+	// exists; otherwise RayQuery would consume an old frame slot or no scene.
+	if (s.giRtCapturePending)
+	{
+		s.giRtCapturePending = false;
+		s.CaptureGiProbesImpl(ge);
+	}
 
 	s.gpu.BeginFrame();
 
@@ -2099,15 +2800,10 @@ void GameWorld::Render()
 			{
 				mdp->SetCullFrustum(fr);   // the shadow pass clears it
 				const ModelShader& gsh = dr->GetGeometryShader();
-				if (sp->IsBuiltinRoom() && dr->HasDebugMatShader())
+				if (sp->IsPillarTest() && sp->pillarMaterialOverride && dr->HasDebugMatShader())
 				{
-					// Procedural room: each surface gets its own fixed-param material.
-					const ModelShader& dsh = dr->GetDebugMatShader();
-					for (size_t k = 0; k < sp->roomSurfaces.size() && k < 6; ++k)
-					{
-						dr->BindDebugMaterial(sp->roomMat[k]);
-						sp->roomSurfaces[k].Render(dsh);
-					}
+					dr->BindDebugMaterial(sp->pillarMat);
+					for (const ModelInstance& instance : sp->models) instance.Render(dr->GetDebugMatShader());
 				}
 				else
 				for (size_t k = 0; k < sp->models.size(); ++k)
@@ -2136,9 +2832,12 @@ void GameWorld::Render()
 			std::function<void()> drawTransparent;
 			if (s.anyTransparent)
 			{
-				drawTransparent = [mdp, sp]()
+				drawTransparent = [dr, mdp, sp]()
 				{
-					const ModelShader& psh = mdp->GetPbrShader();
+					// Deferred transparency is classified as glass during import.  Use
+					// the HDR/depth-aware forward shader when it compiled; retain the
+					// original PBR path as a safe shader-load fallback.
+					const ModelShader& psh = dr->HasGlassShader() ? dr->GetGlassShader() : mdp->GetPbrShader();
 					for (size_t k = 0; k < sp->models.size(); ++k)
 						sp->models[k].Render(psh, sp->transparentMeshes[k]);
 				};
@@ -2197,7 +2896,12 @@ void GameWorld::Render()
 
 	if (!s.screenshotPath.empty() && !s.screenshotTaken)
 	{
-		const int shotFrame = s.benchFrames > 3 ? s.benchFrames - 2 : 120;
+		// BENCH_SHOT_FRAME pins the capture to a chosen frame instead of the end
+		// of the run. The scripted camera is parameterised by fraction-of-run and
+		// the orbit completes two full loops, so the default (benchFrames - 2)
+		// always lands back at the starting angle -- which for Sponza is inside a
+		// wall. Any other viewpoint needs an explicit frame.
+		const int shotFrame = s.shotFrame > 0 ? s.shotFrame : (s.benchFrames > 3 ? s.benchFrames - 2 : 120);
 		if (s.frame >= shotFrame)
 		{
 			s.screenshotTaken = true;

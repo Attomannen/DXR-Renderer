@@ -20,6 +20,8 @@ void AddSceneObjectsCommand::Execute()
 {
 	for (auto& p : myObjects)
 	{
+		if (!p.second)
+			continue;
 		if (p.first == 0)
 			p.first = UUIDManager::CreateUUID();
 
@@ -31,7 +33,8 @@ void AddSceneObjectsCommand::Undo()
 {
 	for (auto& p : myObjects)
 	{
-		GetActiveScene()->DeleteSceneObject(p.first);
+		if (p.first != 0)
+			GetActiveScene()->DeleteSceneObject(p.first);
 	}
 }
 

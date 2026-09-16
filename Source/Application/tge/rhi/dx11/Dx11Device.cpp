@@ -127,6 +127,11 @@ namespace Tga::rhi::dx11
 		return true;
 	}
 
+	bool Dx11Device::SetFullscreen(bool enabled)
+	{
+		return DX11::SwapChain && SUCCEEDED(DX11::SwapChain->SetFullscreenState(enabled, nullptr));
+	}
+
 	// ------------------------------------------------------------------ buffers
 	BufferHandle Dx11Device::CreateBuffer(const BufferDesc& d, const void* initialData)
 	{
@@ -288,12 +293,26 @@ namespace Tga::rhi::dx11
 		BufferRec* b = myBuffers.Get(h);
 		if (!b || !b->res) return {};
 		D3D11_SHADER_RESOURCE_VIEW_DESC vd = {};
-		vd.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
-		vd.Format = HasUsage(b->desc.usage, BufferUsage::Structured) ? DXGI_FORMAT_UNKNOWN
-		          : (d.formatOverride != Format::Unknown ? ToDxgi(d.formatOverride) : DXGI_FORMAT_R32_UINT);
-		vd.Buffer.FirstElement = d.bufferFirstElement;
-		vd.Buffer.NumElements = d.bufferNumElements ? d.bufferNumElements
-		    : (b->desc.stride ? (UINT)(b->desc.byteSize / b->desc.stride) : (UINT)(b->desc.byteSize / 4));
+		const bool raw = d.bufferType == BufferSrvType::Raw;
+		const bool structured = d.bufferType == BufferSrvType::Structured ||
+			(d.bufferType == BufferSrvType::Default && HasUsage(b->desc.usage, BufferUsage::Structured));
+		vd.Format = raw ? DXGI_FORMAT_R32_TYPELESS : (structured ? DXGI_FORMAT_UNKNOWN
+		          : (d.formatOverride != Format::Unknown ? ToDxgi(d.formatOverride) : DXGI_FORMAT_R32_UINT));
+		const UINT elementCount = d.bufferNumElements ? d.bufferNumElements
+		    : (raw ? (UINT)(b->desc.byteSize / 4) : (structured ? (UINT)(b->desc.byteSize / b->desc.stride) : (UINT)(b->desc.byteSize / 4)));
+		if (raw)
+		{
+			vd.ViewDimension = D3D11_SRV_DIMENSION_BUFFEREX;
+			vd.BufferEx.FirstElement = d.bufferFirstElement;
+			vd.BufferEx.NumElements = elementCount;
+			vd.BufferEx.Flags = D3D11_BUFFEREX_SRV_FLAG_RAW;
+		}
+		else
+		{
+			vd.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+			vd.Buffer.FirstElement = d.bufferFirstElement;
+			vd.Buffer.NumElements = elementCount;
+		}
 		ComPtr<ID3D11ShaderResourceView> srv;
 		HRESULT hr = myDevice->CreateShaderResourceView(b->res.Get(), &vd, srv.GetAddressOf());
 		assert(SUCCEEDED(hr)); (void)hr;

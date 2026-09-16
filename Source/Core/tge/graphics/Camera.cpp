@@ -107,6 +107,8 @@ Camera::~Camera()
 
 void Camera::SetOrtographicProjection(float aWidth, float aHeight, float aDepth)
 {
+	myNearPlane = 0.f;
+	myFarPlane = aDepth;
 	myProjection = {};
 
 	myProjection(1, 1) = 2.f/aWidth;
@@ -116,6 +118,8 @@ void Camera::SetOrtographicProjection(float aWidth, float aHeight, float aDepth)
 
 void Camera::SetOrtographicProjection(float aLeft, float aRight, float aTop, float aBottom, float aNear, float aFar)
 {
+	myNearPlane = aNear;
+	myFarPlane = aFar;
 	myProjection = {};
 
 	myProjection(1, 1) = 2.f / (aRight - aLeft);
@@ -133,6 +137,8 @@ void Camera::SetPerspectiveProjection(float aHorizontalFoV, Vector2f aResolution
 
 	assert(aNearPlane < aFarPlane);
 	assert(aNearPlane >= FMath::KindaSmallNumber);
+	myNearPlane = aNearPlane;
+	myFarPlane = aFarPlane;
 	
     // aHorizontalFoV is in Degrees!
 	// Convert to Radians

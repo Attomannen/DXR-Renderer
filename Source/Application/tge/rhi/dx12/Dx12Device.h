@@ -25,6 +25,35 @@ namespace Tga::rhi::dx12
 	struct GfxPipelineRec     { ComPtr<ID3D12PipelineState> pso; D3D12_PRIMITIVE_TOPOLOGY topo = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST; };
 	struct ComputePipelineRec { ComPtr<ID3D12PipelineState> pso; };
 	struct TimestampRec { uint32_t queryIndex = 0; uint64_t frame = ~0ull; bool hasBegin = false, hasEnd = false; };
+	struct BlasRec { ComPtr<ID3D12Resource> result; uint64_t byteSize = 0; uint64_t uncompactedByteSize = 0; };
+	// Native DXR resources intentionally stay out of the generic Buffer pool:
+	// their allocation/state/descriptor lifetime has different rules from an
+	// ordinary vertex or structured buffer.  Phase 1 will populate these after
+	// the BLAS/TLAS builders are introduced.
+	struct DxrFrameResources
+	{
+		ComPtr<ID3D12Resource> instanceDescs; // UPLOAD, one per frame slot
+		ComPtr<ID3D12Resource> scratch;       // DEFAULT + UAV
+		ComPtr<ID3D12Resource> tlas;          // AS result state
+		ComPtr<ID3D12Resource> geometryLookup; // UPLOAD structured records, one per TLAS instance
+		uint32_t instanceCapacity = 0;
+		uint32_t geometryLookupCapacity = 0;
+		uint64_t topologyVersion = 0;
+		// Snapshot of the last successful build in THIS frame slot. Motion and
+		// material lookup data are refreshed separately even when the AS is reused.
+		std::vector<D3D12_RAYTRACING_INSTANCE_DESC> builtInstances;
+		std::vector<RaytracingBlasHandle> builtBlas;
+		// Set only once this frame's build and its UAV barrier are recorded.
+		// Prevents a zero-instance frame from tracing previous TLAS contents.
+		bool sceneValid = false;
+	};
+	struct DeferredDxrRelease
+	{
+		ComPtr<ID3D12Resource> resource;
+		// The ray-descriptor registry is introduced separately.  Keep the stable
+		// index with the resource now so that release cannot be split later.
+		uint32_t rayDescriptorIndex = ~0u;
+	};
 	// RTV/DSV need their view format remembered (not just the heap slot) so
 	// SetRenderTargets can hand ResolveGraphicsPipeline the RTVFormats/DSVFormat
 	// a PSO must be created with -- CreateGraphicsPipelineState requires them
@@ -72,6 +101,12 @@ namespace Tga::rhi::dx12
 		~Dx12Device() override;
 
 		Backend GetBackend() const override { return Backend::DX12; }
+		bool SupportsRaytracingTier11() const override { return myRaytracingTier11; }
+		RaytracingBlasHandle CreateRaytracingBlas(const RaytracingBlasDesc&) override;
+		void Destroy(RaytracingBlasHandle) override;
+		void BuildRaytracingTlas(const RaytracingInstanceDesc*, uint32_t count) override;
+		bool BindRaytracingSceneForCompute() override;
+		uint32_t GetFrameIndex() const override { return myFrameIndex; }
 
 		BufferHandle  CreateBuffer(const BufferDesc&, const void* initialData = nullptr) override;
 		TextureHandle CreateTexture(const TextureDesc&, const SubresourceData* initial = nullptr, uint32_t initialCount = 0) override;
@@ -101,6 +136,7 @@ namespace Tga::rhi::dx12
 		DynamicAlloc AllocateDynamicConstants(const void* data, uint32_t byteSize) override;
 
 		bool          Resize(uint32_t w, uint32_t h) override;
+		bool          SetFullscreen(bool enabled) override;
 		TextureHandle GetBackBuffer() const override { return myBackBufferTex[myFrameIndex]; }
 		RtvHandle     GetBackBufferRtv(bool srgb) const override { return srgb ? myBackBufferRtv[myFrameIndex] : myBackBufferRtvNoSrgb[myFrameIndex]; }
 		TextureHandle GetDefaultDepth() const override { return myDepthTex; }
@@ -114,6 +150,8 @@ namespace Tga::rhi::dx12
 		TimestampQueryHandle CreateTimestampQuery() override;
 		void  DestroyTimestampQuery(TimestampQueryHandle) override;
 		bool  GetTimestampMs(TimestampQueryHandle, double& outMs) override;
+		
+		void AllocateUploadSpace(uint32_t size, uint32_t alignment, uint64_t& outOffset, void*& outCpuAddr, ID3D12Resource*& outRes);
 
 		// Stage-1 migration bridges (WrapNative*/CreateInputLayoutNative/
 		// GetNativeDevice/Context) exist only to interoperate with legacy
@@ -141,7 +179,9 @@ namespace Tga::rhi::dx12
 
 		// ---- backend-internal accessors used by Dx12CommandContext ----
 		ID3D12Device*        Raw() { return myDevice.Get(); }
+		ID3D12Device5*       RawDevice5() { return myDevice5.Get(); }
 		ID3D12GraphicsCommandList* RawList() { return myCmdList.Get(); }
+		ID3D12GraphicsCommandList4* RawList4() { return myCmdList4.Get(); }
 		BufferRec*  GetBuffer(BufferHandle h)   { return myBuffers.Get(h); }
 		TextureRec* GetTexture(TextureHandle h) { return myTextures.Get(h); }
 		ShaderRec*  GetShader(ShaderModuleHandle h) { return myShaders.Get(h); }
@@ -153,6 +193,10 @@ namespace Tga::rhi::dx12
 		// recorded into THIS frame's command list (not the synchronous
 		// CreateBuffer/CreateTexture initial-data path, which already waits).
 		void KeepAliveUntilFrameRetires(ComPtr<ID3D12Resource> res) { myPendingUploadReleases[myFrameIndex].push_back(std::move(res)); }
+		void KeepDxrAliveUntilFrameRetires(ComPtr<ID3D12Resource> res, uint32_t rayDescriptorIndex = ~0u)
+		{
+			if (res) myPendingDxrReleases[myFrameIndex].push_back({ std::move(res), rayDescriptorIndex });
+		}
 
 		// TEMP debugging aid: drains and prints any pending D3D12 debug-layer
 		// validation messages (they normally only go to OutputDebugString,
@@ -172,6 +216,31 @@ namespace Tga::rhi::dx12
 		Format    GetDsvFormat(DsvHandle h)        { DsvRec* r = myDsvSlots.Get(h); return r ? r->format : Format::Unknown; }
 		uint32_t* GetSamplerSlot(SamplerHandle h) { return mySamplerSlots.Get(h); }
 		uint32_t  FrameIndex() const { return myFrameIndex; }
+		TimestampRec* GetTimestampRec(TimestampQueryHandle h) { return myTimestamps.Get(h); }
+		ID3D12QueryHeap* TimestampHeap() { return myTimestampHeap.Get(); }
+		void MarkTimestampSlotUsed(uint32_t heapSlot)
+		{
+			if (heapSlot < myTimestampFrameMin) myTimestampFrameMin = heapSlot;
+			if (heapSlot > myTimestampFrameMax) myTimestampFrameMax = heapSlot;
+		}
+		uint32_t RegisterRaySceneSrv(SrvHandle source) override;
+		D3D12_GPU_DESCRIPTOR_HANDLE RaySceneDescriptorGpuStart() const { return myCbvSrvUavScratch[myFrameIndex].Gpu(0); }
+		// 0 until the first BuildRaytracingTlas of the process -- callers must
+		// skip the SetComputeRootShaderResourceView bind in that case (a null
+		// GPU virtual address on a root SRV is invalid, not merely "reads as
+		// zero").
+		D3D12_GPU_VIRTUAL_ADDRESS RayTlasGpuAddress() const
+		{
+			const DxrFrameResources& frame = myDxrFrames[myFrameIndex];
+			ID3D12Resource* r = frame.sceneValid ? frame.tlas.Get() : nullptr;
+			return r ? r->GetGPUVirtualAddress() : 0;
+		}
+		D3D12_GPU_VIRTUAL_ADDRESS RayGeometryLookupGpuAddress() const
+		{
+			const DxrFrameResources& frame = myDxrFrames[myFrameIndex];
+			ID3D12Resource* r = frame.sceneValid ? frame.geometryLookup.Get() : nullptr;
+			return r ? r->GetGPUVirtualAddress() : 0;
+		}
 		// Real, permanently-allocated null SRV/UAV/sampler descriptors --
 		// reading an uninitialized descriptor slot (e.g. an rhi Handle the
 		// caller never bound) is undefined behavior for the GPU, so every
@@ -191,8 +260,31 @@ namespace Tga::rhi::dx12
 
 		static constexpr uint32_t kNumCbvRegisters = 14;   // b0..b13
 		static constexpr uint32_t kNumSrvRegisters = 24;   // t0..t23
-		static constexpr uint32_t kNumUavRegisters = 4;    // u0..u3
+		static constexpr uint32_t kNumUavRegisters = 8;    // u0..u7 (DXR output + temporal/RR guides)
 		static constexpr uint32_t kNumSamplerRegisters = 6; // s0..s5
+		static constexpr uint32_t kRaySceneRootParameter = kNumCbvRegisters + 3;
+		// Fixed root SRVs in space2, bound directly by GPU virtual address --
+		// no descriptor-heap slot needed, since a root SRV can point straight
+		// at a raw/structured buffer OR (per the D3D12 spec) the result buffer
+		// of a top-level acceleration structure. Distinct from the space1
+		// per-geometry table above: this is exactly the two records every DXR
+		// compute pass needs regardless of scene size -- the TLAS itself
+		// (t0, space2) and the per-instance lookup buffer built alongside it
+		// in BuildRaytracingTlas (t1, space2), each rebuilt once per frame.
+		static constexpr uint32_t kRayTlasRootParameter = kNumCbvRegisters + 4;
+		static constexpr uint32_t kRayGeometryLookupRootParameter = kNumCbvRegisters + 5;
+		// A second root parameter pointing at the EXACT SAME shader-visible
+		// heap range as kRaySceneRootParameter (RaySceneDescriptorGpuStart()),
+		// just declared under a different register space in HLSL. A single
+		// descriptor slot always holds one concrete kind of view (raw buffer
+		// SRV or Texture2D SRV, never both at once); this lets a shader read
+		// that slot as a Texture2D when RegisterRaySceneSrv was actually given
+		// a texture's SRV, using the same bindless index space1's raw-buffer
+		// table already uses for vertex/index buffers -- see
+		// RayTracingMaterialTable::Upload, which registers texture SRVs into
+		// that identical table. HLSL can't type one descriptor range two ways
+		// in a single variable, hence the duplicate table + duplicate bind.
+		static constexpr uint32_t kRaySceneTexRootParameter = kNumCbvRegisters + 6;
 
 	private:
 		void CreateDeviceAndQueue(bool enableDebugLayer, bool enableGpuValidation);
@@ -211,7 +303,7 @@ namespace Tga::rhi::dx12
 		void UploadBufferData(ID3D12Resource* dst, const void* data, size_t size);
 		void UploadTextureData(ID3D12Resource* dst, const TextureDesc&, const SubresourceData* initial, uint32_t count);
 
-		static constexpr uint32_t kFramesInFlight = 2;
+		static constexpr uint32_t kFramesInFlight = 3;
 		// Descriptor heap layout: CreateSrv/CreateUav/CreateSampler/CreateRtv/
 		// CreateDsv allocate from these NON-shader-visible heaps -- they're
 		// permanent, freelist-managed CPU-side storage, never bound directly.
@@ -233,7 +325,9 @@ namespace Tga::rhi::dx12
 		// redundant SetSampler calls), keeping real usage far under the cap.
 		static constexpr uint32_t kCbvSrvUavCapacity = 8192;          // permanent (non-shader-visible)
 		static constexpr uint32_t kSamplerCapacity = 256;             // permanent (non-shader-visible)
-		static constexpr uint32_t kCbvSrvUavScratchPerFrame = 131072; // shader-visible, per frame-in-flight
+		static constexpr uint32_t kRaySceneDescriptorCapacity = 32768;
+		static constexpr uint32_t kCbvSrvUavScratchPerFrame = 131072; // transient shader-visible descriptors
+		static constexpr uint32_t kCbvSrvUavHeapPerFrame = kRaySceneDescriptorCapacity + kCbvSrvUavScratchPerFrame;
 		// 2048 is the actual D3D12 hardware limit for a single shader-visible
 		// sampler heap (Tier 1+), so this is the most headroom this heap can
 		// ever have -- raised from 800 after a real GI-probe-priming frame
@@ -245,13 +339,17 @@ namespace Tga::rhi::dx12
 		static constexpr uint32_t kRtvCapacity = 256;
 		static constexpr uint32_t kDsvCapacity = 64;
 		static constexpr uint32_t kDynRingBytes = 4u << 20;   // 4 MB per frame
-		static constexpr uint32_t kImGuiSrvCapacity = 64;     // shader-visible, owned exclusively by imgui_impl_dx12
+		static constexpr uint32_t kImGuiSrvCapacity = 4096;   // shader-visible, owned exclusively by imgui_impl_dx12
 
 		ComPtr<IDXGIFactory6> myFactory;
 		ComPtr<ID3D12Device>  myDevice;
+		// DXR entry points live on these versioned interfaces.  Keep both base
+		// interfaces too: the rest of the renderer remains ordinary D3D12.
+		ComPtr<ID3D12Device5> myDevice5;
 		ComPtr<ID3D12CommandQueue> myQueue;
 		ComPtr<IDXGISwapChain3> mySwapChain;
-
+		HANDLE mySwapChainWaitable = nullptr;
+		bool myTearingSupported = false;
 		Dx12DescriptorHeap myRtvHeap;         // non-shader-visible
 		Dx12DescriptorHeap myDsvHeap;         // non-shader-visible
 		Dx12DescriptorHeap myCbvSrvUavHeap;    // non-shader-visible (permanent storage)
@@ -272,6 +370,8 @@ namespace Tga::rhi::dx12
 		// shows up through the same ImTextureID), rather than leaking a fresh
 		// slot out of the 64-capacity heap on every ImGui::Image() call.
 		std::unordered_map<uint64_t, uint32_t> myImGuiTextureSlots;
+		std::unordered_map<uint64_t, uint32_t> myRaySceneDescriptorSlots;
+		uint32_t myNextRaySceneDescriptor = 1;
 
 		ComPtr<ID3D12RootSignature> myGraphicsRootSig;
 		ComPtr<ID3D12RootSignature> myComputeRootSig;
@@ -279,6 +379,8 @@ namespace Tga::rhi::dx12
 
 		ComPtr<ID3D12CommandAllocator> myAllocators[kFramesInFlight];
 		ComPtr<ID3D12GraphicsCommandList> myCmdList;
+		ComPtr<ID3D12GraphicsCommandList4> myCmdList4;
+		bool myRaytracingTier11 = false;
 		ComPtr<ID3D12Fence> myFence;
 		HANDLE myFenceEvent = nullptr;
 		uint64_t myFenceValues[kFramesInFlight] = {};
@@ -310,6 +412,7 @@ namespace Tga::rhi::dx12
 		Pool<UavRec, UavHandle>       myUavSlots;
 		Pool<RtvRec, RtvHandle>       myRtvSlots;
 		Pool<DsvRec, DsvHandle>       myDsvSlots;
+		Pool<BlasRec, RaytracingBlasHandle> myBlas;
 		Pool<uint32_t, SamplerHandle> mySamplerSlots;
 		Pool<ShaderRec, ShaderModuleHandle> myShaders;
 		Pool<GfxPipelineRec, GraphicsPipelineHandle> myGfxPipelines;
@@ -331,6 +434,11 @@ namespace Tga::rhi::dx12
 		uint8_t*     myDynRingCpu[kFramesInFlight] = {};
 		uint32_t     myDynCursor = 0;
 
+		static constexpr uint32_t kUploadRingBytes = 32u << 20; // 32 MB per frame
+		ComPtr<ID3D12Resource> myUploadRing[kFramesInFlight];
+		uint8_t*     myUploadRingCpu[kFramesInFlight] = {};
+		uint32_t     myUploadCursor = 0;
+
 		// Deferred release for one-off UPLOAD-heap resources recorded into the
 		// CURRENT frame's own command list (e.g. UpdateTexture's staging
 		// buffer) -- unlike the synchronous CreateBuffer/CreateTexture initial-
@@ -340,11 +448,19 @@ namespace Tga::rhi::dx12
 		// guarantees the GPU is done with them (same lifetime rule as the
 		// dynamic-constant ring above).
 		std::vector<ComPtr<ID3D12Resource>> myPendingUploadReleases[kFramesInFlight];
+		// Cleared only after BeginFrame has waited for the matching slot's fence.
+		// Future descriptor-registry retirement is processed from this same queue.
+		std::vector<DeferredDxrRelease> myPendingDxrReleases[kFramesInFlight];
+		DxrFrameResources myDxrFrames[kFramesInFlight];
 
 		ComPtr<ID3D12QueryHeap> myTimestampHeap;
 		ComPtr<ID3D12Resource>  myTimestampReadback;
+		ComPtr<ID3D12Resource>  myPixelReadbackBuffer;
 		static constexpr uint32_t kMaxTimestamps = 512;
 		double myGpuTimestampFrequency = 0.0;
+		uint32_t myNextTimestampSlot = 0;       // monotonic allocator for CreateTimestampQuery
+		uint32_t myTimestampFrameMin = UINT32_MAX;  // min heap index written this frame
+		uint32_t myTimestampFrameMax = 0;           // max heap index written this frame
 
 		std::unique_ptr<Dx12CommandContext> myContext;
 	};

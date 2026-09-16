@@ -39,6 +39,11 @@ namespace FileDialog
 				filters[0] = { L"TGE Material file", L"*.tgmat" };
 				break;
 			}
+			case FileType::tgm:
+			{
+				filters[0] = { L"TGE FBX Import Settings", L"*.tgm" };
+				break;
+			}
 			default:
 			{
 				filters[0] = { L"Any file", L"*.*" };
@@ -47,7 +52,7 @@ namespace FileDialog
 		}
 	}
 
-	static void ShowDialog(DialogType type, const FileType filetype, Callback callback)
+	static void ShowDialog(DialogType type, const FileType filetype, Callback callback, const char* initialFolder = nullptr)
 	{
 		IFileDialog* file = nullptr;
 		
@@ -75,7 +80,7 @@ namespace FileDialog
 			// Todo: should not allow navigating outside this path
 			{
 				IShellItem* psiFolder;
-				const std::string& path = Tga::Settings::GameAssetRoot();
+				const std::string path = (initialFolder && *initialFolder) ? initialFolder : Tga::Settings::GameAssetRoot();
 				std::filesystem::path absolutePath = std::filesystem::absolute(path);
 				absolutePath.make_preferred();
 				std::wstring wpath = string_cast<std::wstring>(absolutePath.string());
@@ -111,9 +116,9 @@ namespace FileDialog
 	}
 }
 
-void FileDialog::SaveFile(FileType aFileType, Callback callback) 
+void FileDialog::SaveFile(FileType aFileType, Callback callback, const char* initialFolder)
 {
-	ShowDialog(DialogType::save, aFileType, callback);
+	ShowDialog(DialogType::save, aFileType, callback, initialFolder);
 }
 
 void FileDialog::OpenFile(Callback callback)

@@ -47,6 +47,24 @@ SceneObjectDefinition* SceneObjectDefinitionManager::CreateOrGet(const std::file
 		return it->second.get();
 
 	std::string pathString = aPath.string().c_str();
+	// A cooker can generate a TGO after the initial project scan.  Do not
+	// replace that authored/generated file with an empty definition when it is
+	// first opened by the editor; load it into the registry instead.
+	std::filesystem::path fullPath = std::filesystem::path(Tga::Settings::GameAssetRoot()) / aPath;
+	if (std::filesystem::exists(fullPath))
+	{
+		try
+		{
+			objectDefinition->Load(pathString.c_str());
+			mySceneObjectDefinitions[nameId] = std::move(objectDefinition);
+			return mySceneObjectDefinitions[nameId].get();
+		}
+		catch (const std::exception& e)
+		{
+			ERROR_PRINT("Could not load object definition '%s': %s", pathString.c_str(), e.what());
+			return nullptr;
+		}
+	}
 
 	objectDefinition->SetName(nameId);
 	objectDefinition->SetPath(pathString.c_str());

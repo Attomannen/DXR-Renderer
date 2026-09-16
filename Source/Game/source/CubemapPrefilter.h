@@ -22,6 +22,7 @@ namespace DirectX
 namespace Tga
 {
     class RenderTarget;
+    class DepthBuffer;
 
     struct CubemapData
     {
@@ -71,8 +72,10 @@ namespace Tga
 
         bool CaptureSceneToCubemap(
             RenderTarget& renderTarget,
+            DepthBuffer* depthBuffer,
             std::function<void(uint32_t faceIndex)> renderFaceCallback,
-            CubemapData& outCubemap);
+            CubemapData& outCubemap,
+            CubemapData* outDepthCubemap = nullptr);
 
         static Matrix4x4f GetCubemapCameraTransform(uint32_t faceIndex, const Vector3f& position);
         static Matrix4x4f GetCubemapViewMatrix(uint32_t faceIndex, const Vector3f& position);
@@ -101,6 +104,7 @@ namespace Tga
             UINT miscFlags,
             CubemapData& outCubemap,
             ComPtr<ID3D11UnorderedAccessView>* outMip0UAV = nullptr);
+        static bool CreateDepthCubemap(uint32_t resolution, CubemapData& outCubemap);
 
         rhi::SamplerHandle mySampler;
         rhi::ConstantBuffer myPrefilterConstantBuffer;

@@ -172,7 +172,10 @@ void Gizmos::DrawGizmos(const Camera& camera, ViewportInterface& aViewportInterf
 				aViewportInterface.UpdateTransformation(myManipulationStartPos, myManipulationInitialTransform.GetInverse() * transformAfter);
 			}
 
-			if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+			// Only finish a transaction we actually started on a gizmo handle.
+			// Ending unconditionally created empty transform commands on ordinary
+			// viewport clicks and could leave scale edits with stale state.
+			if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && myIsManipulating)
 			{
 				Vector3f pos, scale;
 				Quaternionf rot;

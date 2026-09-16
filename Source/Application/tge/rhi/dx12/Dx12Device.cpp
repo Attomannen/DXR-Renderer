@@ -192,6 +192,18 @@ namespace Tga::rhi::dx12
 	{
 		UINT dxgiFlags = 0;
 #if defined(_DEBUG)
+		// Configure DRED before the device exists. Keep it independent of the
+		// optional debug-layer/GPU-validation switches: GPU validation is too
+		// expensive for normal interactive Debug runs, while DRED is the useful
+		// post-mortem evidence when DXR removes a device.
+		ComPtr<ID3D12DeviceRemovedExtendedDataSettings> dredSettings;
+		if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(dredSettings.GetAddressOf()))))
+		{
+			dredSettings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+			dredSettings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+			INFO_PRINT("Dx12Device: DRED breadcrumbs and page-fault diagnostics enabled");
+		}
+
 		if (enableDebugLayer)
 		{
 			ComPtr<ID3D12Debug> debugController;
@@ -209,6 +221,9 @@ namespace Tga::rhi::dx12
 			}
 		}
 #endif
+		// These switches are intentionally inactive outside Debug builds.
+		(void)enableDebugLayer;
+		(void)enableGpuValidation;
 		HRESULT hr = CreateDXGIFactory2(dxgiFlags, IID_PPV_ARGS(myFactory.GetAddressOf()));
 		assert(SUCCEEDED(hr)); (void)hr;
 
@@ -225,6 +240,23 @@ namespace Tga::rhi::dx12
 			}
 		}
 		assert(myDevice && "Dx12Device: no D3D12-capable adapter found");
+
+		// RayQuery needs DXR 1.1.  Device5 exposes acceleration-structure
+		// creation/build APIs; OPTIONS5 is the authoritative hardware feature
+		// check (adapter branding is never a capability check).
+		D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5 = {};
+		if (SUCCEEDED(myDevice.As(&myDevice5)) &&
+			SUCCEEDED(myDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5))) &&
+			options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1)
+		{
+			myRaytracingTier11 = true;
+			INFO_PRINT("Dx12Device: DXR Tier 1.1 available");
+		}
+		else
+		{
+			myDevice5.Reset();
+			INFO_PRINT("Dx12Device: DXR Tier 1.1 unavailable; SSGI fallback remains active");
+		}
 
 #if defined(_DEBUG)
 		if (enableDebugLayer)
@@ -298,7 +330,8 @@ namespace Tga::rhi::dx12
 		mySamplerHeap.Init(myDevice.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, kSamplerCapacity, false);
 		for (uint32_t i = 0; i < kFramesInFlight; ++i)
 		{
-			myCbvSrvUavScratch[i].Init(myDevice.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kCbvSrvUavScratchPerFrame, true);
+			myCbvSrvUavScratch[i].Init(myDevice.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kCbvSrvUavHeapPerFrame, true);
+			myCbvSrvUavScratch[i].ReservePersistentPrefix(kRaySceneDescriptorCapacity);
 			mySamplerScratch[i].Init(myDevice.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, kSamplerScratchPerFrame, true);
 		}
 
@@ -358,6 +391,14 @@ namespace Tga::rhi::dx12
 		}
 		HRESULT hr = myDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, myAllocators[0].Get(), nullptr, IID_PPV_ARGS(myCmdList.GetAddressOf()));
 		assert(SUCCEEDED(hr));
+		if (myRaytracingTier11 && FAILED(myCmdList.As(&myCmdList4)))
+		{
+			// Do not advertise a partially usable DXR implementation.  This can
+			// occur with mismatched runtime components even if OPTIONS5 succeeded.
+			myRaytracingTier11 = false;
+			myDevice5.Reset();
+			ERROR_PRINT("Dx12Device: DXR disabled because ID3D12GraphicsCommandList4 is unavailable");
+		}
 		myCmdList->Close();   // BeginFrame resets it before first use
 
 		hr = myDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(myUploadAllocator.GetAddressOf()));
@@ -380,6 +421,15 @@ namespace Tga::rhi::dx12
 			assert(rec && rec->res);
 			D3D12_RANGE noRead{ 0, 0 };
 			rec->res->Map(0, &noRead, reinterpret_cast<void**>(&myDynRingCpu[i]));
+			
+			D3D12_HEAP_PROPERTIES uploadHeap = { D3D12_HEAP_TYPE_UPLOAD };
+			D3D12_RESOURCE_DESC ud = {};
+			ud.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+			ud.Width = kUploadRingBytes; ud.Height = 1; ud.DepthOrArraySize = 1; ud.MipLevels = 1;
+			ud.SampleDesc.Count = 1;
+			ud.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+			myDevice->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &ud, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(myUploadRing[i].GetAddressOf()));
+			myUploadRing[i]->Map(0, &noRead, reinterpret_cast<void**>(&myUploadRingCpu[i]));
 		}
 	}
 
@@ -414,6 +464,19 @@ namespace Tga::rhi::dx12
 		samplerRange.NumDescriptors = kNumSamplerRegisters;
 		samplerRange.BaseShaderRegister = 0;
 		samplerRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+		D3D12_DESCRIPTOR_RANGE rayGeometryRange = {};
+		rayGeometryRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+		rayGeometryRange.NumDescriptors = kRaySceneDescriptorCapacity;
+		rayGeometryRange.BaseShaderRegister = 0;
+		rayGeometryRange.RegisterSpace = 1;
+		rayGeometryRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+		// Same physical range as rayGeometryRange, re-declared under space4 so
+		// a shader can read the identical bindless slots as Texture2D instead
+		// of ByteAddressBuffer -- see kRaySceneTexRootParameter's comment.
+		D3D12_DESCRIPTOR_RANGE rayGeometryTexRange = rayGeometryRange;
+		rayGeometryTexRange.RegisterSpace = 4;
 
 		auto buildRootCbvParams = [](std::vector<D3D12_ROOT_PARAMETER>& params)
 		{
@@ -495,6 +558,41 @@ namespace Tga::rhi::dx12
 			samplerTable.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 			params.push_back(samplerTable);
 
+			// DXR scene geometry is deliberately isolated in register space 1.
+			// This table is only present on compute: regular graphics shaders retain
+			// their established space-0 root layout unchanged.
+			D3D12_ROOT_PARAMETER rayGeometryTable = {};
+			rayGeometryTable.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+			rayGeometryTable.DescriptorTable.NumDescriptorRanges = 1;
+			rayGeometryTable.DescriptorTable.pDescriptorRanges = &rayGeometryRange;
+			rayGeometryTable.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+			params.push_back(rayGeometryTable);
+
+			// space2: the two fixed per-frame DXR records (TLAS + its
+			// geometry-lookup buffer), bound directly by GPU virtual address --
+			// see kRayTlasRootParameter's comment in Dx12Device.h. Root
+			// descriptors, not a table, since there's exactly one of each.
+			D3D12_ROOT_PARAMETER tlasRoot = {};
+			tlasRoot.ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+			tlasRoot.Descriptor.ShaderRegister = 0;
+			tlasRoot.Descriptor.RegisterSpace = 2;
+			tlasRoot.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+			params.push_back(tlasRoot);
+
+			D3D12_ROOT_PARAMETER geometryLookupRoot = {};
+			geometryLookupRoot.ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+			geometryLookupRoot.Descriptor.ShaderRegister = 1;
+			geometryLookupRoot.Descriptor.RegisterSpace = 2;
+			geometryLookupRoot.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+			params.push_back(geometryLookupRoot);
+
+			D3D12_ROOT_PARAMETER rayGeometryTexTable = {};
+			rayGeometryTexTable.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+			rayGeometryTexTable.DescriptorTable.NumDescriptorRanges = 1;
+			rayGeometryTexTable.DescriptorTable.pDescriptorRanges = &rayGeometryTexRange;
+			rayGeometryTexTable.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+			params.push_back(rayGeometryTexTable);
+
 			D3D12_ROOT_SIGNATURE_DESC desc = {};
 			desc.NumParameters = (UINT)params.size();
 			desc.pParameters = params.data();
@@ -513,7 +611,13 @@ namespace Tga::rhi::dx12
 		scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
 		scd.BufferCount = kFramesInFlight;
 		scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-		scd.Flags = 0;
+		BOOL allowTearing = FALSE;
+		if (SUCCEEDED(myFactory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allowTearing, sizeof(allowTearing))) && allowTearing)
+		{
+			myTearingSupported = true;
+			scd.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+		}
+		scd.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
 		ComPtr<IDXGISwapChain1> sc1;
 		HRESULT hr = myFactory->CreateSwapChainForHwnd(myQueue.Get(), hwnd, &scd, nullptr, nullptr, sc1.GetAddressOf());
@@ -521,6 +625,9 @@ namespace Tga::rhi::dx12
 		myFactory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
 		hr = sc1.As(&mySwapChain);
 		assert(SUCCEEDED(hr));
+		
+		mySwapChain->SetMaximumFrameLatency(kFramesInFlight - 1);
+		mySwapChainWaitable = mySwapChain->GetFrameLatencyWaitableObject();
 
 		myFrameIndex = mySwapChain->GetCurrentBackBufferIndex();
 		AdoptBackBuffers();
@@ -610,6 +717,12 @@ namespace Tga::rhi::dx12
 		}
 		else
 		{
+			if (mySwapChainWaitable)
+				WaitForSingleObject(mySwapChainWaitable, INFINITE);
+			
+			if (mySwapChain)
+				myFrameIndex = mySwapChain->GetCurrentBackBufferIndex();
+
 			const uint64_t waitValue = myFenceValues[myFrameIndex];
 			if (waitValue != 0 && myFence->GetCompletedValue() < waitValue)
 			{
@@ -622,10 +735,14 @@ namespace Tga::rhi::dx12
 		// submission (2 frames ago) has fully retired -- safe to release any
 		// one-off UPLOAD resources UpdateTexture etc. queued for that frame.
 		myPendingUploadReleases[myFrameIndex].clear();
+		myPendingDxrReleases[myFrameIndex].clear();
 
 		myDynCursor = 0;   // reset this frame's dynamic-constant ring
+		myUploadCursor = 0;
 		myCbvSrvUavScratch[myFrameIndex].ResetRange();
 		mySamplerScratch[myFrameIndex].ResetRange();
+		myTimestampFrameMin = UINT32_MAX;
+		myTimestampFrameMax = 0;
 
 		myAllocators[myFrameIndex]->Reset();
 		myCmdList->Reset(myAllocators[myFrameIndex].Get(), nullptr);
@@ -648,13 +765,26 @@ namespace Tga::rhi::dx12
 	{
 		if (mySwapChain)
 			myContext->TransitionResource(myBackBufferTex[myFrameIndex], ResourceState::Present);
+		
+		myContext->FlushBarriers();
+
+		if (myTimestampFrameMin <= myTimestampFrameMax)
+		{
+			const uint32_t count = myTimestampFrameMax - myTimestampFrameMin + 1;
+			myCmdList->ResolveQueryData(myTimestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, myTimestampFrameMin, count, myTimestampReadback.Get(), myTimestampFrameMin * sizeof(uint64_t));
+		}
 
 		myCmdList->Close();
 		ID3D12CommandList* lists[] = { myCmdList.Get() };
 		myQueue->ExecuteCommandLists(1, lists);
 
 		if (mySwapChain)
-			mySwapChain->Present(vsync ? 1 : 0, 0);
+		{
+			UINT presentFlags = 0;
+			if (!vsync && myTearingSupported)
+				presentFlags |= DXGI_PRESENT_ALLOW_TEARING;
+			mySwapChain->Present(vsync ? 1 : 0, presentFlags);
+		}
 
 		const uint64_t v = myNextFenceValue++;
 		myQueue->Signal(myFence.Get(), v);
@@ -696,8 +826,11 @@ namespace Tga::rhi::dx12
 		if (myDepthDsv.IsValid()) { Destroy(myDepthDsv); myDepthDsv = {}; }
 		if (myDepthTex.IsValid()) { Destroy(myDepthTex); myDepthTex = {}; }
 
+		UINT swapChainFlags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+		if (myTearingSupported) swapChainFlags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+		
 		myResolution = { w, h };
-		HRESULT hr = mySwapChain->ResizeBuffers(kFramesInFlight, w, h, DXGI_FORMAT_R8G8B8A8_UNORM, 0);
+		HRESULT hr = mySwapChain->ResizeBuffers(kFramesInFlight, w, h, DXGI_FORMAT_R8G8B8A8_UNORM, swapChainFlags);
 		if (FAILED(hr)) { ERROR_PRINT("Dx12Device::Resize: ResizeBuffers failed 0x%08X", (unsigned)hr); return false; }
 
 		myFrameIndex = mySwapChain->GetCurrentBackBufferIndex();
@@ -710,6 +843,18 @@ namespace Tga::rhi::dx12
 		dd.debugName = "Dx12 default depth";
 		myDepthTex = CreateTexture(dd);
 		myDepthDsv = CreateDsv(myDepthTex, {});
+		return true;
+	}
+
+	bool Dx12Device::SetFullscreen(bool enabled)
+	{
+		if (!mySwapChain) return false;
+		const HRESULT hr = mySwapChain->SetFullscreenState(enabled ? TRUE : FALSE, nullptr);
+		if (FAILED(hr))
+		{
+			ERROR_PRINT("Dx12Device::SetFullscreen failed 0x%08X", (unsigned)hr);
+			return false;
+		}
 		return true;
 	}
 
@@ -775,6 +920,311 @@ namespace Tga::rhi::dx12
 				: initState;
 		BufferRec rec; rec.res = res; rec.desc = d; rec.state = finalState;
 		return myBuffers.Alloc(std::move(rec));
+	}
+
+	RaytracingBlasHandle Dx12Device::CreateRaytracingBlas(const RaytracingBlasDesc& desc)
+	{
+		if (!myRaytracingTier11 || !myDevice5 || !desc.vertexBuffer.IsValid() || !desc.indexBuffer.IsValid() ||
+			desc.vertexCount == 0 || desc.indexCount < 3 || desc.vertexStride == 0 || desc.indexFormat != Format::R32_UInt)
+			return {};
+
+		BufferRec* vb = myBuffers.Get(desc.vertexBuffer);
+		BufferRec* ib = myBuffers.Get(desc.indexBuffer);
+		if (!vb || !ib || !vb->res || !ib->res) return {};
+
+		D3D12_RAYTRACING_GEOMETRY_DESC geometry = {};
+		geometry.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+		geometry.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+		geometry.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
+		geometry.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+		geometry.Triangles.IndexCount = desc.indexCount;
+		geometry.Triangles.VertexCount = desc.vertexCount;
+		geometry.Triangles.IndexBuffer = ib->res->GetGPUVirtualAddress();
+		geometry.Triangles.VertexBuffer.StartAddress = vb->res->GetGPUVirtualAddress();
+		geometry.Triangles.VertexBuffer.StrideInBytes = desc.vertexStride;
+
+		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
+		inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+		inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+		inputs.NumDescs = 1;
+		inputs.pGeometryDescs = &geometry;
+		inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE |
+			D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_COMPACTION;
+
+		D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO prebuild = {};
+		myDevice5->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &prebuild);
+		if (prebuild.ResultDataMaxSizeInBytes == 0 || prebuild.ScratchDataSizeInBytes == 0)
+		{
+			ERROR_PRINT("DXR BLAS '%s': invalid prebuild sizes", desc.debugName ? desc.debugName : "unnamed");
+			return {};
+		}
+
+		auto alignAs = [](uint64_t size) { return (size + D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT - 1) &
+			~uint64_t(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT - 1); };
+		auto createBuffer = [&](uint64_t size, D3D12_RESOURCE_STATES state, D3D12_RESOURCE_FLAGS flags, ComPtr<ID3D12Resource>& out) -> bool
+		{
+			D3D12_HEAP_PROPERTIES heap = { D3D12_HEAP_TYPE_DEFAULT };
+			D3D12_RESOURCE_DESC rd = {};
+			rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+			rd.Width = size; rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+			rd.SampleDesc.Count = 1; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR; rd.Flags = flags;
+			return SUCCEEDED(myDevice->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &rd, state, nullptr,
+				IID_PPV_ARGS(out.GetAddressOf())));
+		};
+
+		ComPtr<ID3D12Resource> uncompacted, scratch, postbuild, readback;
+		const uint64_t uncompactedSize = alignAs(prebuild.ResultDataMaxSizeInBytes);
+		if (!createBuffer(uncompactedSize, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, uncompacted) ||
+			!createBuffer(alignAs(prebuild.ScratchDataSizeInBytes), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, scratch) ||
+			!createBuffer(sizeof(uint64_t), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, postbuild))
+		{
+			ERROR_PRINT("DXR BLAS '%s': resource allocation failed", desc.debugName ? desc.debugName : "unnamed");
+			return {};
+		}
+
+		D3D12_HEAP_PROPERTIES readbackHeap = { D3D12_HEAP_TYPE_READBACK };
+		D3D12_RESOURCE_DESC readbackDesc = {};
+		readbackDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		readbackDesc.Width = sizeof(uint64_t); readbackDesc.Height = 1; readbackDesc.DepthOrArraySize = 1;
+		readbackDesc.MipLevels = 1; readbackDesc.SampleDesc.Count = 1; readbackDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+		if (FAILED(myDevice->CreateCommittedResource(&readbackHeap, D3D12_HEAP_FLAG_NONE, &readbackDesc,
+			D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(readback.GetAddressOf())))) return {};
+
+		ComPtr<ID3D12GraphicsCommandList4> list4;
+		if (FAILED(myUploadCmdList.As(&list4))) return {};
+		myUploadAllocator->Reset();
+		myUploadCmdList->Reset(myUploadAllocator.Get(), nullptr);
+
+		D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC postInfo = {};
+		postInfo.InfoType = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE;
+		postInfo.DestBuffer = postbuild->GetGPUVirtualAddress();
+		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build = {};
+		build.Inputs = inputs;
+		build.DestAccelerationStructureData = uncompacted->GetGPUVirtualAddress();
+		build.ScratchAccelerationStructureData = scratch->GetGPUVirtualAddress();
+		list4->BuildRaytracingAccelerationStructure(&build, 1, &postInfo);
+		D3D12_RESOURCE_BARRIER barriers[2] = {};
+		barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+		barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barriers[1].Transition.pResource = postbuild.Get();
+		barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+		barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+		barriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		myUploadCmdList->ResourceBarrier(2, barriers);
+		myUploadCmdList->CopyBufferRegion(readback.Get(), 0, postbuild.Get(), 0, sizeof(uint64_t));
+		myUploadCmdList->Close();
+		ID3D12CommandList* buildLists[] = { myUploadCmdList.Get() };
+		myQueue->ExecuteCommandLists(1, buildLists);
+		WaitForGpuIdle();
+
+		uint64_t compactedSize = 0;
+		void* mapped = nullptr;
+		D3D12_RANGE readRange{ 0, sizeof(uint64_t) };
+		if (SUCCEEDED(readback->Map(0, &readRange, &mapped)) && mapped)
+		{
+			compactedSize = *static_cast<const uint64_t*>(mapped);
+			readback->Unmap(0, nullptr);
+		}
+
+		ComPtr<ID3D12Resource> finalResult = uncompacted;
+		if (compactedSize != 0 && compactedSize < uncompactedSize)
+		{
+			ComPtr<ID3D12Resource> compacted;
+			if (createBuffer(alignAs(compactedSize), D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+				D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, compacted))
+			{
+				myUploadAllocator->Reset();
+				myUploadCmdList->Reset(myUploadAllocator.Get(), nullptr);
+				list4->CopyRaytracingAccelerationStructure(compacted->GetGPUVirtualAddress(),
+					uncompacted->GetGPUVirtualAddress(), D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT);
+				myUploadCmdList->Close();
+				ID3D12CommandList* compactLists[] = { myUploadCmdList.Get() };
+				myQueue->ExecuteCommandLists(1, compactLists);
+				WaitForGpuIdle();
+				finalResult = std::move(compacted);
+			}
+		}
+
+		INFO_PRINT("DXR BLAS '%s': %llu KiB -> %llu KiB", desc.debugName ? desc.debugName : "unnamed",
+			(unsigned long long)(uncompactedSize / 1024), (unsigned long long)((compactedSize ? compactedSize : uncompactedSize) / 1024));
+		return myBlas.Alloc(BlasRec{ std::move(finalResult), compactedSize ? compactedSize : uncompactedSize, uncompactedSize });
+	}
+
+	void Dx12Device::BuildRaytracingTlas(const RaytracingInstanceDesc* instances, uint32_t count)
+	{
+		if (!myRaytracingTier11 || !myCmdList4) return;
+		DxrFrameResources& frame = myDxrFrames[myFrameIndex];
+		// Invalidate before every possible early return so a zero-instance frame
+		// cannot trace the last populated contents of this slot.
+		frame.sceneValid = false;
+		if (!instances || count == 0) return;
+		struct GeometryLookupGpu
+		{
+			uint32_t vertexSrv, indexSrv, materialIndex, vertexStride;
+			uint32_t positionOffset, normalOffset, uv0Offset, tangentOffset;
+			uint32_t binormalOffset, _pad0, _pad1, _pad2;
+			float previousTransform[12];
+			uint32_t motionHistoryValid, _motionPad[3];
+		};
+		static_assert(sizeof(GeometryLookupGpu) == 112);
+		if (!frame.geometryLookup || frame.geometryLookupCapacity < count)
+		{
+			const uint32_t capacity = std::max(count, frame.geometryLookupCapacity ? frame.geometryLookupCapacity * 2 : 64u);
+			D3D12_HEAP_PROPERTIES heap = { D3D12_HEAP_TYPE_UPLOAD };
+			D3D12_RESOURCE_DESC rd = {}; rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; rd.Width = uint64_t(capacity) * sizeof(GeometryLookupGpu);
+			rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1; rd.SampleDesc.Count = 1; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+			if (FAILED(myDevice->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(frame.geometryLookup.ReleaseAndGetAddressOf())))) return;
+			frame.geometryLookupCapacity = capacity;
+		}
+		GeometryLookupGpu* lookup = nullptr; D3D12_RANGE noRead{ 0, 0 };
+		if (FAILED(frame.geometryLookup->Map(0, &noRead, reinterpret_cast<void**>(&lookup))) || !lookup) return;
+		for (uint32_t i = 0; i < count; ++i) {
+			lookup[i] = { instances[i].vertexSrv, instances[i].indexSrv, instances[i].materialIndex, instances[i].vertexStride,
+				instances[i].positionOffset, instances[i].normalOffset, instances[i].uv0Offset, instances[i].tangentOffset,
+				instances[i].binormalOffset, 0, 0, 0 };
+			memcpy(lookup[i].previousTransform, instances[i].previousTransform, sizeof(lookup[i].previousTransform));
+			lookup[i].motionHistoryValid = instances[i].motionHistoryValid;
+		}
+		frame.geometryLookup->Unmap(0, nullptr);
+		if (!frame.instanceDescs || frame.instanceCapacity < count)
+		{
+			const uint32_t capacity = std::max(count, frame.instanceCapacity ? frame.instanceCapacity * 2 : 64u);
+			D3D12_HEAP_PROPERTIES upload = { D3D12_HEAP_TYPE_UPLOAD };
+			D3D12_RESOURCE_DESC rd = {}; rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+			rd.Width = uint64_t(capacity) * sizeof(D3D12_RAYTRACING_INSTANCE_DESC); rd.Height = 1;
+			rd.DepthOrArraySize = 1; rd.MipLevels = 1; rd.SampleDesc.Count = 1; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+			if (FAILED(myDevice->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &rd,
+				D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(frame.instanceDescs.ReleaseAndGetAddressOf())))) return;
+			frame.instanceCapacity = capacity;
+		}
+
+		D3D12_RAYTRACING_INSTANCE_DESC* dst = nullptr;
+		if (FAILED(frame.instanceDescs->Map(0, &noRead, reinterpret_cast<void**>(&dst))) || !dst) return;
+		bool unchanged = frame.tlas && frame.builtInstances.size() == count && frame.builtBlas.size() == count;
+		bool topologyUnchanged = unchanged;
+		for (uint32_t i = 0; i < count; ++i)
+		{
+			BlasRec* blas = myBlas.Get(instances[i].blas);
+			if (!blas || !blas->result) { frame.instanceDescs->Unmap(0, nullptr); return; }
+			D3D12_RAYTRACING_INSTANCE_DESC d = {};
+			memcpy(d.Transform, instances[i].transform, sizeof(d.Transform));
+			d.InstanceID = instances[i].instanceId;
+			d.InstanceMask = instances[i].instanceMask;
+			// Every BLAS is built GEOMETRY_FLAG_OPAQUE, but that alone decides
+			// nothing while a RayQuery carries RAY_FLAG_FORCE_NON_OPAQUE -- the
+			// ray flag wins, and every candidate triangle of every ray leaves
+			// traversal hardware for the shader's Proceed() loop. Deciding it
+			// here instead, per instance, keeps the alpha-test round trip on
+			// the geometry that actually needs one (see
+			// RayTracingMaterialTable::IsRayOpaque) and lets the hardware
+			// resolve the rest. Costs nothing: an instance flag is part of the
+			// TLAS instance desc, so no BLAS is rebuilt for it.
+			d.Flags = instances[i].rayOpaque
+				? D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE
+				: D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_NON_OPAQUE;
+			d.AccelerationStructure = blas->result->GetGPUVirtualAddress();
+			
+			if (topologyUnchanged)
+			{
+				bool sameTopology = (frame.builtBlas[i] == instances[i].blas &&
+					frame.builtInstances[i].InstanceID == d.InstanceID &&
+					frame.builtInstances[i].InstanceMask == d.InstanceMask &&
+					frame.builtInstances[i].Flags == d.Flags &&
+					frame.builtInstances[i].AccelerationStructure == d.AccelerationStructure);
+				topologyUnchanged = sameTopology;
+				unchanged = unchanged && sameTopology && memcmp(frame.builtInstances[i].Transform, d.Transform, sizeof(d.Transform)) == 0;
+			}
+			dst[i] = d;
+		}
+		// Compare CPU snapshots, never read write-combined upload memory.
+		// Handle generations also catch recycled BLAS GPU addresses.
+		if (unchanged)
+		{
+			frame.instanceDescs->Unmap(0, nullptr);
+			frame.sceneValid = true;
+			return;
+		}
+		frame.instanceDescs->Unmap(0, nullptr);
+
+		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
+		inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+		inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+		inputs.NumDescs = count;
+		inputs.InstanceDescs = frame.instanceDescs->GetGPUVirtualAddress();
+		inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD |
+					   D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
+
+		D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info = {};
+		myDevice5->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &info);
+		auto alignAs = [](uint64_t v) { return (v + D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT - 1) & ~uint64_t(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT - 1); };
+		auto ensure = [&](ComPtr<ID3D12Resource>& resource, uint64_t bytes, D3D12_RESOURCE_STATES state) {
+			if (resource && resource->GetDesc().Width >= bytes) return true;
+			D3D12_HEAP_PROPERTIES heap = { D3D12_HEAP_TYPE_DEFAULT };
+			D3D12_RESOURCE_DESC rd = {}; rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; rd.Width = bytes; rd.Height = 1;
+			rd.DepthOrArraySize = 1; rd.MipLevels = 1; rd.SampleDesc.Count = 1; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+			rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+			return SUCCEEDED(myDevice->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &rd, state, nullptr, IID_PPV_ARGS(resource.ReleaseAndGetAddressOf())));
+		};
+
+		bool doUpdate = topologyUnchanged && frame.tlas;
+		uint64_t scratchSize = doUpdate ? info.UpdateScratchDataSizeInBytes : info.ScratchDataSizeInBytes;
+		if (!ensure(frame.scratch, alignAs(scratchSize), D3D12_RESOURCE_STATE_UNORDERED_ACCESS) ||
+			(!doUpdate && !ensure(frame.tlas, alignAs(info.ResultDataMaxSizeInBytes), D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE))) return;
+
+		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build = {};
+		if (doUpdate)
+		{
+			inputs.Flags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
+			build.SourceAccelerationStructureData = frame.tlas->GetGPUVirtualAddress();
+		}
+		build.Inputs = inputs;
+		build.DestAccelerationStructureData = frame.tlas->GetGPUVirtualAddress();
+		build.ScratchAccelerationStructureData = frame.scratch->GetGPUVirtualAddress();
+		myCmdList4->BuildRaytracingAccelerationStructure(&build, 0, nullptr);
+		D3D12_RESOURCE_BARRIER uav = {}; uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+		myCmdList->ResourceBarrier(1, &uav);
+		frame.builtInstances.resize(count);
+		frame.builtBlas.resize(count);
+		for (uint32_t i = 0; i < count; ++i)
+		{
+			D3D12_RAYTRACING_INSTANCE_DESC d = {};
+			memcpy(d.Transform, instances[i].transform, sizeof(d.Transform));
+			d.InstanceID = instances[i].instanceId;
+			d.InstanceMask = instances[i].instanceMask;
+			// Must match the Flags actually written into the upload buffer
+			// above, or the next frame's topologyUnchanged compare (which reads
+			// Flags) never matches and every frame pays a full TLAS rebuild
+			// instead of a refit.
+			d.Flags = instances[i].rayOpaque
+				? D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE
+				: D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_NON_OPAQUE;
+			d.AccelerationStructure = myBlas.Get(instances[i].blas)->result->GetGPUVirtualAddress();
+			frame.builtInstances[i] = d;
+			frame.builtBlas[i] = instances[i].blas;
+		}
+		frame.sceneValid = true;
+		static uint32_t sLastCount = ~0u;
+		if (sLastCount != count) { INFO_PRINT("DXR TLAS: full rebuild, %u instances", count); sLastCount = count; }
+	}
+
+	bool Dx12Device::BindRaytracingSceneForCompute()
+	{
+		if (!myRaytracingTier11 || !myCmdList || !myDxrFrames[myFrameIndex].sceneValid)
+			return false;
+
+		const D3D12_GPU_VIRTUAL_ADDRESS tlas = RayTlasGpuAddress();
+		const D3D12_GPU_VIRTUAL_ADDRESS lookup = RayGeometryLookupGpuAddress();
+		if (!tlas || !lookup)
+			return false;
+
+		// Root arguments are immediate, not deferred. This must happen after the
+		// current command list has recorded BuildRaytracingAccelerationStructure.
+		myCmdList->SetComputeRootShaderResourceView(kRayTlasRootParameter, tlas);
+		myCmdList->SetComputeRootShaderResourceView(kRayGeometryLookupRootParameter, lookup);
+		return true;
 	}
 
 	TextureHandle Dx12Device::CreateTexture(const TextureDesc& d, const SubresourceData* initial, uint32_t initialCount)
@@ -1037,17 +1487,76 @@ namespace Tga::rhi::dx12
 		BufferRec* b = myBuffers.Get(h);
 		if (!b || !b->res) return {};
 		D3D12_SHADER_RESOURCE_VIEW_DESC vd = {};
-		vd.Format = DXGI_FORMAT_UNKNOWN;
 		vd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 		vd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
 		vd.Buffer.FirstElement = d.bufferFirstElement;
-		vd.Buffer.NumElements = d.bufferNumElements ? d.bufferNumElements : (b->desc.stride ? (UINT)(b->desc.byteSize / b->desc.stride) : (UINT)b->desc.byteSize);
-		vd.Buffer.StructureByteStride = b->desc.stride;
-		vd.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+		const bool raw = d.bufferType == BufferSrvType::Raw;
+		const bool structured = d.bufferType == BufferSrvType::Structured ||
+			(d.bufferType == BufferSrvType::Default && HasUsage(b->desc.usage, BufferUsage::Structured));
+		if (raw)
+		{
+			assert((b->desc.byteSize & 3u) == 0 && "ByteAddressBuffer resources must have a 4-byte size");
+			vd.Format = DXGI_FORMAT_R32_TYPELESS;
+			vd.Buffer.NumElements = d.bufferNumElements ? d.bufferNumElements : (UINT)(b->desc.byteSize / 4);
+			vd.Buffer.StructureByteStride = 0;
+			vd.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+		}
+		else if (structured)
+		{
+			assert(b->desc.stride != 0 && "Structured buffer SRV requires a non-zero stride");
+			vd.Format = DXGI_FORMAT_UNKNOWN;
+			vd.Buffer.NumElements = d.bufferNumElements ? d.bufferNumElements : (UINT)(b->desc.byteSize / b->desc.stride);
+			vd.Buffer.StructureByteStride = b->desc.stride;
+			vd.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+		}
+		else
+		{
+			vd.Format = d.formatOverride != Format::Unknown ? ToDxgi(d.formatOverride) : DXGI_FORMAT_R32_UINT;
+			vd.Buffer.NumElements = d.bufferNumElements ? d.bufferNumElements : (UINT)(b->desc.byteSize / 4);
+			vd.Buffer.StructureByteStride = 0;
+			vd.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+		}
 
 		uint32_t slot = myCbvSrvUavHeap.Allocate();
 		myDevice->CreateShaderResourceView(b->res.Get(), &vd, myCbvSrvUavHeap.Cpu(slot));
 		return mySrvSlots.Alloc(SrvRec{ slot, {}, h });
+	}
+
+	uint32_t Dx12Device::RegisterRaySceneSrv(SrvHandle source)
+	{
+		SrvRec* rec = mySrvSlots.Get(source);
+		if (!rec) return 0;
+		const uint64_t sourceKey = (uint64_t(source.generation) << 32) | source.index;
+		if (const auto existing = myRaySceneDescriptorSlots.find(sourceKey); existing != myRaySceneDescriptorSlots.end())
+			return existing->second;
+
+		// The scene table is mirrored into each frame heap. Updating a descriptor
+		// while any one of those heaps is executing would race the GPU, so this
+		// load-time registration path intentionally refuses that operation.
+		bool needsIdle = false;
+		for (uint32_t i = 0; i < kFramesInFlight; ++i)
+			needsIdle |= myFenceValues[i] != 0 && myFence->GetCompletedValue() < myFenceValues[i];
+		// Imported scenes may finish loading after the first rendered frame. A
+		// one-time idle here makes the descriptor mirrored into every frame heap
+		// safe immediately; future streaming replaces this with deferred updates.
+		if (needsIdle) WaitForGpuIdle();
+
+		if (myNextRaySceneDescriptor >= kRaySceneDescriptorCapacity)
+		{
+			ERROR_PRINT("DXR scene descriptor table exhausted (%u entries)", kRaySceneDescriptorCapacity - 1);
+			return 0;
+		}
+
+		const uint32_t sceneIndex = myNextRaySceneDescriptor++;
+		const D3D12_CPU_DESCRIPTOR_HANDLE sourceCpu = CbvSrvUavCpuHandle(rec->slot);
+		for (uint32_t i = 0; i < kFramesInFlight; ++i)
+		{
+			myDevice->CopyDescriptorsSimple(1, myCbvSrvUavScratch[i].Cpu(sceneIndex), sourceCpu,
+				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		}
+
+		myRaySceneDescriptorSlots.emplace(sourceKey, sceneIndex);
+		return sceneIndex;
 	}
 
 	UavHandle Dx12Device::CreateUav(TextureHandle h, const UavDesc& d)
@@ -1123,8 +1632,33 @@ namespace Tga::rhi::dx12
 		if (!t || !t->res) return {};
 		D3D12_DEPTH_STENCIL_VIEW_DESC vd = {};
 		vd.Format = d.formatOverride != Format::Unknown ? ToDsvFormat(d.formatOverride) : ToDsvFormat(t->desc.format);
-		vd.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
-		vd.Texture2D.MipSlice = d.mipSlice;
+		// NOT unconditionally TEXTURE2D (found 2026-09-12, live with the user):
+		// a D3D12_DSV_DIMENSION_TEXTURE2D view on a Texture2DArray resource
+		// implicitly targets array slice 0 ONLY, silently ignoring
+		// firstArraySlice/arraySize entirely -- every one of DeferredRenderer's
+		// 4 per-cascade shadow DSVs (CreateShadowMaps: firstArraySlice=0..3,
+		// arraySize=1 each) was therefore secretly the SAME view of slice 0,
+		// so all 4 cascades rendered into (and overwrote) one slice while the
+		// lighting pass's SRV correctly sampled array index 0..3 -- slices 1-3
+		// held whatever was last in that memory, never actual shadow data.
+		// Visually: shadows appeared to "follow the camera" (only the last-
+		// rendered cascade's real depth ever existed, always recentered on
+		// the current view) and vanished outright wherever PickCascade
+		// selected a non-zero cascade and sampled garbage. CreateRtv already
+		// had the correct Tex2DArray branch; CreateDsv was just missing its
+		// twin.
+		if (t->desc.dimension == TextureDimension::Tex2DArray || t->desc.dimension == TextureDimension::TexCube)
+		{
+			vd.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+			vd.Texture2DArray.MipSlice = d.mipSlice;
+			vd.Texture2DArray.FirstArraySlice = d.firstArraySlice;
+			vd.Texture2DArray.ArraySize = d.arraySize;
+		}
+		else
+		{
+			vd.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+			vd.Texture2D.MipSlice = d.mipSlice;
+		}
 		if (d.readOnly) vd.Flags = D3D12_DSV_FLAG_READ_ONLY_DEPTH;
 
 		uint32_t slot = myDsvHeap.Allocate();
@@ -1305,6 +1839,7 @@ namespace Tga::rhi::dx12
 			if (t->res) KeepAliveUntilFrameRetires(t->res);
 		myTextures.Free(h);
 	}
+	void Dx12Device::Destroy(RaytracingBlasHandle h) { myBlas.Free(h); }
 	void Dx12Device::Destroy(SrvHandle h)     { if (SrvRec* s = mySrvSlots.Get(h)) { myCbvSrvUavHeap.Free(s->slot); mySrvSlots.Free(h); } }
 	void Dx12Device::Destroy(UavHandle h)     { if (UavRec* s = myUavSlots.Get(h)) { myCbvSrvUavHeap.Free(s->slot); myUavSlots.Free(h); } }
 	void Dx12Device::Destroy(RtvHandle h)     { if (RtvRec* r = myRtvSlots.Get(h)) { myRtvHeap.Free(r->slot); myRtvSlots.Free(h); } }
@@ -1328,22 +1863,94 @@ namespace Tga::rhi::dx12
 		return a;
 	}
 
-	// ------------------------------------------------------------------ timestamps (milestone 2)
+	void Dx12Device::AllocateUploadSpace(uint32_t size, uint32_t alignment, uint64_t& outOffset, void*& outCpuAddr, ID3D12Resource*& outRes)
+	{
+		uint32_t alignedOffset = (myUploadCursor + alignment - 1) & ~(alignment - 1);
+		if (alignedOffset + size <= kUploadRingBytes)
+		{
+			outOffset = alignedOffset;
+			outCpuAddr = myUploadRingCpu[myFrameIndex] + alignedOffset;
+			outRes = myUploadRing[myFrameIndex].Get();
+			myUploadCursor = alignedOffset + size;
+			return;
+		}
+
+		D3D12_HEAP_PROPERTIES uploadHeap = { D3D12_HEAP_TYPE_UPLOAD };
+		D3D12_RESOURCE_DESC ud = {};
+		ud.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		ud.Width = size; ud.Height = 1; ud.DepthOrArraySize = 1; ud.MipLevels = 1;
+		ud.SampleDesc.Count = 1;
+		ud.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+		ComPtr<ID3D12Resource> upload;
+		myDevice->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &ud, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(upload.GetAddressOf()));
+		
+		D3D12_RANGE noRead{ 0, 0 };
+		upload->Map(0, &noRead, &outCpuAddr);
+		outOffset = 0;
+		outRes = upload.Get();
+		KeepAliveUntilFrameRetires(std::move(upload));
+	}
+
+	// ------------------------------------------------------------------ timestamps
 	TimestampQueryHandle Dx12Device::CreateTimestampQuery()
 	{
 		TimestampRec rec;
-		rec.queryIndex = 0;   // real allocation is milestone 2 (needs WriteTimestampBegin/End wired up)
+		rec.queryIndex = myNextTimestampSlot++;
+		if (rec.queryIndex * 2 + 1 >= kMaxTimestamps)
+		{
+			ERROR_PRINT("Dx12Device: timestamp query pool exhausted (need %u, capacity %u)", rec.queryIndex * 2 + 2, kMaxTimestamps);
+			--myNextTimestampSlot;
+			return {};
+		}
 		return myTimestamps.Alloc(std::move(rec));
 	}
 	void Dx12Device::DestroyTimestampQuery(TimestampQueryHandle h) { myTimestamps.Free(h); }
-	bool Dx12Device::GetTimestampMs(TimestampQueryHandle, double&) { return false; }
+	bool Dx12Device::GetTimestampMs(TimestampQueryHandle h, double& outMs)
+	{
+		TimestampRec* r = myTimestamps.Get(h);
+		if (!r || !r->hasBegin || !r->hasEnd || myGpuTimestampFrequency == 0.0)
+			return false;
+
+		const uint32_t beginSlot = r->queryIndex * 2;
+		const uint32_t endSlot   = r->queryIndex * 2 + 1;
+
+		// Map the readback buffer to read resolved timestamps. The readback
+		// resource is in COPY_DEST state permanently -- Map is always valid
+		// for READBACK heaps regardless of resource state.
+		D3D12_RANGE readRange{ (SIZE_T)(beginSlot * sizeof(uint64_t)),
+		                       (SIZE_T)((endSlot + 1) * sizeof(uint64_t)) };
+		uint64_t* data = nullptr;
+		if (FAILED(myTimestampReadback->Map(0, &readRange, reinterpret_cast<void**>(&data))) || !data)
+			return false;
+
+		const uint64_t t0 = data[beginSlot];
+		const uint64_t t1 = data[endSlot];
+
+		D3D12_RANGE noWrite{ 0, 0 };
+		myTimestampReadback->Unmap(0, &noWrite);
+
+		if (t1 < t0)
+			return false;
+
+		outMs = double(t1 - t0) / myGpuTimestampFrequency * 1000.0;
+		r->hasBegin = r->hasEnd = false;
+		return true;
+	}
 
 	// ------------------------------------------------------------------ Stage-1-only bridges (DX12 never uses these)
 	void* Dx12Device::GetNativeDevice()  { return myDevice.Get(); }
 	void* Dx12Device::GetNativeContext() { assert(false && "Dx12: GetNativeContext has no DX12 equivalent -- see GetNativeCommandQueue/CommandList"); return nullptr; }
 	void* Dx12Device::GetNativeSrv(SrvHandle)     { assert(false && "Dx12: GetNativeSrv is a DX11-only legacy-interop bridge"); return nullptr; }
 	void* Dx12Device::GetNativeRtv(RtvHandle)     { assert(false && "Dx12: GetNativeRtv is a DX11-only legacy-interop bridge"); return nullptr; }
-	void* Dx12Device::GetNativeTexture(TextureHandle) { assert(false && "Dx12: GetNativeTexture is a DX11-only legacy-interop bridge"); return nullptr; }
+	void* Dx12Device::GetNativeTexture(TextureHandle h)
+	{
+		// Native texture access is deliberately narrow: vendor compute features
+		// (Streamline DLAA today, NRD next) need the ID3D12Resource while the
+		// RHI remains responsible for descriptor ownership and transitions.
+		TextureRec* t = myTextures.Get(h);
+		return t ? t->res.Get() : nullptr;
+	}
 	void* Dx12Device::ImGuiTextureId(SrvHandle h)
 	{
 		// imgui_impl_dx12 expects a GPU descriptor handle (as a UINT64) that is
@@ -1522,18 +2129,23 @@ namespace Tga::rhi::dx12
 		// alignment for a buffer used as a texture-copy destination. One pixel
 		// (16 bytes: 4x uint32) fits trivially inside a single aligned row.
 		const UINT rowPitch = 256;
-		D3D12_HEAP_PROPERTIES heapProps = { D3D12_HEAP_TYPE_READBACK };
-		D3D12_RESOURCE_DESC bufDesc = {};
-		bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-		bufDesc.Width = rowPitch;
-		bufDesc.Height = 1; bufDesc.DepthOrArraySize = 1; bufDesc.MipLevels = 1;
-		bufDesc.SampleDesc.Count = 1;
-		bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-		ComPtr<ID3D12Resource> readback;
-		HRESULT hr = myDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
-			D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(readback.GetAddressOf()));
-		if (FAILED(hr)) { ERROR_PRINT("Dx12Device::ReadBackUintPixel4: readback CreateCommittedResource failed 0x%08X", (unsigned)hr); return false; }
+		if (!myPixelReadbackBuffer)
+		{
+			D3D12_HEAP_PROPERTIES heapProps = { D3D12_HEAP_TYPE_READBACK };
+			D3D12_RESOURCE_DESC bufDesc = {};
+			bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+			bufDesc.Width = rowPitch;
+			bufDesc.Height = 1;
+			bufDesc.DepthOrArraySize = 1;
+			bufDesc.MipLevels = 1;
+			bufDesc.SampleDesc.Count = 1;
+			bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+			HRESULT hr = myDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
+				D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(myPixelReadbackBuffer.GetAddressOf()));
+			if (FAILED(hr)) return false;
+		}
 
 		myUploadAllocator->Reset();
 		myUploadCmdList->Reset(myUploadAllocator.Get(), nullptr);
@@ -1554,7 +2166,7 @@ namespace Tga::rhi::dx12
 		footprint.Footprint.Depth = 1;
 		footprint.Footprint.RowPitch = rowPitch;
 
-		D3D12_TEXTURE_COPY_LOCATION dstLoc = { readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {} };
+		D3D12_TEXTURE_COPY_LOCATION dstLoc = { myPixelReadbackBuffer.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {} };
 		dstLoc.PlacedFootprint = footprint;
 		D3D12_TEXTURE_COPY_LOCATION srcLoc = { t->res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {} };
 		srcLoc.SubresourceIndex = 0;
@@ -1576,10 +2188,10 @@ namespace Tga::rhi::dx12
 
 		D3D12_RANGE readRange = { 0, sizeof(uint32_t) * 4 };
 		void* mapped = nullptr;
-		if (FAILED(readback->Map(0, &readRange, &mapped))) return false;
+		if (FAILED(myPixelReadbackBuffer->Map(0, &readRange, &mapped))) return false;
 		memcpy(outValues, mapped, sizeof(uint32_t) * 4);
 		D3D12_RANGE writtenRange = { 0, 0 };
-		readback->Unmap(0, &writtenRange);
+		myPixelReadbackBuffer->Unmap(0, &writtenRange);
 		return true;
 	}
 }

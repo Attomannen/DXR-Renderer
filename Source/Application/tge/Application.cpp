@@ -5,6 +5,8 @@
 #include <tge/log/Log.h>
 #include <tge/filewatcher/FileWatcher.h>
 #include <tge/graphics/dx11.h>
+#include <tge/graphics/StreamlineDLSS.h>
+#include <tge/rhi/Device.h>
 
 #include <tge/windows/WindowsWindow.h>
 #include <tge/settings/settings.h>
@@ -12,6 +14,7 @@
 #define WIN32_LEAN_AND_MEAN 
 #define NOMINMAX 
 #include <windows.h>
+#include <timeapi.h>
 #include <tge/ImGui/ImGuiInterface.h>
 
 #pragma comment( lib, "user32.lib" )
@@ -60,6 +63,9 @@ Application::Application()
 
 Application::~Application()
 {
+	// Streamline owns GPU-side state, so it must shut down before the DX12
+	// device held by myDx11 is released during member destruction.
+	StreamlineDLSS::Get().Shutdown();
 	Log::Destroy();
 }
 
@@ -120,20 +126,26 @@ bool Application::InternalStart()
 	}
 
 	myDx11 = std::make_unique<DX11>();
+	// Streamline's interposer has to be initialized before the DXGI/D3D12
+	// bootstrap.  It is optional: missing DLLs simply retain native TAA.
+	StreamlineDLSS::Get().Initialize();
 	if (!myDx11->Init(myWindow.get()))
 	{
 		ERROR_PRINT("%s", "D3D failed to be created!");
 		myWindow->Close();
 		return false;
 	}
-
-	CalculateRatios();
+	if (rhi::IDevice* rhiDevice = DX11::Rhi(); rhiDevice && rhiDevice->GetBackend() == rhi::Backend::DX12)
+		StreamlineDLSS::Get().AttachD3D12Device(rhiDevice->GetNativeDevice());
+	CalculateRatios();
 #ifndef _RETAIL
 	ImGuiInterface::Init();
 #endif // !_RETAIL
 
 	myStartOfTime = std::chrono::steady_clock::now();
 
+#pragma comment(lib, "winmm.lib")
+	timeBeginPeriod(1);
 
 	return true;
 }
@@ -141,6 +153,7 @@ bool Application::InternalStart()
 void Tga::Application::Shutdown()
 {
 	ImGuiInterface::Shutdown();
+	timeEndPeriod(1);
 
 	if (ourInstance)
 	{
@@ -150,7 +163,21 @@ void Tga::Application::Shutdown()
 
 void Tga::Application::UpdateWindowSizeChanges()
 {	
-	myDx11->ResizeToWindowSize();
+	// A minimized window reports a 0x0 client area.  Keep the last valid
+	// backbuffer and defer all dependent resolution updates until restoration.
+	#ifndef _RETAIL
+	ImGuiInterface::OnResizeBegin();
+	#endif
+	if (!myDx11->ResizeToWindowSize())
+	{
+		#ifndef _RETAIL
+		ImGuiInterface::OnResizeEnd();
+		#endif
+		return;
+	}
+	#ifndef _RETAIL
+	ImGuiInterface::OnResizeEnd();
+	#endif
 	DX11::BackBuffer->SetAsActiveTarget();
 
 	myWindowConfiguration.renderSize = DX11::GetResolution();
@@ -307,6 +334,9 @@ void Application::EndFrame( void )
 
 	myDx11->EndFrame(myWindowConfiguration.enableVSync);
 
+	// Keep resizing at the established post-present boundary. DX12 owns the
+	// command-list lifetime between BeginFrame/EndFrame; resizing before its
+	// next BeginFrame can dereference a closed transient command context.
 	if (myWantToUpdateSize)
 	{
 		UpdateWindowSizeChanges();

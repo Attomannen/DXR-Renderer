@@ -69,6 +69,7 @@ namespace Tga
             clearColor = TGA_DEFAULT_CRYSTAL_BLUE;
             applicationName = L"TGA - Engagemang, Respect och Nyfikenhet!";
             borderless = false;
+			keepAspectRatio = false;
             activateDebugSystems = DebugFeature::Fps | DebugFeature::Mem | DebugFeature::Log;
             preferedMultiSamplingQuality = MultiSamplingQuality::Off;
         }
@@ -91,6 +92,8 @@ namespace Tga
         bool startInFullScreen;
         bool startMaximized;
         bool borderless;
+		/* Keep a resizable window at its startup client-area aspect ratio. */
+		bool keepAspectRatio;
 
         MultiSamplingQuality preferedMultiSamplingQuality;
     };

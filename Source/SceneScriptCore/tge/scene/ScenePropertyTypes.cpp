@@ -46,20 +46,12 @@ namespace Tga
 
 		model.path = StringRegistry::RegisterOrGetString(jsonData.json.value("path", ""));
 
-		if (jsonData.json.contains("textures"))
+		if (jsonData.json.contains("materials"))
 		{
 			int i = 0;
-			for (auto& perMesh : jsonData.json["textures"])
+			for (auto& material : jsonData.json["materials"])
 			{
-				int j = 0;
-				for (auto& texture : perMesh)
-				{
-					model.textures[i][j] = StringRegistry::RegisterOrGetString(texture.get<std::string>());
-
-					j++;
-					if (j == 4)
-						break;
-				}
+				model.materials[i] = StringRegistry::RegisterOrGetString(material.get<std::string>());
 				i++;
 				if (i == MAX_MESHES_PER_MODEL)
 					break;
@@ -76,18 +68,21 @@ namespace Tga
 
 		jsonData.json["path"] = model.path.GetString();
 
-		json textures;
+		// Only serialize up to the last assigned slot. MAX_MESHES_PER_MODEL is a
+		// fixed ceiling shared by every model (256, occasionally raised for dense
+		// FBXs), not the mesh count of any one instance -- writing every unused
+		// slot as an empty string bloated every scene file by one JSON string per
+		// unused slot, per SceneModel property, per object. LoadFromJson already
+		// reads back however many entries are present, so this is a pure size fix
+		// with no format/version change.
+		int usedCount = 0;
 		for (int i = 0; i < MAX_MESHES_PER_MODEL; i++)
-		{
-			json texturePerMaterial;
-			for (int j = 0; j < 4; j++)
-			{
-				texturePerMaterial.push_back(model.textures[i][j].GetString());
-			}
+			if (!model.materials[i].IsEmpty()) usedCount = i + 1;
 
-			textures.push_back(texturePerMaterial);
-		}
-		jsonData.json["textures"] = textures;
+		json materials;
+		for (int i = 0; i < usedCount; i++)
+			materials.push_back(model.materials[i].GetString());
+		jsonData.json["materials"] = materials;
 	}
 
 	template<>
@@ -176,23 +171,21 @@ namespace Tga
 			SceneModelMeshInfo meshInfo;
 			if (locGetModelMeshInfoFunction(model.path, meshInfo))
 			{
-				auto showTextureEditing = [&](int meshIndex, int textureIndex, const char* label)
+				auto showMaterialEditing = [&](int meshIndex)
 				{
-					ImGui::PushID(textureIndex);
-
 					PropertyEditor::PropertyLabel(true);
-					ImGui::Text(label);
+					ImGui::Text("Material");
 					PropertyEditor::PropertyValue(true);
 
-					ImGui::Text(model.textures[meshIndex][textureIndex].IsEmpty() ? "None" : model.textures[meshIndex][textureIndex].GetString());
+					ImGui::Text(model.materials[meshIndex].IsEmpty() ? "None (.tgmat)" : model.materials[meshIndex].GetString());
 					if (ImGui::BeginDragDropTarget())
 					{
-						if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(".dds"))
+						if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(".tgmat"))
 						{
 							makeEditable();
 
 							const char* dropped = static_cast<const char*>(payload->Data);
-							editableModel->textures[meshIndex][textureIndex] = StringRegistry::RegisterOrGetString(dropped);
+							editableModel->materials[meshIndex] = StringRegistry::RegisterOrGetString(dropped);
 							hasBeenEdited = true;
 						}
 						ImGui::EndDragDropTarget();
@@ -207,11 +200,11 @@ namespace Tga
 						{
 							// todo: validation
 							StringId newValue = locAssetBrowserGetSelectionFunction();
-							if (newValue != model.textures[meshIndex][textureIndex])
+							if (newValue != model.materials[meshIndex] && newValue.GetString()[0] != '\0' && std::filesystem::path(newValue.GetString()).extension() == ".tgmat")
 							{
 								makeEditable();
 
-								editableModel->textures[meshIndex][textureIndex] = newValue;
+								editableModel->materials[meshIndex] = newValue;
 								hasBeenEdited = true;
 							}
 						}
@@ -220,20 +213,19 @@ namespace Tga
 
 					if (ImGui::Button("Clear"))
 					{
-						if (!model.textures[meshIndex][textureIndex].IsEmpty())
+						if (!model.materials[meshIndex].IsEmpty())
 						{
 							makeEditable();
 
-							editableModel->textures[meshIndex][textureIndex] = {};
+							editableModel->materials[meshIndex] = {};
 							hasBeenEdited = true;
 						}
 					}
 
-					ImGui::PopID();
 				};
 
 				PropertyEditor::PropertyLabel(true);
-				bool showTree = ImGui::TreeNode("Textures");
+				bool showTree = ImGui::TreeNode("Materials");
 
 				PropertyEditor::PropertyValue(true);
 				
@@ -257,10 +249,7 @@ namespace Tga
 
 						if (display)
 						{
-							showTextureEditing(i, 0, "[0] Color");
-							showTextureEditing(i, 1, "[1] Normal");
-							showTextureEditing(i, 2, "[2] Material");
-							showTextureEditing(i, 3, "[3] Effects");
+							showMaterialEditing(i);
 
 							if (meshCount > 1)
 								ImGui::TreePop();

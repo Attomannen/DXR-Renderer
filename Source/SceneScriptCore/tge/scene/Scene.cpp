@@ -11,12 +11,18 @@ using namespace Tga;
 
 void Scene::DeleteSceneObject(uint32_t anId)
 {
-	auto it = myFolderCounts.find(myObjects.find(anId)->second->GetPath());
-	it->second--;
-	if (it->second == 0)
-		myFolderCounts.erase(it);
+	const auto objectIt = myObjects.find(anId);
+	if (objectIt == myObjects.end())
+		return; // Delete is intentionally idempotent: stale editor selections are harmless.
 
-	myObjects.erase(anId);
+	auto folderIt = myFolderCounts.find(objectIt->second->GetPath());
+	if (folderIt != myFolderCounts.end())
+	{
+		if (--folderIt->second == 0)
+			myFolderCounts.erase(folderIt);
+	}
+
+	myObjects.erase(objectIt);
 }
 
 void Scene::AddSceneObject(uint32_t anId, std::shared_ptr<SceneObject> anObject)
@@ -39,9 +45,11 @@ void Scene::UpdateFolderCounts(StringId aOldFolder, StringId aNewFolder)
 	myFolderCounts[aNewFolder]++;
 
 	auto it = myFolderCounts.find(aOldFolder);
-	it->second--;
-	if (it->second == 0)
-		myFolderCounts.erase(it);
+	if (it != myFolderCounts.end())
+	{
+		if (--it->second == 0)
+			myFolderCounts.erase(it);
+	}
 }
 
 void Scene::GetAllFolderNames(std::vector<StringId>& outFolderNames)

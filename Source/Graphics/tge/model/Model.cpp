@@ -1,6 +1,9 @@
 #include "stdafx.h"
 #include <tge/model/Model.h>
 #include <tge/log/Log.h>
+#include <tge/graphics/DX11.h>
+#include <tge/rhi/Device.h>
+#include <tge/render/RayTracingMaterialTable.h>
 
 #include <algorithm>
 #include <cmath>
@@ -9,6 +12,31 @@ using namespace Tga;
 
 namespace
 {
+	void CreateRayGeometryViews(Model::MeshData& mesh)
+	{
+		rhi::IDevice* device = DX11::Rhi();
+		if (!device || !mesh.vertexBuffer.IsValid() || !mesh.indexBuffer.IsValid()) return;
+
+		rhi::SrvDesc raw = {};
+		raw.bufferType = rhi::BufferSrvType::Raw;
+		mesh.rayGeometry.vertexRawSrv = device->CreateSrv(mesh.vertexBuffer, raw);
+		mesh.rayGeometry.indexRawSrv = device->CreateSrv(mesh.indexBuffer, raw);
+		mesh.rayGeometry.materialIndex = RayTracingMaterialTable::GetOrAssignMaterialIndex(mesh.materialName);
+
+		if (!device->SupportsRaytracingTier11() || mesh.numberOfVertices == 0 || mesh.numberOfIndices < 3)
+			return;
+
+		rhi::RaytracingBlasDesc blas = {};
+		blas.vertexBuffer = mesh.vertexBuffer;
+		blas.indexBuffer = mesh.indexBuffer;
+		blas.vertexCount = mesh.numberOfVertices;
+		blas.vertexStride = mesh.rayGeometry.vertexStride;
+		blas.indexCount = mesh.numberOfIndices;
+		blas.indexFormat = rhi::Format::R32_UInt;
+		blas.debugName = mesh.name.IsEmpty() ? "ModelMesh" : mesh.name.GetString();
+		mesh.rayGeometry.blas = device->CreateRaytracingBlas(blas);
+	}
+
 	void ComputeUnionBounds(const std::vector<Model::MeshData>& meshes, BoxSphereBounds& out)
 	{
 		Vector3f mn{ 1e30f, 1e30f, 1e30f }, mx{ -1e30f, -1e30f, -1e30f };
@@ -30,6 +58,7 @@ namespace
 void Model::Init(MeshData& aMeshData, const std::string& aPath)
 {
 	myMeshData.push_back(aMeshData);
+	CreateRayGeometryViews(myMeshData.back());
 	myPath = aPath;
 	ComputeUnionBounds(myMeshData, myBounds);
 }
@@ -45,6 +74,8 @@ void Model::Init(std::vector<MeshData>& someMeshData, const std::string& aPath)
 	}
 
 	myMeshData = someMeshData;
+	for (MeshData& mesh : myMeshData)
+		CreateRayGeometryViews(mesh);
 	myPath = aPath;
 	ComputeUnionBounds(myMeshData, myBounds);
 }

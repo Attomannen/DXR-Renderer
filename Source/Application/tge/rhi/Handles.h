@@ -31,6 +31,7 @@ namespace Tga::rhi
 	struct ShaderModuleTag {};
 	struct FenceTag {};
 	struct TimestampQueryTag {};
+	struct RaytracingBlasTag {};
 
 	using BufferHandle           = Handle<BufferTag>;
 	using TextureHandle          = Handle<TextureTag>;
@@ -44,6 +45,7 @@ namespace Tga::rhi
 	using ShaderModuleHandle     = Handle<ShaderModuleTag>;
 	using FenceHandle            = Handle<FenceTag>;
 	using TimestampQueryHandle   = Handle<TimestampQueryTag>;
+	using RaytracingBlasHandle   = Handle<RaytracingBlasTag>;
 
 	// A slice of the per-frame dynamic-constant upload ring. On DX11 this maps to
 	// a MAP_WRITE_DISCARD'd dynamic cbuffer; on DX12 to an offset in the upload heap.

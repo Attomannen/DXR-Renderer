@@ -6,6 +6,7 @@ include "../../Premake/common.lua"
 --   _m  BC7 linear    R=AO  G=Roughness  B=Metalness
 --   _n  BC5 linear    R=Normal.X  G=Normal.Y
 --   _fx BC7 linear    R=Emissive mask  G=Height/Displacement
+--   bare .hdr -> mipped R16G16B16A16_FLOAT environment DDS
 -------------------------------------------------------------
 project "TextureCooker"
 	location (dirs.projectfiles)

@@ -68,6 +68,7 @@ public:
 	void CreateNewObjectDefinition();
 	void CreateNewAnimationClip();
 	void CreateNewMaterial();
+	void CreateNewImportSettings();
 
 	bool IsViewportGridVisible() { return myIsViewportGridVisible; }
 
