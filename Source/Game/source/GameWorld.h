@@ -32,8 +32,10 @@ public:
 
 	static GameWorld* Get() { return ourInstance; }
 
-private:
+	// Defined in GameWorldImpl.h; only the GameWorld*.cpp files and BenchConfig see it.
 	struct Impl;
+
+private:
 	std::unique_ptr<Impl> myImpl;
 	static GameWorld* ourInstance;
 };

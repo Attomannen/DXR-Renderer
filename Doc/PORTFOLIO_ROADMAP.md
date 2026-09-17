@@ -52,11 +52,17 @@ Reference numbers (RTX 5070 Laptop, 1600×900, native TAA + NRD):
 - **Goal:** every field named the same in C++ and HLSL, with `offsetof` checks.
 - **Next step:** one shared header included by both C++ and HLSL, so they can't drift apart.
 
-### 1.4 Break up `GameWorld.cpp` (~3 500 lines)
-- Scene loader (`.tgs`, `.tgmat`, lights)
-- `BenchConfig`: every `BENCH_*` variable parsed in one place
-- Debug UI panels (render, lighting, atmosphere, profiler)
-- GI probe scheduler
+### 1.4 Break up `GameWorld.cpp` *(done)*
+- `GameWorld.cpp` 3 486 -> ~930 lines (init / update / render), plus
+  `GameWorldImpl.h` (private state), `GameWorldDebugUI.cpp`, `GameWorldProfiler.cpp`,
+  `GameWorldGi.cpp`, `GameWorldScene.cpp`, `GameWorldCamera.cpp` and
+  `SceneFiles.h/.cpp` (`.tgs` / `.tgo` / `.tgmat` loading).
+- `BenchConfig.h/.cpp`: every `BENCH_*` variable the game reads is parsed there
+  (startup, content, world and renderer overrides, plus a `Run` struct for
+  one-shot capture / camera / sweep settings).
+- `GiProbeScheduler.h`: priming, round-robin trickle, batch sizing and the
+  low-hysteresis lighting-refresh sweep. The unused dynamic-emitter
+  prioritisation path was removed.
 
 ### 1.5 Compact vertex format
 - **Problem:** 180 bytes per vertex; Bistro needs ~1.5 GB of vertex buffers.
