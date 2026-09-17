@@ -75,8 +75,8 @@ Reference numbers (RTX 5070 Laptop, 1600×900, native TAA + NRD):
   the async importer and the mesh cache, which now packs straight into mapped
   upload memory. The FBX loop no longer uploads every sub-mesh before merging.
 - DXR decodes the packed frame from the geometry record's `vertexFormat`.
-- Known, unrelated: the raster renderer (`BENCH_DXR_RENDERER=0`) renders black;
-  it was already broken before this change.
+- Known, unrelated: the raster renderer rendered black on DX12 at the time;
+  fixed since (see "Raster deferred and the editor viewport").
 
 ### 1.6 Split the ray-tracing dispatch
 - **Goal:** separate primary / G-buffer, shadow, AO and reflection passes.
@@ -117,13 +117,25 @@ Reference numbers (RTX 5070 Laptop, 1600×900, native TAA + NRD):
   `_REFRACTION`).
 - Next: ray-traced transmission instead of screen-space refraction.
 
+### Raster deferred and the editor viewport (done)
+- DX12 raster deferred was black: the BRDF LUT was never bound for raster
+  shading (ambient divided by zero), the SSR resolve cleared the environment
+  slot and leaked its additive blend into later passes, and the composite left
+  alpha undefined.
+- The editor viewport renders through the deferred renderer (shadows, SSAO, SSR,
+  bloom, glass) and through the ray-traced renderer where available, with scene
+  point/spot lights, a TLAS rebuilt only on scene changes and throttled asset
+  caches. `TGE_EDITOR_FORWARD` restores the old forward view.
+- Open: no irradiance probe volume in the editor yet (ambient-only indirect);
+  the DX11 backend crashes on exit in `Dx11Device::WrapNativeSrv`.
+
 ## 3. Performance work
 
 | Item | Expected win |
 |---|---|
 | DLSS Quality / Performance + NRD | ~40–55 % of ray and denoise cost |
 | NRD checkerboard AO + reflections | Bistro ray pass 23.8 → 17.6 ms (measured) |
-| Separate instances / ray masks for alpha-tested foliage | Large on Bistro (skips the per-hit alpha loop) |
+| Separate instances / ray masks for alpha-tested foliage | Large on Bistro (skips the per-hit alpha loop); unblocked: the cooker now marks Masked materials |
 | Cheaper reflection-hit shading, capped reflection ray length | Reflections are the largest single cost |
 | Temporal reprojection for fog | Fog is ~4.5 ms on Bistro |
 | NRD built with `REBLUR_PERFORMANCE_MODE` | Part of NRD's ~3–5 ms |
