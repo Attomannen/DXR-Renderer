@@ -327,8 +327,13 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 	LoadLights(tgsPath.string(), sceneRadius, exposure);
 
 	// Start camera: the scene's placed camera file if present, else orbit-derived.
-	const std::string defCamFile = sceneName.empty() ? std::string("bench_camera.json")
-	                                                 : ("bench_camera_" + sceneName + ".json");
+	// A scene name is a path ("Scenes/TEST"), so it cannot go into a file name
+	// verbatim: that asked for bench_camera_Scenes/TEST.json, whose directory
+	// does not exist, and the F5 save then failed while still reporting success.
+	std::string camKey = sceneName;
+	for (char& c : camKey) if (c == '/' || c == '\\') c = '_';
+	const std::string defCamFile = camKey.empty() ? std::string("bench_camera.json")
+	                                              : ("bench_camera_" + camKey + ".json");
 	camFile = aEnv ? bench.camFile.value_or(defCamFile) : defCamFile;
 	if (aEnv && bench.spinDeg) camSpinDeg = *bench.spinDeg;
 	camLoaded = false;
