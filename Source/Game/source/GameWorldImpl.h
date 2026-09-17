@@ -61,6 +61,8 @@
 #include <vector>
 #include "SceneFiles.h"
 #include "GiProbeScheduler.h"
+#include <tge/shaders/ModelShader.h>
+#include <tge/material/MaterialAsset.h>
 #include "BenchConfig.h"
 
 using namespace Tga;
@@ -196,9 +198,13 @@ struct GameWorld::Impl
 	ModelInstance debugBall;
 	bool debugBallValid = false;
 	bool showDebugBall = false;
-	DeferredRenderer::DebugMaterial debugMat;
+	MaterialAsset debugMat;              // constants only unless maps are set
 	bool pillarMaterialOverride = true;
-	DeferredRenderer::DebugMaterial pillarMat;
+	MaterialAsset pillarMat;
+	uint32_t debugMaterialIndex = 0;     // RayTracingMaterialTable slots, see UpdateDebugMaterials
+	uint32_t pillarMaterialIndex = 0;
+	std::string debugMatLoadedMaps;      // maps currently bound to the preview spheres
+	bool DebugBallIsGlass() const { return debugMat.IsTransparent(); }
 	Vector3f debugBallPos{ 0.f, 0.f, 0.f };
 	float debugBallRadius = 45.f;      // desired world-space radius
 	float debugBallModelRadius = 1.f;  // FBX bounds radius (from the model)
@@ -308,6 +314,24 @@ struct GameWorld::Impl
 	bool LoadLights(const std::string& file, float sceneRadius, float exposure);
 
 	std::string currentScene = "TEST";
+
+	// Materials (GameWorldMaterials.cpp). One registration path for scene
+	// .tgmat instances and the preview spheres, shared by raster and DXR.
+	uint32_t RegisterMaterial(const std::string& aName, const MaterialAsset& aMaterial,
+		const TextureResource* const* someTextures);
+	void ApplySceneMaterial(ModelInstance& anInstance, int aMesh, const std::string& aMaterialPath,
+		const MaterialAsset& aMaterial);
+	void UpdateDebugMaterials();
+	bool LoadDebugMaterial(const char* aPath);
+	void DrawDebugBalls(const ModelShader& aShader) const
+	{
+		if (showDebugBall) debugBall.Render(aShader);
+		if (showOrbitBalls)
+		{
+			const int n = std::clamp(orbitBallCount, 1, kMaxOrbitBalls);
+			for (int i = 0; i < n && i < (int)orbitBalls.size(); ++i) orbitBalls[i].Render(aShader);
+		}
+	}
 
 	bool IsPillarTest() const { return fs::path(currentScene).stem().string() == "PillarTest"; }
 

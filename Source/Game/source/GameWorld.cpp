@@ -427,6 +427,8 @@ void GameWorld::Render()
 	gss.SetAmbientLight(s.ambient);
 	gss.SetCamera(s.camera);
 
+	s.UpdateDebugMaterials();
+
 	// Position the material-preview sphere (in front of the camera, or fixed).
 	if (s.showDebugBall && s.debugBallValid)
 	{
@@ -491,7 +493,7 @@ void GameWorld::Render()
 		// Driven by "Emissive strength" alone; a black emissive colour falls back to
 		// white so raising the strength slider always does something.
 		{
-			const DeferredRenderer::DebugMaterial& dm = s.debugMat;
+			const MaterialAsset& dm = s.debugMat;
 			const float emStr = dm.emissiveStrength;
 			float ec[3] = { dm.emissiveColor[0], dm.emissiveColor[1], dm.emissiveColor[2] };
 			if (std::max({ ec[0], ec[1], ec[2] }) < 0.001f) { ec[0] = ec[1] = ec[2] = 1.f; }
@@ -589,22 +591,6 @@ void GameWorld::Render()
 		std::map<const ModelInstance*, Matrix4x4f> nextRayTransforms;
 		bool raySceneStationary = true;
 		uint32_t instanceId = 0;
-		auto fixedMaterialIndex = [](StringId name, const DeferredRenderer::DebugMaterial& material)
-		{
-			const uint32_t index = RayTracingMaterialTable::GetOrAssignMaterialIndex(name);
-			RayTracingMaterialTable::FixedMaterial fixed;
-			for (int i = 0; i < 3; ++i)
-			{
-				fixed.baseColor[i] = material.baseColor[i];
-				fixed.emissiveColor[i] = material.emissiveColor[i];
-			}
-			fixed.roughness = material.roughness;
-			fixed.metalness = material.metalness;
-			fixed.ao = material.ao;
-			fixed.emissiveStrength = material.emissiveStrength;
-			RayTracingMaterialTable::SetFixedMaterial(index, fixed);
-			return index;
-		};
 		auto addInstance = [&](const ModelInstance& instance, uint32_t materialOverride = 0u)
 		{
 			const std::shared_ptr<Model> model = instance.GetModel();
@@ -625,36 +611,10 @@ void GameWorld::Render()
 				d.vertexSrv = dxr->RegisterRaySceneSrv(mesh.rayGeometry.vertexRawSrv);
 				d.indexSrv = dxr->RegisterRaySceneSrv(mesh.rayGeometry.indexRawSrv);
 				d.materialIndex = materialOverride != 0u ? materialOverride : mesh.rayGeometry.materialIndex;
+				// Per-instance .tgmat material (ApplySceneMaterial), same as raster.
 				if (materialOverride == 0u && textureMeshIndex < MAX_MESHES_PER_MODEL)
-				{
-					// TGO texture overrides belong to the instance, not the shared
-					// mesh -- but only when the instance actually HAS one. This used
-					// to run unconditionally for every mesh of every ordinary
-					// instance (the far more common case: no per-instance texture
-					// override at all, ModelInstance::myTextures all null), silently
-					// replacing the mesh's real, texture-bearing materialIndex
-					// (already correctly set just above from
-					// AssignDefaultMaterials's work) with a brand-new, empty,
-					// per-instance record every frame. DecodeHit's fallback for a
-					// record with no albedo/normal/orm/emissive SRV and
-					// useFixedMaterial == 0 is a flat, saturated colour hashed from
-					// materialIndex alone (DxrCommon.hlsli) -- i.e. every mesh
-					// instance in the whole scene rendering as an arbitrary flat
-					// hue with no relation to its actual texture, which is exactly
-					// the "checkerboard-looking mosaic of flat colours" bug.
-					const auto textures = instance.GetTextures(textureMeshIndex);
-					const bool hasOverride = textures[0] || textures[1] || textures[2] || textures[3];
-					if (hasOverride)
-					{
-						const std::string name = "dxr/scene/" + s.currentScene + "/instance/" + std::to_string(d.instanceId);
-						d.materialIndex = RayTracingMaterialTable::GetOrAssignMaterialIndex(StringRegistry::RegisterOrGetString(name));
-						RayTracingMaterialTable::SetMaterialTextures(d.materialIndex, {
-							textures[0] ? textures[0]->GetSrv() : rhi::SrvHandle{},
-							textures[1] ? textures[1]->GetSrv() : rhi::SrvHandle{},
-							textures[2] ? textures[2]->GetSrv() : rhi::SrvHandle{},
-							textures[3] ? textures[3]->GetSrv() : rhi::SrvHandle{} });
-					}
-				}
+					if (const uint32_t instanceMaterial = instance.GetMaterialOverride(textureMeshIndex))
+						d.materialIndex = instanceMaterial;
 				// After every branch that can still change materialIndex above
 				// (the TGO per-instance texture override rewrites it), so this
 				// classifies the record the shader will actually decode.
@@ -678,11 +638,11 @@ void GameWorld::Render()
 		};
 
 			const uint32_t pillarMaterial = s.IsPillarTest() && s.pillarMaterialOverride
-				? fixedMaterialIndex("dxr/debug/pillar"_tgaid, s.pillarMat) : 0u;
+				? s.pillarMaterialIndex : 0u;
 			for (const ModelInstance& instance : s.models) addInstance(instance, pillarMaterial);
 
 		const uint32_t debugMaterial = s.debugBallValid && (s.showDebugBall || s.showOrbitBalls)
-			? fixedMaterialIndex("dxr/debug/sphere"_tgaid, s.debugMat) : 0u;
+			? s.debugMaterialIndex : 0u;
 
 		// The orbiting/debug spheres are drawn separately from s.models (see
 		// their own .Render() calls further down) and were never fed into the
@@ -729,10 +689,11 @@ void GameWorld::Render()
 			{
 				mdp->SetCullFrustum(fr);   // the shadow pass clears it
 				const ModelShader& gsh = dr->GetGeometryShader();
-				if (sp->IsPillarTest() && sp->pillarMaterialOverride && dr->HasDebugMatShader())
+				if (sp->IsPillarTest() && sp->pillarMaterialOverride)
 				{
-					dr->BindDebugMaterial(sp->pillarMat);
-					for (const ModelInstance& instance : sp->models) instance.Render(dr->GetDebugMatShader());
+					ModelShader::SetMaterialOverride(sp->pillarMaterialIndex);
+					for (const ModelInstance& instance : sp->models) instance.Render(gsh);
+					ModelShader::SetMaterialOverride(0);
 				}
 				else
 				for (size_t k = 0; k < sp->models.size(); ++k)
@@ -742,24 +703,14 @@ void GameWorld::Render()
 					else
 						sp->models[k].Render(gsh, sp->opaqueMeshes[k]);
 				}
-				if (dr->HasDebugMatShader() && sp->debugBallValid &&
-					(sp->showDebugBall || sp->showOrbitBalls))
-				{
-					dr->BindDebugMaterial(sp->debugMat);
-					const ModelShader& dsh = dr->GetDebugMatShader();
-					if (sp->showDebugBall)
-						sp->debugBall.Render(dsh);
-					if (sp->showOrbitBalls)
-					{
-						const int n = std::clamp(sp->orbitBallCount, 1, Impl::kMaxOrbitBalls);
-						for (int i = 0; i < n && i < (int)sp->orbitBalls.size(); ++i)
-							sp->orbitBalls[i].Render(dsh);
-					}
-				}
+				// Preview spheres carry their own material (UpdateDebugMaterials);
+				// glass ones are drawn by the transparent pass instead.
+				if (sp->debugBallValid && !sp->DebugBallIsGlass())
+					sp->DrawDebugBalls(gsh);
 			};
 
 			std::function<void()> drawTransparent;
-			if (s.anyTransparent)
+			if (s.anyTransparent || (s.debugBallValid && s.DebugBallIsGlass()))
 			{
 				drawTransparent = [dr, mdp, sp]()
 				{
@@ -767,8 +718,11 @@ void GameWorld::Render()
 					// the HDR/depth-aware forward shader when it compiled; retain the
 					// original PBR path as a safe shader-load fallback.
 					const ModelShader& psh = dr->HasGlassShader() ? dr->GetGlassShader() : mdp->GetPbrShader();
-					for (size_t k = 0; k < sp->models.size(); ++k)
-						sp->models[k].Render(psh, sp->transparentMeshes[k]);
+					if (sp->anyTransparent)
+						for (size_t k = 0; k < sp->models.size(); ++k)
+							sp->models[k].Render(psh, sp->transparentMeshes[k]);
+					if (sp->debugBallValid && sp->DebugBallIsGlass())
+						sp->DrawDebugBalls(psh);
 				};
 			}
 

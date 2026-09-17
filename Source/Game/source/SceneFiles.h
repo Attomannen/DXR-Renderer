@@ -4,6 +4,7 @@
 // .tgmat) plus the small string and environment helpers it shares.
 
 #include <tge/render/DeferredRenderer.h>
+#include <tge/material/MaterialAsset.h>
 #include <tge/math/Matrix4x4.h>
 #include <nlohmann/json.hpp>
 #include <array>
@@ -24,21 +25,8 @@ namespace GameScene
 	inline float Deg2Rad(float d) { return d * 0.01745329252f; }
 	inline float Rad2Deg(float r) { return r * 57.2957795131f; }
 
-	// A fixed-parameter PBR material, matching DeferredRenderer::DebugMaterial +
-	// optional [C,N,M,FX] texture map paths. Serialised as .tgmat JSON by the
-	// GameEditor's Material Editor; loaded here for the debug sphere.
-	struct MaterialDef
-	{
-		std::string surfaceType = "Opaque"; // Opaque, Masked, Transparent; authored in .tgmat
-		float alphaCutoff      = 0.33f;
-		float baseColor[3]     = { 0.8f, 0.8f, 0.8f };
-		float roughness        = 0.5f;
-		float metalness        = 0.0f;
-		float ao               = 1.0f;
-		float emissiveColor[3] = { 0.0f, 0.0f, 0.0f };
-		float emissiveStrength = 0.0f;
-		std::array<std::string, 4> maps{ "", "", "", "" };
-	};
+	// .tgmat materials; the format lives in the Graphics library.
+	using MaterialDef = Tga::MaterialAsset;
 
 	// One renderable from a .tgo / scene object: model + one .tgmat asset per
 	// mesh/material + a world transform.
@@ -57,7 +45,6 @@ namespace GameScene
 	bool EmissiveLuminanceSlider(const char* aLabel, float& aStrength);
 #endif
 	bool LoadTgmat(const fs::path& path, MaterialDef& out);
-	bool LoadTgmatInto(const char* path, DeferredRenderer::DebugMaterial& dm);
 	bool ParseModelProperty(const json& propsHolder, SceneEntry& out);
 	std::optional<SceneEntry> LoadTgo(const fs::path& tgoPath);
 	std::optional<std::string> FindFirstTgsScene();

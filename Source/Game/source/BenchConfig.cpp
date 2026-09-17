@@ -71,6 +71,15 @@ void ApplyContentOverrides(GameWorld::Impl& s)
 			s.debugMat.emissiveStrength = st;
 		}
 	}
+	// Preview sphere material: a .tgmat file and/or a surface type
+	// (Opaque, Masked, Transparent) for testing glass and cutouts.
+	if (const char* path = std::getenv("BENCH_MATBALL_TGMAT")) s.LoadDebugMaterial(path);
+	if (const char* surface = std::getenv("BENCH_MATBALL_SURFACE")) s.debugMat.surfaceType = surface;
+	s.debugMat.opacity = std::clamp(EnvFloat("BENCH_MATBALL_OPACITY", s.debugMat.opacity), 0.f, 1.f);
+	s.debugMat.roughness = std::clamp(EnvFloat("BENCH_MATBALL_ROUGHNESS", s.debugMat.roughness), 0.f, 1.f);
+	s.debugMat.metalness = std::clamp(EnvFloat("BENCH_MATBALL_METALNESS", s.debugMat.metalness), 0.f, 1.f);
+	s.debugMat.ior = std::max(1.0f, EnvFloat("BENCH_MATBALL_IOR", s.debugMat.ior));
+	s.debugMat.refractionScale = std::max(0.0f, EnvFloat("BENCH_MATBALL_REFRACTION", s.debugMat.refractionScale));
 	if (int oc = EnvInt("BENCH_ORBITBALLS", 0))
 	{
 		s.showOrbitBalls  = oc > 0;

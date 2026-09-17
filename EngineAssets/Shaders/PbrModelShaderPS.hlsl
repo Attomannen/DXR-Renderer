@@ -1,58 +1,24 @@
 #include "Common.hlsli"
 #include "PBRFunctions.hlsli"
+#include "MaterialSurface.hlsli"
 
 PixelOutput main(ModelVertexToPixel input)
 {
 	PixelOutput result;
 
-	float2 scaledUV = input.texCoord0;
-	
 	float3 toEye = normalize(CameraToWorld._m03_m13_m23 - input.worldPosition.xyz);
-    float4 albedo = albedoTexture.Sample(defaultSampler, scaledUV).rgba;
-
-	if (albedo.a <= AlphaTestThreshold)
-	{
+	const MaterialSurface surface = SampleMaterialSurface(input);
+	if (surface.coverage <= gMaterial.alphaCutoff)
 		discard;
-		result.color = float4(0.f, 0.f, 0.f, 0.f);
-		return result;
-	}
 
-	float3 normal = normalTexture.Sample(defaultSampler, scaledUV).xyy;
+	const float3 albedo = surface.baseColor;
+	const float3 pixelNormal = surface.normal;
+	const float ambientOcclusion = surface.ao;
+	const float roughness = surface.roughness;
+	const float metalness = surface.metalness;
 
-	normal.xy = 2.0f * normal.xy - 1.0f;
-	normal.z = sqrt(1 - saturate(normal.x * normal.x + normal.y * normal.y));
-	normal = normalize(normal);
-
-	float3x3 TBN = float3x3(
-		normalize(input.tangent.xyz),
-		normalize(-input.binormal.xyz),
-		normalize(input.normal.xyz)
-		);
-
-	// Can save an instruction here by instead doing
-	// normalize(mul(normal, TBN)); It works because
-	// TBN is a 3x3 and therefore TBN^T is the same
-	// as TBN^-1. However, it is considered good form
-	// to do this.
-	TBN = transpose(TBN);
-	float3 pixelNormal = normalize(mul(TBN, normal));
-
-	// TGA Channel Pack. ORM.
-	// Metalness, Roughness, Emissive, Emissive Strength (opt).
-
-    float3 material = materialTexture.Sample(defaultSampler, scaledUV).rgb;
-
-    float ambientOcclusion = material.r;
-	float metalness = material.b;
-    float roughness = material.g;
-
-    float3 fx = fxTexture.Sample(defaultSampler, scaledUV).rgb;
-
-    float emissive = fx.r;
-    float emissiveStrength = fx.g * MAX_EMISSIVE_STRENGTH;
-	
-	float3 specularColor = lerp((float3) 0.04f, albedo.rgb, metalness);
-	float3 diffuseColor = lerp((float3) 0.00f, albedo.rgb, 1 - metalness);
+	float3 specularColor = lerp((float3) 0.04f, albedo, metalness);
+	float3 diffuseColor = lerp((float3) 0.00f, albedo, 1 - metalness);
 
     float3 _ambSpecUnused;
     float3 ambiance = AmbientLightColor.rgb * EvaluateAmbiance(
@@ -97,11 +63,10 @@ PixelOutput main(ModelVertexToPixel input)
 		}
 	}
 	
-	float3 emissiveAlbedo = albedo.rgb * emissive * emissiveStrength;
-	float3 radiance = directionalLight + ambiance + pointLights + emissiveAlbedo;
+	float3 radiance = directionalLight + ambiance + pointLights + surface.emissive;
 
     result.color.rgb = (float3) radiance;
-	result.color.a = albedo.a;
+	result.color.a = surface.opacity;
 	return result;
 }
 

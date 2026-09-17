@@ -10,11 +10,17 @@
 #include <tge/texture/texture.h>
 #include <tge/texture/TextureManager.h>
 #include <tge/log/Log.h>
+#include <tge/render/RayTracingMaterialTable.h>
 
 #include <algorithm>
 #include <cctype>
 
 using namespace Tga;
+
+namespace
+{
+	constexpr uint32_t kMaterialConstantSlot = 11;   // MaterialBuffer in MaterialParams.hlsli users
+}
 
 Tga::ModelShader::ModelShader()
 	: Shader()
@@ -66,13 +72,14 @@ void Tga::ModelShader::RenderSetup(const Matrix4x4f& aObToWorld, const Matrix4x4
 	}
 
 	GraphicsStateStack& graphicsStateStack = Tga::GraphicsEngine::GetInstance()->GetGraphicsStateStack();
+	graphicsStateStack.BindLightingTextures();
 	CommonBuf obj;
 	obj.obToWorld = aObToWorld * graphicsStateStack.GetTransform();
 	rhi::DynamicAlloc a = dev.AllocateDynamicConstants(&obj, sizeof(obj));
 	ctx.SetDynamicConstantBuffer(rhi::ShaderStage::AllGraphics, (uint32_t)ConstantBufferSlot::Object, a);
 }
 
-void Tga::ModelShader::RenderMesh(const TextureResource* const* someTextures, const Model::MeshData& aModelData) const
+void Tga::ModelShader::RenderMesh(const TextureResource* const* someTextures, const Model::MeshData& aModelData, uint32_t aMaterialIndex) const
 {
 	if (!myIsReadyToRender || !aModelData.vertexBuffer.IsValid() || !aModelData.indexBuffer.IsValid() || aModelData.numberOfIndices == 0)
 	{
@@ -99,8 +106,16 @@ void Tga::ModelShader::RenderMesh(const TextureResource* const* someTextures, co
 		i++;
 	}
 
-	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
+	rhi::IDevice& dev = *DX11::Rhi();
+	rhi::ICommandContext& ctx = dev.GetContext();
 	ctx.SetShaderResources(rhi::ShaderStage::Pixel, 1, (uint32_t)i, resourceViews);
+
+	// Material parameters (MaterialParams.hlsli) on b11.
+	const uint32_t materialIndex = ourMaterialOverride ? ourMaterialOverride
+		: aMaterialIndex ? aMaterialIndex : aModelData.rayGeometry.materialIndex;
+	const MaterialParams& params = RayTracingMaterialTable::GetMaterialParams(materialIndex);
+	ctx.SetDynamicConstantBuffer(rhi::ShaderStage::Pixel, kMaterialConstantSlot,
+		dev.AllocateDynamicConstants(&params, sizeof(params)));
 	ctx.SetIndexBuffer(aModelData.indexBuffer, rhi::Format::R32_UInt, 0);
 	ctx.SetVertexBuffer(0, aModelData.vertexBuffer, aModelData.stride, 0);
 
@@ -111,7 +126,7 @@ void Tga::ModelShader::RenderMesh(const TextureResource* const* someTextures, co
 void Tga::ModelShader::Render(const TextureResource* const* someTextures, const Model::MeshData& aModelData, const Matrix4x4f& aObToWorld, const Matrix4x4f* someBones) const
 {
 	RenderSetup(aObToWorld, someBones);
-	RenderMesh(someTextures, aModelData);
+	RenderMesh(someTextures, aModelData, 0);
 }
 
 

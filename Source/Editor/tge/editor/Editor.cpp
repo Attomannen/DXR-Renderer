@@ -350,11 +350,11 @@ static void DrawTextureImporter()
 	ImGui::Checkbox("Source normals are DirectX", &locTextureNormalsDx);
 	ImGui::Checkbox("Include subfolders", &locTextureRecursive);
 	ImGui::Checkbox("Force recook", &locTextureForce);
-	ImGui::SeparatorText("Output packing");
-	ImGui::BulletText("_C.dds  BC7 sRGB: base colour RGB, opacity A");
-	ImGui::BulletText("_N.dds  BC5 linear: normal X/Y");
-	ImGui::BulletText("_M.dds  BC7 linear: ambient occlusion, roughness, metallic");
-	ImGui::BulletText("_FX.dds BC7 linear: emissive mask, height");
+	ImGui::SeparatorText("Output packing (Unreal)");
+	ImGui::BulletText("_BC.dds  BC7 sRGB: base colour RGB, opacity A");
+	ImGui::BulletText("_N.dds   BC5 linear: normal X/Y (DirectX)");
+	ImGui::BulletText("_ORM.dds BC7 linear: ambient occlusion, roughness, metallic");
+	ImGui::BulletText("_E.dds   BC7 sRGB: emissive colour (intensity in the .tgmat)");
 	if (ImGui::Button("Cook textures", ImVec2(140, 0)))
 	{
 		// GameEditor normally runs with Bin as its working directory, so deriving

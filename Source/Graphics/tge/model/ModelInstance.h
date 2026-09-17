@@ -25,6 +25,12 @@ public:
 	void SetTexture(int meshIndex, int textureIndex, const TextureResource* texture) { myTextures[meshIndex][textureIndex] = texture; }
 
 	const TextureResource* const* GetTextures(size_t meshIndex) const { return myTextures[meshIndex]; }
+
+	// Per-instance material (RayTracingMaterialTable index) for one sub-mesh.
+	// 0 uses the mesh's own material. Used by both raster and DXR.
+	void SetMaterial(int meshIndex, uint32_t aMaterialIndex) { myMaterials[meshIndex] = aMaterialIndex; }
+	void SetMaterialAll(uint32_t aMaterialIndex) { for (uint32_t& m : myMaterials) m = aMaterialIndex; }
+	uint32_t GetMaterialOverride(size_t meshIndex) const { return myMaterials[meshIndex]; }
 	bool IsValid() { return myModel ? true : false; }
 	void Render(const ModelShader& shader) const;
 	void Render(const ModelShader& shader, int aMeshIndex) const;
@@ -36,6 +42,7 @@ private:
 
 	std::shared_ptr<Model> myModel{};
 	const TextureResource* myTextures[MAX_MESHES_PER_MODEL][4] = {};
+	uint32_t myMaterials[MAX_MESHES_PER_MODEL] = {};
 	Matrix4x4f myTransform{};
 };
 

@@ -8,6 +8,7 @@
 #include <tge/rhi/Handles.h>
 #include <tge/rhi/StructuredBuffer.h>
 #include <tge/log/Log.h>
+#include <tge/material/MaterialParams.h>
 
 namespace Tga
 {
@@ -31,62 +32,42 @@ namespace Tga
 		{
 			rhi::SrvHandle albedo, normal, orm, emissive;
 		};
-		// Constant PBR overrides for procedural surfaces and material previews.
-		// These follow the texture indices in the 64-byte RayMaterialRecord.
-		struct FixedMaterial
+
+		// How inline ray queries treat a material's triangles.
+		// kRayUnclassified: nothing has classified it, so AcceptRayTriangle
+		//   (DxrCommon.hlsli) does the always-safe cutout test whenever a base
+		//   colour map exists. Any loader that never calls SetRayVisibility
+		//   still renders masked materials correctly.
+		// kRayTransparent: forward-composited (glass, alpha blend); never a DXR
+		//   blocker.
+		// kRayMasked: confirmed per-pixel cutout.
+		// kRayOpaque: confirmed solid, so the TLAS can mark the instance
+		//   FORCE_OPAQUE and skip the candidate shader entirely.
+		static constexpr uint32_t kRayUnclassified = 0, kRayTransparent = 1, kRayMasked = 2, kRayOpaque = 3;
+
+		static void SetMaterialParams(uint32_t index, const MaterialParams& params)
 		{
-			float baseColor[3] = { 0.8f, 0.8f, 0.8f };
-			uint32_t enabled = 0;
-			float roughness = 0.5f, metalness = 0.f, ao = 1.f, emissiveStrength = 0.f;
-			float emissiveColor[3] = { 1.f, 1.f, 1.f };
-			// kRayUnclassified (default): nothing has told this material record
-			// whether it needs a real cutout test, so AcceptRayTriangle
-			// (DxrCommon.hlsli) falls back to the old, always-safe behaviour --
-			// sample the albedo texture and compare to the cutout threshold
-			// whenever one exists. This is deliberately the default so any model
-			// loading path that never calls SetRayVisibility (this table is a
-			// single process-wide append-only table shared by every loader) still
-			// renders masked/cutout materials correctly instead of silently
-			// treating them as solid.
-			// kRayOpaque: a caller has positively confirmed (from real authored
-			// surfaceType data, not a guess) that this material has no cutout, so
-			// AcceptRayTriangle can accept it immediately with no texture sample
-			// at all. This is the actual performance-relevant state: every
-			// RayQuery in this engine carries RAY_FLAG_FORCE_NON_OPAQUE (needed so
-			// masked/cutout geometry can be alpha-tested inline at all), which
-			// means every candidate triangle of every material -- opaque included
-			// -- runs through AcceptRayTriangle regardless of this flag. Without
-			// this explicit fast path, ordinary opaque geometry (walls, floors,
-			// static props -- most of a typical scene) paid the same texture
-			// sample as real cutout geometry, for no visual difference.
-			// kRayTransparent: alpha-blended, composited by the forward
-			// transparent pass; must never become an opaque DXR blocker, so it's
-			// excluded from candidacy entirely.
-			// kRayMasked: a caller has positively confirmed real per-pixel
-			// cutout -- same texture sample + threshold compare as Unclassified,
-			// kept as its own explicit state for clarity at call sites.
-			static constexpr uint32_t kRayUnclassified = 0, kRayTransparent = 1, kRayMasked = 2, kRayOpaque = 3;
-			uint32_t rayVisibility = kRayUnclassified;
-		};
-		static void SetFixedMaterial(uint32_t index, const FixedMaterial& material)
-		{
-			if (index == 0 || index >= FixedMaterials().size()) return;
-			const uint32_t rayVisibility = FixedMaterials()[index].rayVisibility;
-			FixedMaterial next = material;
-			next.enabled = 1;
-			next.rayVisibility = rayVisibility;
-			static_assert(sizeof(FixedMaterial) == 48);
-			if (std::memcmp(&FixedMaterials()[index], &next, sizeof(next)) == 0) return;
-			FixedMaterials()[index] = next;
+			if (index == 0 || index >= Params().size()) return;
+			if (std::memcmp(&Params()[index], &params, sizeof(params)) == 0) return;
+			Params()[index] = params;
 			++Revision();
 		}
-		// aRayVisibility: one of FixedMaterial::kRayOpaque/kRayTransparent/kRayMasked.
+		static const MaterialParams& GetMaterialParams(uint32_t index)
+		{
+			return Params()[index < Params().size() ? index : 0];
+		}
+
+		// aRayVisibility: one of kRayOpaque / kRayTransparent / kRayMasked.
 		static void SetRayVisibility(uint32_t index, uint32_t aRayVisibility)
 		{
-			if (index == 0 || index >= FixedMaterials().size()) return;
-			if (FixedMaterials()[index].rayVisibility == aRayVisibility) return;
-			FixedMaterials()[index].rayVisibility = aRayVisibility;
+			if (index == 0 || index >= Visibility().size()) return;
+			if (Visibility()[index] == aRayVisibility) return;
+			Visibility()[index] = aRayVisibility;
 			++Revision();
+		}
+		static uint32_t GetRayVisibility(uint32_t index)
+		{
+			return index < Visibility().size() ? Visibility()[index] : kRayUnclassified;
 		}
 
 		static uint32_t GetOrAssignMaterialIndex(StringId materialName)
@@ -96,7 +77,8 @@ namespace Tga
 			const uint32_t index = static_cast<uint32_t>(Names().size());
 			Names().push_back(materialName);
 			Textures().push_back({});
-			FixedMaterials().push_back({});
+			Params().push_back(MakeMaterialParams(true));
+			Visibility().push_back(kRayUnclassified);
 			indices.emplace(materialName, index);
 			++Revision();
 			return index;
@@ -125,31 +107,29 @@ namespace Tga
 		// AcceptRayTriangle turns cutout foliage into solid quads.
 		static bool IsRayOpaque(uint32_t index)
 		{
-			if (index == 0 || index >= FixedMaterials().size()) return false;
-			const FixedMaterial& m = FixedMaterials()[index];
-			if (m.rayVisibility == FixedMaterial::kRayOpaque) return true;
-			if (m.rayVisibility == FixedMaterial::kRayTransparent ||
-				m.rayVisibility == FixedMaterial::kRayMasked) return false;
-			// kRayUnclassified: AcceptRayTriangle falls through to
-			// `useFixedMaterial != 0 || albedoSrv == 0 -> return true`, i.e. an
-			// unconditional accept, which is exactly what opaque means. Those
-			// two terms are `FixedMaterial::enabled` and "no albedo texture
-			// registered" on this side (see Upload's GpuRecord construction).
-			return m.enabled != 0u || !Textures()[index].albedo.IsValid();
+			if (index == 0 || index >= Params().size()) return false;
+			const uint32_t visibility = Visibility()[index];
+			if (visibility == kRayOpaque) return true;
+			if (visibility != kRayUnclassified) return false;
+			// Unclassified: AcceptRayTriangle accepts unconditionally when the
+			// material is constants-only or has no base colour map.
+			const bool textured = (Params()[index].flags & MaterialFlags::UseTextures) != 0;
+			return !textured || !Textures()[index].albedo.IsValid();
 		}
 
 		static uint32_t Count() { return static_cast<uint32_t>(Names().size() - 1); }
 		static const std::vector<TextureSet>& AllTextures() { return Textures(); }
 
 		// GPU-side record layout matches RayMaterialRecord in DxrCommon.hlsli.
-		// A zero texture index means "no texture". Enabled fixed materials
-		// bypass texture sampling and supply the preview's constant PBR values.
+		// A zero texture index means "no texture". Constants-only materials
+		// (no MaterialFlags::UseTextures) skip texture sampling.
 		struct GpuRecord
 		{
 			uint32_t albedoSrv, normalSrv, ormSrv, emissiveSrv;
-			FixedMaterial fixed;
+			MaterialParams params;
+			uint32_t rayVisibility, _pad0, _pad1, _pad2;
 		};
-		static_assert(sizeof(GpuRecord) == 64);
+		static_assert(sizeof(GpuRecord) == 112);
 
 		// Upload once per active frame/material revision. Later ray dispatches
 		// share that version without re-registering textures or rewriting data.
@@ -175,7 +155,8 @@ namespace Tga
 					t.normal.IsValid()   ? aDevice.RegisterRaySceneSrv(t.normal)   : 0u,
 					t.orm.IsValid()      ? aDevice.RegisterRaySceneSrv(t.orm)      : 0u,
 					t.emissive.IsValid() ? aDevice.RegisterRaySceneSrv(t.emissive) : 0u,
-					FixedMaterials()[i],
+					Params()[i],
+					Visibility()[i], 0u, 0u, 0u,
 				};
 			}
 
@@ -195,8 +176,10 @@ namespace Tga
 		static uint64_t& Revision() { static uint64_t value = 1; return value; }
 		static uint64_t& UploadedRevision() { static uint64_t value = 0; return value; }
 		static uint32_t& UploadedFrame() { static uint32_t value = ~0u; return value; }
-		static std::vector<FixedMaterial>& FixedMaterials()
-		{ static std::vector<FixedMaterial> value(1); return value; }
+		static std::vector<MaterialParams>& Params()
+		{ static std::vector<MaterialParams> value(1, MakeMaterialParams(true)); return value; }
+		static std::vector<uint32_t>& Visibility()
+		{ static std::vector<uint32_t> value(1, kRayUnclassified); return value; }
 		static uint32_t& BufferCapacity() { static uint32_t value = 0; return value; }
 		static rhi::StructuredBuffer& Buffer() { static rhi::StructuredBuffer value; return value; }
 		static std::unordered_map<StringId, uint32_t>& Indices()

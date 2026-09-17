@@ -27,7 +27,11 @@ namespace Tga
 		// RenderMesh() per sub-mesh. Hoists shader / input-layout / constant-buffer
 		// binds out of the per-sub-mesh loop.
 		void RenderSetup(const Matrix4x4f& aObToWorld, const Matrix4x4f* someBones = nullptr) const;
-		void RenderMesh(const TextureResource* const* someTextures, const Model::MeshData& aModelData) const;
+		// aMaterialIndex: RayTracingMaterialTable index; 0 uses the mesh's own.
+		void RenderMesh(const TextureResource* const* someTextures, const Model::MeshData& aModelData, uint32_t aMaterialIndex = 0) const;
+
+		// Forces every following draw onto one material (debug views). 0 clears.
+		static void SetMaterialOverride(uint32_t aMaterialIndex) { ourMaterialOverride = aMaterialIndex; }
 
 		bool CreateInputLayout(const std::string& aVS) override;
 
@@ -36,6 +40,7 @@ namespace Tga
 		Model::VertexFormat GetVertexFormat() const { return myVertexFormat; }
 
 	private:
+		static inline uint32_t ourMaterialOverride = 0;
 		Model::VertexFormat myVertexFormat = Model::VertexFormat::Compact;
 	};
 } // namespace Tga

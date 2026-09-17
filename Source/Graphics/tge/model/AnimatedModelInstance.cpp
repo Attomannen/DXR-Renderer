@@ -44,7 +44,7 @@ void AnimatedModelInstance::Render(const ModelShader& shader) const
 	shader.RenderSetup(myTransform, myBoneTransforms);
 	for (size_t j = 0; j < meshData.size(); j++)
 	{
-		shader.RenderMesh(myTextures[j], meshData[j]);
+		shader.RenderMesh(myTextures[j], meshData[j], myMaterials[j]);
 	}
 }
 
@@ -55,7 +55,8 @@ void AnimatedModelInstance::Render(const ModelShader& shader, int aMeshIndex) co
 	assert(aMeshIndex < meshData.size());
 	if (aMeshIndex < meshData.size())
 	{
-		shader.Render(myTextures[aMeshIndex], meshData[aMeshIndex], myTransform, myBoneTransforms);
+		shader.RenderSetup(myTransform, myBoneTransforms);
+		shader.RenderMesh(myTextures[aMeshIndex], meshData[aMeshIndex], myMaterials[aMeshIndex]);
 	}
 }
 

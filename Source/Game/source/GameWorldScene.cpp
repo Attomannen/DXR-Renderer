@@ -195,16 +195,17 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 		std::vector<bool> authoredTransparent(meshCount, false);
 		// Masked (real alpha cutout, e.g. foliage/fences) is distinct from
 		// Opaque so AcceptRayTriangle can skip the texture sample entirely
-		// for ordinary opaque geometry -- see FixedMaterial::kRayOpaque.
+		// for ordinary opaque geometry -- see RayTracingMaterialTable::kRayOpaque.
 		std::vector<bool> authoredMasked(meshCount, false);
+		std::vector<bool> authoredMaterial(meshCount, false);
+		std::vector<MaterialDef> materials(meshCount);
 		for (int m = 0; m < meshCount && m < (int)e.materials.size(); ++m)
 		{
 			if (e.materials[m].empty()) continue;
-			MaterialDef material;
-			if (!LoadTgmat(fs::path(Settings::GameAssetRoot()) / e.materials[m], material)) continue;
-			const std::string st = LowerStr(material.surfaceType);
-			authoredTransparent[m] = st == "transparent";
-			authoredMasked[m] = st == "masked";
+			if (!LoadTgmat(fs::path(Settings::GameAssetRoot()) / e.materials[m], materials[m])) continue;
+			authoredMaterial[m] = true;
+			authoredTransparent[m] = materials[m].IsTransparent();
+			authoredMasked[m] = materials[m].IsMasked();
 		}
 
 		const int copies = tileCopies ? sponzaCopies : 1;
@@ -218,16 +219,8 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 
 			for (int m = 0; m < meshCount && m < (int)e.materials.size(); ++m)
 			{
-				if (e.materials[m].empty()) continue;
-				MaterialDef material;
-				const fs::path materialPath = fs::path(Settings::GameAssetRoot()) / e.materials[m];
-				if (!LoadTgmat(materialPath, material)) continue;
-				for (int j = 0; j < 4; ++j)
-				{
-					if (material.maps[j].empty()) continue;
-					const TextureSrgbMode sm = (j == 0) ? TextureSrgbMode::ForceSrgbFormat : TextureSrgbMode::ForceNoSrgbFormat;
-					if (Tga::Texture* t = texMgr.GetTexture(material.maps[j].c_str(), sm)) mi.SetTexture(m, j, t);
-				}
+				if (!authoredMaterial[m]) continue;
+				ApplySceneMaterial(mi, m, e.materials[m], materials[m]);
 			}
 
 			const int gx = i % side, gz = i / side;
@@ -248,10 +241,20 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 				// the material record consulted by every inline RayQuery.  Forward
 				// alpha blend cannot provide a reliable hit distance/transmittance,
 				// so let it composite after DXR instead of treating glass as opaque.
-				using FM = RayTracingMaterialTable::FixedMaterial;
-				const uint32_t rayVisibility = transparent ? FM::kRayTransparent
-					: authoredMasked[m] ? FM::kRayMasked : FM::kRayOpaque;
-				RayTracingMaterialTable::SetRayVisibility(model->GetMeshData(m).rayGeometry.materialIndex, rayVisibility);
+				// Authored .tgmat instances were classified by ApplySceneMaterial;
+				// this covers the mesh's own material (legacy name keys).
+				if (!authoredMaterial[m])
+				{
+					using Table = RayTracingMaterialTable;
+					const uint32_t meshMaterial = model->GetMeshData(m).rayGeometry.materialIndex;
+					Table::SetRayVisibility(meshMaterial, transparent ? Table::kRayTransparent : Table::kRayOpaque);
+					if (transparent)
+					{
+						MaterialParams params = Table::GetMaterialParams(meshMaterial);
+						params.shadingModel = (uint32_t)ShadingModel::Glass;
+						Table::SetMaterialParams(meshMaterial, params);
+					}
+				}
 				(transparent ? tr : op).push_back(m);
 			}
 			if (!tr.empty()) anyTransparent = true;

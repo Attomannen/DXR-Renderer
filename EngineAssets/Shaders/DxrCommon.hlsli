@@ -66,6 +66,8 @@
 
 RaytracingAccelerationStructure gScene : register(t0, space2);
 
+#include "MaterialParams.hlsli"
+
 struct RayGeometryLookup
 {
 	uint vertexSrv;
@@ -124,11 +126,9 @@ struct RayMaterialRecord
 	uint normalSrv;
 	uint ormSrv;
 	uint emissiveSrv;
-	float3 baseColor;
-	uint useFixedMaterial;
-	float roughness, metalness, ao, emissiveStrength;
-	float3 emissiveColor;
-	uint rayVisibility; // 1 = forward alpha blend; ignored by inline DXR rays
+	MaterialParams params;
+	uint rayVisibility;   // RayTracingMaterialTable::kRay*: 1 transparent (skipped), 3 opaque
+	uint3 _recordPad;
 };
 StructuredBuffer<RayMaterialRecord> gMaterials : register(t0);
 
@@ -232,13 +232,13 @@ bool AcceptRayTriangle(uint instanceId, uint primitiveIndex, float2 bary, float 
 	const RayMaterialRecord mat = gMaterials[g.materialIndex];
 	if (mat.rayVisibility == 1u) return false;
 	if (mat.rayVisibility == 3u) return true;
-	if (mat.useFixedMaterial != 0u || mat.albedoSrv == 0u) return true;
+	if ((mat.params.flags & MATERIAL_FLAG_USE_TEXTURES) == 0u || mat.albedoSrv == 0u) return true;
 	const uint3 tri = gRawGeometry[NonUniformResourceIndex(g.indexSrv)].Load3(primitiveIndex * 12u);
 	float2 uv[3];
 	[unroll] for (uint i = 0; i < 3; ++i)
 		uv[i] = asfloat(gRawGeometry[NonUniformResourceIndex(g.vertexSrv)].Load2(tri[i] * g.vertexStride + g.uv0Offset));
 	const float2 hitUv = uv[0] * (1.0f - bary.x - bary.y) + uv[1] * bary.x + uv[2] * bary.y;
-	return gRaySceneTex[NonUniformResourceIndex(mat.albedoSrv)].SampleLevel(gMaterialSampler, hitUv, mipBias).a >= 0.33f;
+	return gRaySceneTex[NonUniformResourceIndex(mat.albedoSrv)].SampleLevel(gMaterialSampler, hitUv, mipBias).a * mat.params.opacity >= mat.params.alphaCutoff;
 }
 
 // 1 = unoccluded, 0 = occluded. maxDist should stop just short of the light
@@ -577,9 +577,8 @@ struct HitSurface
 	float  ao, roughness, metalness;
 	float textureMip;
 	float roughnessAdjustment;
-	// The engine's _FX map stores emissive mask in R and normalized strength
-	// in G, exactly as GBufferPS does.  Keep the decoded HDR radiance with the
-	// hit so every ray consumer has one authoritative material interpretation.
+	// Decoded by MaterialEmissive, exactly as GBufferPS does, so every ray
+	// consumer has one authoritative material interpretation.
 	float3 emissive;
 	float3 worldNormal;      // normal-mapped when the material has one
 	float3 geoWorldNormal;   // flat, un-perturbed triangle normal
@@ -827,51 +826,46 @@ HitSurface DecodeHit(RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES> q, float cone
 	// plausible than intended in the lit view too.
 	s.ao = 1.f; s.roughness = 0.5f; s.metalness = 0.f;
 	s.emissive = 0.0f;
-	if (mat.useFixedMaterial != 0u)
+	const MaterialParams mp = mat.params;
+	if ((mp.flags & MATERIAL_FLAG_USE_TEXTURES) == 0u)
 	{
-		s.albedo = mat.baseColor;
-		s.roughness = saturate(mat.roughness);
-		s.metalness = saturate(mat.metalness);
-		s.ao = saturate(mat.ao);
-		s.emissive = mat.emissiveColor * mat.emissiveStrength;
-		const float authoredRoughness = s.roughness;
-		s.roughness = FilterSpecularRoughness(s.roughness,normalVariance,specularAaStrength);
-		s.roughnessAdjustment = s.roughness-authoredRoughness;
-		return s;
+		// Constants-only material (material preview, procedural surfaces).
+		s.albedo = mp.baseColorFactor;
+		s.roughness = saturate(mp.roughnessFactor);
+		s.metalness = saturate(mp.metalnessFactor);
+		s.ao = 1.0f;
+		s.emissive = MaterialEmissive(mp, s.albedo, 0.0f);
 	}
-	if (mat.albedoSrv != 0)
+	else if (mat.albedoSrv != 0)
 	{
 		s.textureMip = RayTextureMip(mat.albedoSrv, uvDx, uvDy);
-		s.albedo = SampleRayTexture(mat.albedoSrv, hitUv, uvDx, uvDy).rgb;
+		s.albedo = SampleRayTexture(mat.albedoSrv, hitUv, uvDx, uvDy).rgb * mp.baseColorFactor;
 		if (mat.ormSrv != 0)
 		{
 			const float3 orm = SampleRayTexture(mat.ormSrv, hitUv, uvDx, uvDy).rgb;
-			s.ao = orm.r; s.roughness = orm.g; s.metalness = orm.b;
+			s.ao = lerp(1.0f, orm.r, mp.aoStrength);
+			s.roughness = saturate(orm.g * mp.roughnessFactor);
+			s.metalness = saturate(orm.b * mp.metalnessFactor);
 		}
 		if (mat.normalSrv != 0)
 		{
-			// Same 2-channel (R=X, G=Y, reconstructed Z) convention as GBufferPS.
-			float3 nT = DecodeNormalXY(SampleRayTexture(mat.normalSrv, hitUv, uvDx, uvDy).xy);
-			// Match GBufferPS/forward shading: cooked normals use the engine's
-			// DirectX convention, whose TBN negates the authored binormal.
+			// Same decode as GBufferPS (DirectX green unless the material says
+			// OpenGL); the engine's TBN negates the authored binormal.
+			float3 nT = DecodeMaterialNormal(SampleRayTexture(mat.normalSrv, hitUv, uvDx, uvDy).xy, mp);
 			const float3x3 tbn = float3x3(worldTangent, -worldBitangent, shadingWorldNormal);
 			s.worldNormal = normalize(mul(nT, tbn));
 			if (specularAaStrength > 0.0f && s.roughness < 0.7f && (dot(uvDx,uvDx)+dot(uvDy,uvDy)) > 0.0f) {
 				// Sample a bounded footprint; never use derivatives across unrelated hits.
 				const float2 offsets[4] = {uvDx*0.25f,-uvDx*0.25f,uvDy*0.25f,-uvDy*0.25f};
 				[unroll] for (uint sampleIndex=0; sampleIndex<4; ++sampleIndex) {
-					const float3 neighbor = DecodeNormalXY(SampleRayTexture(mat.normalSrv,hitUv+offsets[sampleIndex],uvDx,uvDy).xy);
+					const float3 neighbor = DecodeMaterialNormal(SampleRayTexture(mat.normalSrv,hitUv+offsets[sampleIndex],uvDx,uvDy).xy, mp);
 					const float3 delta = neighbor-nT;
 					normalVariance += dot(delta,delta)*0.25f;
 				}
 			}
 		}
 		if (mat.emissiveSrv != 0)
-		{
-			// Matches GBufferPS: _FX.r = mask, _FX.g = strength / MAX_EMISSIVE_STRENGTH.
-			const float2 fx = SampleRayTexture(mat.emissiveSrv, hitUv, uvDx, uvDy).rg;
-			s.emissive = s.albedo * fx.r * (fx.g * MAX_EMISSIVE_STRENGTH);
-		}
+			s.emissive = MaterialEmissive(mp, s.albedo, SampleRayTexture(mat.emissiveSrv, hitUv, uvDx, uvDy));
 	}
 	else
 	{

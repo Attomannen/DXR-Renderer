@@ -62,47 +62,8 @@ namespace GameScene
 		std::ifstream in(path);
 		if (!in) { ERROR_PRINT("tgmat: cannot open %s", path.string().c_str()); return false; }
 		json j; try { in >> j; } catch (const std::exception& e) { ERROR_PRINT("tgmat: parse %s: %s", path.string().c_str(), e.what()); return false; }
-		auto arr3 = [](const json& a, float* v) {
-			if (a.is_array() && a.size() >= 3) { v[0] = a[0].get<float>(); v[1] = a[1].get<float>(); v[2] = a[2].get<float>(); }
-		};
-		if (j.contains("baseColor"))     arr3(j["baseColor"], out.baseColor);
-		if (j.contains("emissiveColor")) arr3(j["emissiveColor"], out.emissiveColor);
-		out.surfaceType      = j.value("surfaceType", out.surfaceType);
-		out.alphaCutoff      = j.value("alphaCutoff", out.alphaCutoff);
-		out.roughness        = j.value("roughness", out.roughness);
-		out.metalness        = j.value("metalness", out.metalness);
-		out.ao               = j.value("ao", out.ao);
-		out.emissiveStrength = j.value("emissiveStrength", out.emissiveStrength);
-		// Physical alternative: surface luminance in cd/m² (a lit phone screen
-		// is ~500, a frosted bulb ~100 000).
-		if (j.contains("emissiveLuminance"))
-			out.emissiveStrength = Photometry::NitsToUnits(j["emissiveLuminance"].get<float>());
-		if (j.contains("maps") && j["maps"].is_object())
-		{
-			const json& m = j["maps"];
-			const char* keys[4] = { "albedo", "normal", "orm", "fx" };
-			for (int i = 0; i < 4; ++i)
-			{
-				std::string s = m.value(keys[i], std::string());
-				std::replace(s.begin(), s.end(), '\\', '/');
-				out.maps[i] = s;
-			}
-		}
-		return true;
+		return out.FromJson(j);
 	}
-
-	// Copy the fixed PBR params of a .tgmat onto a DebugMaterial (texture maps are
-	// ignored by the flat GBufferDebugMatPS path used for the room / debug sphere).
-	bool LoadTgmatInto(const char* path, DeferredRenderer::DebugMaterial& dm)
-	{
-		MaterialDef md;
-		if (!path || !*path || !LoadTgmat(path, md)) return false;
-		for (int i = 0; i < 3; ++i) { dm.baseColor[i] = md.baseColor[i]; dm.emissiveColor[i] = md.emissiveColor[i]; }
-		dm.roughness = md.roughness; dm.metalness = md.metalness; dm.ao = md.ao;
-		dm.emissiveStrength = md.emissiveStrength;
-		return true;
-	}
-
 
 	// Pull the "Model" property out of a .tgo's "properties" array (or a scene
 	// object file that carries the property inline).

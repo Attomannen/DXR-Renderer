@@ -34,6 +34,9 @@ namespace Tga
 		bool IsValid() const { return myModel ? true : false; }
 		void SetTexture(int meshIndex, int textureIndex, const TextureResource* texture) { myTextures[meshIndex][textureIndex] = texture; }
 		const TextureResource* const* GetTextures(size_t meshIndex) const { return myTextures[meshIndex]; }
+		// Per-instance material (RayTracingMaterialTable index); 0 uses the mesh's own.
+		void SetMaterial(int meshIndex, uint32_t aMaterialIndex) { myMaterials[meshIndex] = aMaterialIndex; }
+		uint32_t GetMaterialOverride(size_t meshIndex) const { return myMaterials[meshIndex]; }
 
 		void SetPose(const LocalSpacePose& pose);
 		void SetPose(const ModelSpacePose& pose);
@@ -47,6 +50,8 @@ namespace Tga
 		std::shared_ptr<Model> myModel = nullptr;
 
 		const TextureResource* myTextures[MAX_MESHES_PER_MODEL][4] = {};
+
+		uint32_t myMaterials[MAX_MESHES_PER_MODEL] = {};
 		Matrix4x4f myBoneTransforms[MAX_ANIMATION_BONES];
 	};
 

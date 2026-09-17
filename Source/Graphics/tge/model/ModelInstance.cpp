@@ -39,7 +39,7 @@ void ModelInstance::Render(const ModelShader& shader) const
 	shader.RenderSetup(myTransform);
 	for (size_t j = 0; j < meshData.size(); j++)
 	{
-		shader.RenderMesh(myTextures[j], meshData[j]);
+		shader.RenderMesh(myTextures[j], meshData[j], myMaterials[j]);
 	}
 }
 
@@ -50,7 +50,8 @@ void ModelInstance::Render(const ModelShader& shader, int aMeshIndex) const
 	assert(aMeshIndex < meshData.size());
 	if (aMeshIndex < meshData.size())
 	{
-		shader.Render(myTextures[aMeshIndex], meshData[aMeshIndex], myTransform);
+		shader.RenderSetup(myTransform);
+		shader.RenderMesh(myTextures[aMeshIndex], meshData[aMeshIndex], myMaterials[aMeshIndex]);
 	}
 }
 
@@ -64,7 +65,7 @@ void ModelInstance::Render(const ModelShader& shader, const std::vector<int>& so
 	for (int idx : someMeshIndices)
 	{
 		if (idx >= 0 && idx < (int)meshData.size())
-			shader.RenderMesh(myTextures[idx], meshData[idx]);
+			shader.RenderMesh(myTextures[idx], meshData[idx], myMaterials[idx]);
 	}
 }
 
@@ -89,6 +90,6 @@ void ModelInstance::Render(const ModelShader& shader, const Frustum& frustum) co
 		if (!CheckFrustum(frustum, Vector3f(wc.x, wc.y, wc.z), b.radius * scale + 1.f))
 			continue;
 		if (!didSetup) { shader.RenderSetup(myTransform); didSetup = true; }
-		shader.RenderMesh(myTextures[j], meshData[j]);
+		shader.RenderMesh(myTextures[j], meshData[j], myMaterials[j]);
 	}
 }

@@ -1,14 +1,17 @@
 // =============================================================================
 //  TextureCooker  --  TGA texture-packing-standard DDS cooker for TGE / Tga2D
 // -----------------------------------------------------------------------------
-//  Groups loose source maps by material, repacks channels to the TGA standard
-//  and writes compressed, mipped .dds that the engine's ModelFactory resolves
-//  automatically by material name:
+//  Groups loose source maps by material, repacks channels to Unreal Engine's
+//  packing standard and writes compressed, mipped .dds that the engine's
+//  ModelFactory resolves automatically by material name:
 //
-//     _c   BC7_UNORM_SRGB   RGB = BaseColor            A = Opacity
-//     _m   BC7_UNORM        R   = AmbientOcclusion     G = Roughness   B = Metalness
-//     _n   BC5_UNORM        R   = Normal.X             G = Normal.Y   (Z rebuilt in shader)
-//     _fx  BC7_UNORM        R   = Emissive mask        G = Height / Displacement
+//     _BC   BC7_UNORM_SRGB   RGB = BaseColor            A = Opacity
+//     _ORM  BC7_UNORM        R   = AmbientOcclusion     G = Roughness   B = Metalness
+//     _N    BC5_UNORM        R   = Normal.X             G = Normal.Y   (DirectX, Z rebuilt)
+//     _E    BC7_UNORM_SRGB   RGB = Emissive colour      (intensity lives in the .tgmat)
+//
+//  --packing tga writes the legacy names instead (_C, _M, _N and _FX with
+//  R = emissive mask, G = strength / 16).
 //
 //  Bare .hdr files are treated as environment panoramas and written as
 //  <stem>.dds in linear R16G16B16A16_FLOAT (mipped, never BC-compressed).
@@ -21,7 +24,7 @@
 //                   [--fbx <model.fbx>] [--tgo <out.tgo>] [--tgm <out.tgm>]
 //                   [--game-root <dir>] [--manifest <cook.json>]
 //                   [--src-normals gl|dx] [--flip-green] [--cpu] [--jobs N]
-//                   [--force] [--recursive] [--quiet]
+//                   [--packing unreal|tga] [--force] [--recursive] [--quiet]
 //
 //  cook.json (auto-loaded from <srcDir>/cook.json, or --manifest):
 //     {
@@ -936,10 +939,59 @@ static bool UpToDate(const fs::path& outFile, fs::file_time_type newestInput, bo
 
 enum class OutKind { C, M, N, FX };
 
+// true: Unreal packing (_BC/_ORM/_N/_E), false: legacy TGA (_C/_M/_N/_FX).
+static bool gUnrealPacking = true;
+
 static const char* KindSuffix(OutKind k)
 {
+	if (gUnrealPacking)
+	{
+		switch (k) { case OutKind::C: return "_BC"; case OutKind::M: return "_ORM";
+		             case OutKind::N: return "_N"; default: return "_E"; }
+	}
 	switch (k) { case OutKind::C: return "_C"; case OutKind::M: return "_M";
 	             case OutKind::N: return "_N"; default: return "_FX"; }
+}
+
+// --only keys: the legacy letters, which also select the Unreal outputs.
+static const char* KindOnlyKey(OutKind k)
+{
+	switch (k) { case OutKind::C: return "c"; case OutKind::M: return "m";
+	             case OutKind::N: return "n"; default: return "fx"; }
+}
+
+// Does a cooked base colour map carry real cutout alpha? Reads a mip no larger
+// than 512 px so the check stays cheap and still sees thin leaves.
+static bool BaseColorHasCutout(const fs::path& ddsFile)
+{
+	TexMetadata meta;
+	ScratchImage raw;
+	if (FAILED(LoadFromDDSFile(ddsFile.c_str(), DDS_FLAGS_NONE, &meta, raw))) return true;   // unknown: keep testing
+	size_t mip = 0;
+	while (mip + 1 < meta.mipLevels && std::max(meta.width >> mip, meta.height >> mip) > 512) ++mip;
+	const Image* img = raw.GetImage(mip, 0, 0);
+	if (!img) return true;
+	ScratchImage rgba;
+	const Image* src = img;
+	if (IsCompressed(img->format))
+	{
+		if (FAILED(Decompress(*img, DXGI_FORMAT_R8G8B8A8_UNORM, rgba))) return true;
+		src = rgba.GetImage(0, 0, 0);
+	}
+	else if (img->format != DXGI_FORMAT_R8G8B8A8_UNORM && img->format != DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)
+	{
+		if (FAILED(Convert(*img, DXGI_FORMAT_R8G8B8A8_UNORM, TEX_FILTER_DEFAULT, TEX_THRESHOLD_DEFAULT, rgba))) return true;
+		src = rgba.GetImage(0, 0, 0);
+	}
+	size_t below = 0;
+	for (size_t y = 0; y < src->height; ++y)
+	{
+		const uint8_t* row = src->pixels + y * src->rowPitch;
+		for (size_t x = 0; x < src->width; ++x)
+			if (row[x * 4 + 3] < 128) ++below;
+	}
+	// A handful of texels is compression noise, not a cutout.
+	return below > (src->width * src->height) / 2000;
 }
 
 struct CookResult { bool produced = false; bool skipped = false; bool failed = false; fs::path file; };
@@ -986,7 +1038,9 @@ static CookResult CookOne(MaterialGroup& g, OutKind kind, const std::string& out
 	const bool haveN  = g.maps.count(Role::Normal);
 	const bool haveM  = g.maps.count(Role::AO) || g.maps.count(Role::Roughness) || g.maps.count(Role::Metalness)
 	                  || g.maps.count(Role::PackedM) || g.maps.count(Role::Specular) || ov.ao || ov.roughness || ov.metalness;
-	const bool haveFx = g.maps.count(Role::Emissive) || g.maps.count(Role::Height) || g.maps.count(Role::PackedFx) || ov.emissive;
+	// Unreal packing has no height slot, so height alone produces no _E.
+	const bool haveFx = g.maps.count(Role::Emissive) || g.maps.count(Role::PackedFx) || ov.emissive
+		|| (!gUnrealPacking && g.maps.count(Role::Height));
 
 	if ((kind == OutKind::C && !haveC) || (kind == OutKind::N && !haveN) ||
 		(kind == OutKind::M && !haveM) || (kind == OutKind::FX && !haveFx))
@@ -1009,7 +1063,7 @@ static CookResult CookOne(MaterialGroup& g, OutKind kind, const std::string& out
 	case OutKind::C:  grow(Role::Color); grow(Role::Opacity); break;
 	case OutKind::N:  grow(Role::Normal); break;
 	case OutKind::M:  grow(Role::PackedM); grow(Role::AO); grow(Role::Roughness); grow(Role::Metalness); grow(Role::Specular); break;
-	case OutKind::FX: grow(Role::PackedFx); grow(Role::Emissive); grow(Role::Height); break;
+	case OutKind::FX: grow(Role::PackedFx); grow(Role::Emissive); if (!gUnrealPacking) grow(Role::Height); break;
 	}
 	if (w == 0 || h == 0) { w = h = 4; }   // constant-only output
 	// Bistro includes 1x1 constants. Give BC outputs a complete block and a
@@ -1138,6 +1192,28 @@ static CookResult CookOne(MaterialGroup& g, OutKind kind, const std::string& out
 				o[3] = 255;
 			});
 		}
+	}
+	else if (gUnrealPacking) // _E: RGB emissive colour
+	{
+		srgb = true; bc = DXGI_FORMAT_BC7_UNORM_SRGB;
+		Plane em = MakePlane(g, Role::Emissive, w, h);
+		Plane fx = em.ok ? Plane{} : MakePlane(g, Role::PackedFx, w, h);
+		Plane col = (em.ok || !fx.ok) ? Plane{} : MakePlane(g, Role::Color, w, h);
+		uint8_t er = 0, eg = 0, eb = 0;
+		if (ov.emissive) { er = ToByte((*ov.emissive)[0]); eg = ToByte((*ov.emissive)[1]); eb = ToByte((*ov.emissive)[2]); }
+		BuildRGBA8(w, h, packed, [&](size_t x, size_t y, uint8_t* o) {
+			if (em.ok) { o[0] = em.at(x, y, 0); o[1] = em.at(x, y, 1); o[2] = em.at(x, y, 2); }
+			else if (fx.ok)
+			{
+				// A pre-packed legacy _FX input: mask x base colour.
+				const int mask = fx.at(x, y, 0);
+				o[0] = (uint8_t)((col.ok ? col.at(x, y, 0) : 255) * mask / 255);
+				o[1] = (uint8_t)((col.ok ? col.at(x, y, 1) : 255) * mask / 255);
+				o[2] = (uint8_t)((col.ok ? col.at(x, y, 2) : 255) * mask / 255);
+			}
+			else { o[0] = er; o[1] = eg; o[2] = eb; }
+			o[3] = 255;
+		});
 	}
 	else // FX
 	{
@@ -1286,6 +1362,7 @@ struct Args
 	bool flipGreen = false, cpu = false, force = false, recursive = false, quiet = false;
 	bool srcNormalsGl = true;
 	bool noNvtt = false;
+	bool unrealPacking = true;   // --packing unreal|tga
 	std::string nvttPath;
 	std::string nvttQuality;
 	int jobs = 0;   // 0 -> hardware_concurrency
@@ -1316,6 +1393,12 @@ static bool ParseArgs(int argc, char** argv, Args& a)
 		else if (k == "--manifest") a.manifest = next();
 		else if (k == "--src-normals") a.srcNormalsGl = (ToLower(next()) != "dx");
 		else if (k == "--flip-green") a.flipGreen = true;
+		else if (k == "--packing")
+		{
+			const std::string packing = ToLower(next());
+			if (packing != "unreal" && packing != "tga") return false;
+			a.unrealPacking = packing == "unreal";
+		}
 		else if (k == "--jobs") a.jobs = std::max(1, atoi(next().c_str()));
 		else if (k == "--only")
 		{
@@ -1355,11 +1438,12 @@ int main(int argc, char** argv)
 			"              [--fbx <model.fbx>] [--tgo <out.tgo>] [--tgm <out.tgm>] [--material-remap <fbx=tgmat>]\n"
 			"              [--game-root <dir>] [--manifest <cook.json>]\n"
 			"              [--src-normals gl|dx] [--flip-green] [--cpu] [--jobs N]\n"
-			"              [--only c,n,m,fx] [--force] [--recursive] [--quiet]\n"
+			"              [--only c,n,m,fx] [--packing unreal|tga] [--force] [--recursive] [--quiet]\n"
 			"              bare .hdr inputs -> <stem>.dds (R16G16B16A16_FLOAT)\n";
 		return 2;
 	}
 	gLog.quiet = a.quiet;
+	gUnrealPacking = a.unrealPacking;
 	if (a.gameRoot.empty()) a.gameRoot = a.out;
 
 	Manifest manifest;
@@ -1611,7 +1695,7 @@ int main(int argc, char** argv)
 			std::map<OutKind, fs::path> mine;
 			for (OutKind k : { OutKind::C, OutKind::M, OutKind::N, OutKind::FX })
 			{
-				if (!a.only.empty() && ("," + a.only + ",").find("," + ToLower(KindSuffix(k)).substr(1) + ",") == std::string::npos)
+				if (!a.only.empty() && ("," + a.only + ",").find("," + std::string(KindOnlyKey(k)) + ",") == std::string::npos)
 					continue;
 				// A single texture's decode/mip/compress step can legitimately throw
 				// (std::bad_alloc under memory pressure from many large 4K+ buffers
@@ -1801,20 +1885,38 @@ int main(int argc, char** argv)
 				++rowFilled;
 				return RelBackslash(f, a.gameRoot);
 			};
-			maps["albedo"] = slot("_C.dds");
-			maps["normal"] = slot("_N.dds");
-			maps["orm"] = slot("_M.dds");
-			maps["fx"] = slot("_FX.dds");
+			const std::string suffixC = std::string(KindSuffix(OutKind::C)) + ".dds";
+			maps["albedo"] = slot(suffixC.c_str());
+			maps["normal"] = slot((std::string(KindSuffix(OutKind::N)) + ".dds").c_str());
+			maps["orm"] = slot((std::string(KindSuffix(OutKind::M)) + ".dds").c_str());
+			maps["emissive"] = slot((std::string(KindSuffix(OutKind::FX)) + ".dds").c_str());
+
+			// Cutout alpha decides the surface type: the renderer only alpha-tests
+			// Masked materials and materials that may carry alpha.
+			bool cutout = false;
+			if (!maps["albedo"].get<std::string>().empty())
+			{
+				std::error_code ec;
+				fs::path baseColorFile = a.out / (base + suffixC);
+				if (!fs::exists(baseColorFile, ec)) baseColorFile = a.out / (mn + suffixC);
+				cutout = BaseColorHasCutout(baseColorFile);
+			}
+			const MatOverride matOv = manifest.loaded ? manifest.resolve(base) : MatOverride{};
+			const bool hasEmissive = !maps["emissive"].get<std::string>().empty();
+			const float emissiveStrength = hasEmissive && gUnrealPacking
+				? (matOv.emissiveStrength < 0.f ? 1.0f : matOv.emissiveStrength) : 0.0f;
 
 			// A TGO now points to material assets, never directly to individual
 			// texture maps. The material is emitted beside the cooked textures and
 			// is independently editable in GameEditor afterwards.
 			const fs::path materialFile = a.out / (base + ".tgmat");
 			json material = {
-				{ "masterMaterial", "PBR" }, { "surfaceType", "Opaque" },
-				{ "alphaCutoff", 0.33f }, { "baseColor", { 0.8f, 0.8f, 0.8f } },
+				{ "masterMaterial", "PBR" }, { "surfaceType", cutout ? "Masked" : "Opaque" },
+				{ "alphaCutoff", 0.33f }, { "baseColorHasAlpha", cutout },
+				{ "baseColor", { 0.8f, 0.8f, 0.8f } },
 				{ "roughness", 0.5f }, { "metalness", 0.0f }, { "ao", 1.0f },
-				{ "emissiveColor", { 1.0f, 1.0f, 1.0f } }, { "emissiveStrength", 0.0f },
+				{ "emissiveColor", { 1.0f, 1.0f, 1.0f } }, { "emissiveStrength", emissiveStrength },
+				{ "emissiveMode", gUnrealPacking ? "RGB" : "Legacy" }, { "normalConvention", "DirectX" },
 				{ "normalStrength", 1.0f }, { "previewMesh", "Sphere" }, { "maps", maps }
 			};
 			fs::create_directories(materialFile.parent_path());
@@ -1884,7 +1986,8 @@ int main(int argc, char** argv)
 				// "an old HDR cook this tool no longer produces" from "unrelated
 				// content someone placed directly in --out".
 				const bool isMaterialOutput = IEndsWith(stem, "_c") || IEndsWith(stem, "_n")
-					|| IEndsWith(stem, "_m") || IEndsWith(stem, "_fx");
+					|| IEndsWith(stem, "_m") || IEndsWith(stem, "_fx")
+					|| IEndsWith(stem, "_bc") || IEndsWith(stem, "_orm") || IEndsWith(stem, "_e");
 				if (isMaterialOutput && !keepDdsNames.count(name))
 				{
 					fs::remove(p, ec);

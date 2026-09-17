@@ -97,8 +97,25 @@ Reference numbers (RTX 5070 Laptop, 1600×900, native TAA + NRD):
 | DDGI / ReSTIR GI | Stable, leak-free indirect light | GI probe volume |
 | Physical camera effects | Depth of field from aperture, motion blur from shutter | Camera model |
 | Physical sky + atmosphere | Time of day with correct lux / EV | Photometry, sky measurement |
-| Materials | Transmission / glass, clearcoat, foliage translucency | Material table |
+| Materials | ~~Unreal texture packing, per-material glass~~ (done, see below); clearcoat, foliage translucency, ray-traced transmission | Material table |
 | HDR display output | Showcases AgX + physical exposure on HDR monitors | Tonemapper |
+
+### Material system (done)
+- One `MaterialParams` block (`EngineAssets/Shaders/MaterialParams.hlsli`,
+  `Source/Core/tge/material/`) read by the G-buffer, forward, glass and editor
+  shaders (b11) and by DXR hits (material table record).
+- Unreal packing: `_BC`/`_D`/`_BaseColor`, `_N` (DirectX green, which the engine
+  already used), `_ORM` (same order as the old `_M`), `_E` RGB emissive. Legacy
+  `_C`/`_M`/`_FX` still resolve first; `.tgmat` gains tints/scales, emissive mode,
+  normal convention and glass parameters.
+- Glass is per material (IOR, refraction, thickness, absorption, opacity, rough
+  blur) and now renders in the DXR renderer: its device depth is copied into the
+  depth buffer and the forward pass composites after the ray-traced frame, with
+  backface culling and the DXR environment for reflections.
+- The debug sphere is a full material (Materials tab, or `BENCH_MATBALL_TGMAT`,
+  `BENCH_MATBALL_SURFACE`, `_OPACITY`, `_ROUGHNESS`, `_METALNESS`, `_IOR`,
+  `_REFRACTION`).
+- Next: ray-traced transmission instead of screen-space refraction.
 
 ## 3. Performance work
 

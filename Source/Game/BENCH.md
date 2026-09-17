@@ -48,7 +48,11 @@ Env vars (all optional):
 | `BENCH_PROBE_INTERVAL` | `30` | probe re-capture cadence in frames. |
 | `BENCH_PROBE_POS` | scene centre | `x,y,z` world position for the probe. |
 | _(probe box)_ | `sceneExtents*1.35` | box-parallax influence half-extents. Override per scene with `bench_probes_<scene>.json` = `{ "probes": [ { "pos":[x,y,z], "box":[hx,hy,hz] } ] }`, or drag in the Ambient/IBL panel. |
-| `BENCH_MATBALL` | `0` | `1` = show the material-preview debug sphere (`Sphere/Sphere.fbx`). Live base-colour / roughness / metalness / AO / emissive sliders in the "Material preview" panel; renders with a texture-free constant-value G-buffer shader. A **Load .tgmat** button imports a material authored in the GameEditor. |
+| `BENCH_MATBALL` | `0` | `1` = show the material-preview debug sphere (`Primitives/Sphere.fbx`). The Materials tab edits it as a full material (surface type incl. glass, constants or texture maps with Unreal packing, emissive, glass parameters) and can load/save a `.tgmat`. |
+| `BENCH_MATBALL_TGMAT` | unset | `.tgmat` file for the preview sphere. |
+| `BENCH_MATBALL_SURFACE` | `Opaque` | `Opaque`, `Masked` or `Transparent` (glass). |
+| `BENCH_MATBALL_OPACITY` / `_ROUGHNESS` / `_METALNESS` | material | Preview sphere overrides, 0..1. |
+| `BENCH_MATBALL_IOR` / `_REFRACTION` | `1.52` / `1` | Preview sphere glass index of refraction and screen-space refraction strength. |
 | `BENCH_ORBITBALLS` | `0` | `N` = orbit N spheres (max 24) around the scene centre, all sharing the debug-sphere material. `BENCH_ORBIT_RADIUS` / `BENCH_ORBIT_SPEED` / `BENCH_ORBIT_BALLRAD` tune the ring. Emissive spheres each spawn a (non-shadow) area-light proxy. Live controls under *Material preview → Orbiting spheres*. |
 | `BENCH_GI` | `1` | `1` = emissive-GI irradiance volume (lazy SH probes; primes over ~1 s at load then near-free). `0` = off. Deferred only. |
 | `BENCH_GI_PRIME` | `8` | probes captured per frame while priming the volume (higher = faster prime, bigger load spike). |

@@ -713,122 +713,41 @@ static void AppendModelMaterialCandidate(FixedStream<512>& aStream, std::string_
 	aStream << aBaseFileName << "_" << aRawMaterialName << aSuffix;
 }
 
-static TextureResource *AssignAlbedoTexture(std::string_view baseFileName, std::string_view materialFileName, std::string_view rawMaterialName)
+// Resolves one material texture slot. Suffixes are tried in order for each
+// naming convention: "<material><suffix>", "<model><suffix>" and
+// "<model>_<rawMaterial><suffix>". Legacy TGA suffixes come first so existing
+// content resolves exactly as before; Unreal-style names follow.
+static TextureResource* ResolveMaterialTexture(std::string_view baseFileName, std::string_view materialFileName,
+	std::string_view rawMaterialName, std::initializer_list<const char*> someSuffixes, TextureSrgbMode aSrgbMode,
+	const char** outSuffix = nullptr)
 {
-	FixedStream<512> stream;
-	stream << materialFileName << "_C.dds";
-	TextureResource	*albedoTexture = GraphicsEngine::GetInstance()->GetTextureManager().TryGetTexture(stream.GetData());
-
-	if (albedoTexture == nullptr)
+	TextureManager& textures = GraphicsEngine::GetInstance()->GetTextureManager();
+	for (int convention = 0; convention < 3; ++convention)
 	{
-		FixedStream<512> streamD;
-		streamD << materialFileName << "_D.dds";
-		albedoTexture = GraphicsEngine::GetInstance()->GetTextureManager().TryGetTexture(streamD.GetData());
+		for (const char* suffix : someSuffixes)
+		{
+			FixedStream<512> path;
+			if (convention == 0) path << materialFileName << suffix;
+			else if (convention == 1) path << baseFileName << suffix;
+			else AppendModelMaterialCandidate(path, baseFileName, rawMaterialName, suffix);
+			if (TextureResource* texture = textures.TryGetTexture(path.GetData(), aSrgbMode))
+			{
+				if (outSuffix) *outSuffix = suffix;
+				return texture;
+			}
+		}
 	}
-
-	if (albedoTexture == nullptr)
-	{
-		FixedStream<512> streamBC;
-		streamBC << baseFileName << "_C.dds";
-		albedoTexture = GraphicsEngine::GetInstance()->GetTextureManager().TryGetTexture(streamBC.GetData());
-	}
-
-	if (albedoTexture == nullptr)
-	{
-		FixedStream<512> streamBD;
-		streamBD << baseFileName << "_D.dds";
-		albedoTexture = GraphicsEngine::GetInstance()->GetTextureManager().TryGetTexture(streamBD.GetData());
-	}
-
-	if (albedoTexture == nullptr)
-	{
-		FixedStream<512> streamMC;
-		AppendModelMaterialCandidate(streamMC, baseFileName, rawMaterialName, "_C.dds");
-		albedoTexture = GraphicsEngine::GetInstance()->GetTextureManager().TryGetTexture(streamMC.GetData());
-	}
-
-	if (albedoTexture == nullptr)
-	{
-		albedoTexture = GraphicsEngine::GetInstance()->GetTextureManager().GetTexture("Textures/T_Default_c.dds");
-	}
-	return albedoTexture;
+	return nullptr;
 }
 
-static TextureResource *AssignNormalTexture(std::string_view baseFileName, std::string_view materialFileName, std::string_view rawMaterialName)
+namespace MaterialSuffixes
 {
-	FixedStream<512> streamN;
-	streamN << materialFileName << "_N.dds";
-	TextureResource *normalTexture = GraphicsEngine::GetInstance()->GetTextureManager().TryGetTexture(streamN.GetData(), TextureSrgbMode::ForceNoSrgbFormat);
-
-	if (normalTexture == nullptr)
-	{
-		FixedStream<512> streamBN;
-		streamBN << baseFileName << "_N.dds";
-		normalTexture = GraphicsEngine::GetInstance()->GetTextureManager().TryGetTexture(streamBN.GetData(), TextureSrgbMode::ForceNoSrgbFormat);
-	}
-
-	if (normalTexture == nullptr)
-	{
-		FixedStream<512> streamMN;
-		AppendModelMaterialCandidate(streamMN, baseFileName, rawMaterialName, "_N.dds");
-		normalTexture = GraphicsEngine::GetInstance()->GetTextureManager().TryGetTexture(streamMN.GetData(), TextureSrgbMode::ForceNoSrgbFormat);
-	}
-
-	if (normalTexture == nullptr)
-		normalTexture = GraphicsEngine::GetInstance()->GetTextureManager().GetTexture("Textures/T_Default_n.dds", TextureSrgbMode::ForceNoSrgbFormat);
-
-	return normalTexture;
-}
-
-static TextureResource *AssignMaterialTexture(std::string_view baseFileName, std::string_view materialFileName, std::string_view rawMaterialName)
-{
-	FixedStream<512> streamM;
-	streamM << materialFileName << "_M.dds";
-	TextureResource *materialTexture = GraphicsEngine::GetInstance()->GetTextureManager().TryGetTexture(streamM.GetData(), TextureSrgbMode::ForceNoSrgbFormat);
-
-	if (materialTexture == nullptr)
-	{
-		FixedStream<512> streamBM;
-		streamBM << baseFileName << "_M.dds";
-		materialTexture = GraphicsEngine::GetInstance()->GetTextureManager().TryGetTexture(streamBM.GetData(), TextureSrgbMode::ForceNoSrgbFormat);
-	}
-
-	if (materialTexture == nullptr)
-	{
-		FixedStream<512> streamMM;
-		AppendModelMaterialCandidate(streamMM, baseFileName, rawMaterialName, "_M.dds");
-		materialTexture = GraphicsEngine::GetInstance()->GetTextureManager().TryGetTexture(streamMM.GetData(), TextureSrgbMode::ForceNoSrgbFormat);
-	}
-
-	if (materialTexture == nullptr)
-		materialTexture = GraphicsEngine::GetInstance()->GetTextureManager().GetTexture("Textures/T_Default_m.dds", TextureSrgbMode::ForceNoSrgbFormat);
-
-	return materialTexture;
-}
-
-static TextureResource *AssignFxTexture(std::string_view baseFileName, std::string_view materialFileName, std::string_view rawMaterialName)
-{
-	FixedStream<512> streamFX;
-	streamFX << materialFileName << "_FX.dds";
-	TextureResource *fxTexture = GraphicsEngine::GetInstance()->GetTextureManager().TryGetTexture(streamFX.GetData(), TextureSrgbMode::ForceNoSrgbFormat);
-
-	if (fxTexture == nullptr)
-	{
-		FixedStream<512> streamBFX;
-		streamBFX << baseFileName << "_FX.dds";
-		fxTexture = GraphicsEngine::GetInstance()->GetTextureManager().TryGetTexture(streamBFX.GetData(), TextureSrgbMode::ForceNoSrgbFormat);
-	}
-
-	if (fxTexture == nullptr)
-	{
-		FixedStream<512> streamMFX;
-		AppendModelMaterialCandidate(streamMFX, baseFileName, rawMaterialName, "_FX.dds");
-		fxTexture = GraphicsEngine::GetInstance()->GetTextureManager().TryGetTexture(streamMFX.GetData(), TextureSrgbMode::ForceNoSrgbFormat);
-	}
-
-	if (fxTexture == nullptr)
-		fxTexture = GraphicsEngine::GetInstance()->GetTextureManager().GetTexture("Textures/T_Default_fx.dds", TextureSrgbMode::ForceNoSrgbFormat);
-	return fxTexture;
+	// Unreal: _BC / _BaseColor / _D, _N / _Normal, _ORM, _E / _Emissive.
+	const std::initializer_list<const char*> kBaseColor = { "_C.dds", "_D.dds", "_BC.dds", "_BaseColor.dds", "_Albedo.dds" };
+	const std::initializer_list<const char*> kNormal = { "_N.dds", "_Normal.dds", "_NRM.dds" };
+	const std::initializer_list<const char*> kOrm = { "_M.dds", "_ORM.dds" };
+	const std::initializer_list<const char*> kEmissiveRgb = { "_E.dds", "_Emissive.dds" };
+	const std::initializer_list<const char*> kEmissiveLegacy = { "_FX.dds" };
 }
 
 // Blender's FBX exporter (and others) uniquify colliding material names by
@@ -859,28 +778,44 @@ void AssignDefaultMaterials(std::string_view someFilePath, Model* aModel)
 		FixedStream<512> materialFileNameStream;
 		materialFileNameStream << path << StripDuplicateSuffix(rawMaterialName);
 
+		const std::string_view materialFileName = materialFileNameStream.GetStringView();
+		TextureManager& textureManager = GraphicsEngine::GetInstance()->GetTextureManager();
+
+		TextureResource* albedoTexture = ResolveMaterialTexture(baseFileName, materialFileName, rawMaterialName,
+			MaterialSuffixes::kBaseColor, TextureSrgbMode::ForceSrgbFormat);
+		TextureResource* normalTexture = ResolveMaterialTexture(baseFileName, materialFileName, rawMaterialName,
+			MaterialSuffixes::kNormal, TextureSrgbMode::ForceNoSrgbFormat);
+		TextureResource* materialTexture = ResolveMaterialTexture(baseFileName, materialFileName, rawMaterialName,
+			MaterialSuffixes::kOrm, TextureSrgbMode::ForceNoSrgbFormat);
+
+		// Unreal-style RGB emissive is colour data (sRGB); the legacy _FX pack
+		// (mask + strength) is linear.
+		MaterialParams params = MakeMaterialParams(true);
+		TextureResource* emissiveTexture = ResolveMaterialTexture(baseFileName, materialFileName, rawMaterialName,
+			MaterialSuffixes::kEmissiveRgb, TextureSrgbMode::ForceSrgbFormat);
+		if (emissiveTexture)
+			params.flags |= MaterialFlags::HasEmissive | MaterialFlags::EmissiveRgb;
+		else if ((emissiveTexture = ResolveMaterialTexture(baseFileName, materialFileName, rawMaterialName,
+			MaterialSuffixes::kEmissiveLegacy, TextureSrgbMode::ForceNoSrgbFormat)) != nullptr)
+			params.flags |= MaterialFlags::HasEmissive;
+
 		if (std::getenv("TGE_LOG_MATERIALS"))
 		{
-			FixedStream<512> pc; pc << materialFileNameStream.GetStringView() << "_C.dds";
-			FixedStream<512> pn; pn << materialFileNameStream.GetStringView() << "_N.dds";
-			FixedStream<512> pm; pm << materialFileNameStream.GetStringView() << "_M.dds";
-			auto& tm = GraphicsEngine::GetInstance()->GetTextureManager();
-			INFO_PRINT("  mat[%2d] %-28s  C:%s N:%s M:%s", i, aModel->GetMaterialName(i).GetString(),
-				tm.TryGetTexture(pc.GetData()) ? "ok" : "--",
-				tm.TryGetTexture(pn.GetData(), TextureSrgbMode::ForceNoSrgbFormat) ? "ok" : "--",
-				tm.TryGetTexture(pm.GetData(), TextureSrgbMode::ForceNoSrgbFormat) ? "ok" : "--");
+			INFO_PRINT("  mat[%2d] %-28s  C:%s N:%s ORM:%s E:%s", i, aModel->GetMaterialName(i).GetString(),
+				albedoTexture ? "ok" : "--", normalTexture ? "ok" : "--", materialTexture ? "ok" : "--",
+				!emissiveTexture ? "--" : (params.flags & MaterialFlags::EmissiveRgb) ? "rgb" : "fx");
 		}
 
-		TextureResource* albedoTexture = AssignAlbedoTexture(baseFileName, materialFileNameStream.GetStringView(), rawMaterialName);
+		if (!albedoTexture) albedoTexture = textureManager.GetTexture("Textures/T_Default_c.dds");
+		if (!normalTexture) normalTexture = textureManager.GetTexture("Textures/T_Default_n.dds", TextureSrgbMode::ForceNoSrgbFormat);
+		if (!materialTexture) materialTexture = textureManager.GetTexture("Textures/T_Default_m.dds", TextureSrgbMode::ForceNoSrgbFormat);
+		// Slot 3 is always bound; without an emissive map the shaders ignore it.
+		TextureResource* fxTexture = emissiveTexture ? emissiveTexture
+			: textureManager.GetTexture("Textures/T_Default_fx.dds", TextureSrgbMode::ForceNoSrgbFormat);
+
 		aModel->SetDefaultTexture(i, 0, albedoTexture);
-
-		TextureResource* normalTexture = AssignNormalTexture(baseFileName, materialFileNameStream.GetStringView(), rawMaterialName);
 		aModel->SetDefaultTexture(i, 1, normalTexture);
-
-		TextureResource* materialTexture = AssignMaterialTexture(baseFileName, materialFileNameStream.GetStringView(), rawMaterialName);
 		aModel->SetDefaultTexture(i, 2, materialTexture);
-
-		TextureResource* fxTexture = AssignFxTexture(baseFileName, materialFileNameStream.GetStringView(), rawMaterialName);
 		aModel->SetDefaultTexture(i, 3, fxTexture);
 
 		// Same material identity Model::Init will assign to mesh.rayGeometry.materialIndex
@@ -895,6 +830,7 @@ void AssignDefaultMaterials(std::string_view someFilePath, Model* aModel)
 			materialTexture ? materialTexture->GetSrv() : rhi::SrvHandle{},
 			fxTexture       ? fxTexture->GetSrv()       : rhi::SrvHandle{},
 		});
+		RayTracingMaterialTable::SetMaterialParams(rtMatIndex, params);
 	}
 }
 
