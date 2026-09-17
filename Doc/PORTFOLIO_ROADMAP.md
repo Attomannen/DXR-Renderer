@@ -12,7 +12,7 @@ Rewritten September 2026 after the material, editor and measurement work.
 | Renderer | Single inline-RayQuery compute pass: primary, direct + shadows, AO, GI lookup, reflections |
 | Denoising | NVIDIA NRD 4.17.3 (REBLUR default, RELAX optional), checkerboard option |
 | Upscaling | DLSS SR, DLAA and Ray Reconstruction, each independent of the others |
-| Temporal | Native TAA (most stable), jitter-free motion vectors |
+| Temporal | Native TAA and the DLSS family all temporally stable; jitter-free motion vectors |
 | Materials | Unreal packing (`_BC`/`_N`/`_ORM`/`_E`), one parameter block shared by raster, glass and DXR |
 | Glass | Per-material IOR / thickness / absorption / opacity, composited after the ray-traced frame |
 | Lighting units | Physical: sun in lux, sky and emissive in cd/m², lights in lumens/candela |
@@ -68,20 +68,12 @@ one session).
 
 ## 2. Open bugs, in priority order
 
-1. **DLSS-family temporal wobble.** Frozen camera, consecutive frames: native
-   TAA 0.08, DLAA 2.08, DLSS Quality 1.77, RR 2.34. Ruled out: the ray jitter
-   works (a forced 20 px offset shifts the image in both native and DLAA), the
-   jitter sign and axis (all four combinations wobble identically) and NRD
-   (wobbles with it on or off). Reporting **zero** jitter to Streamline is
-   stable and no softer by an edge-detail metric. Next suspect: the DLSS reset
-   flag being set every frame, which would make it reconstruct each jittered
-   frame standalone.
-2. **Bistro glass renders wrong** - shop windows appear as flat grey panels with
+1. **Bistro glass renders wrong** - shop windows appear as flat grey panels with
    heavy noise. Likely the glass pass reading the wrong scene copy, or those
    materials being misclassified.
-3. **DX11 backend crashes on exit** in `Dx11Device::WrapNativeSrv`. DX12 is
+2. **DX11 backend crashes on exit** in `Dx11Device::WrapNativeSrv`. DX12 is
    unaffected.
-4. **Editor has no irradiance probe volume**, so indirect light there is
+3. **Editor has no irradiance probe volume**, so indirect light there is
    ambient-only and differs from the game.
 
 ---
@@ -132,8 +124,8 @@ buffers, temporal + spatial reuse and heavier denoising - budget 3-6 ms at
 1600x900 on this 60 W part, against ~1.5-2 ms today.
 - Do it after SHARC: SHARC is a natural radiance source for the reused samples,
   so that order makes this cheaper rather than wasted.
-- Depends on 3.4 (reservoir reuse wants its own passes) and on bug 1 being
-  fixed, since ReSTIR is judged on temporal stability.
+- Depends on 3.4 (reservoir reuse wants its own passes). The temporal stability
+  ReSTIR is judged on is now in place.
 - Show it against the path-traced reference mode; the difference is subtle in a
   still, obvious in an A/B.
 
@@ -167,12 +159,11 @@ today. Needs a newer Agility SDK plus the OMM SDK.
 
 ## 5. Suggested order
 
-1. Fix the DLSS wobble (bug 1) - it undermines every screenshot and video.
-2. Fix Bistro glass (bug 2).
-3. NRD performance mode (3.3) - cheap, immediate.
-4. Path-traced reference mode - strongest single portfolio item, self-contained.
-5. SHARC (3.2) - the real performance and quality win.
-6. Split the dispatch (3.4), then ReSTIR DI and SER (3.5).
+1. Fix Bistro glass (bug 1).
+2. NRD performance mode (3.3) - cheap, immediate.
+3. Path-traced reference mode - strongest single portfolio item, self-contained.
+4. SHARC (3.2) - the real performance and quality win.
+5. Split the dispatch (3.4), then ReSTIR DI and SER (3.5).
 
 ---
 
@@ -189,5 +180,11 @@ today. Needs a newer Agility SDK plus the OMM SDK.
 - **Editor viewport**: renders through the deferred / ray-traced renderer with
   shadows, glass and scene lights; asset caches throttled and the TLAS rebuilt
   only when the scene changes.
+- **DLSS temporal wobble fixed**: the native-resolve `else` branch cleared
+  `myTaaHistoryValid` even when DLSS/DLAA/RR had just resolved, so Streamline
+  was handed `reset = true` every frame and rebuilt the image from one jittered
+  frame each time. Frozen-camera consecutive-frame difference: DLAA 2.08 ->
+  0.01, DLSS Quality 1.77 -> 0.01, RR 2.34 -> 0.13 (native TAA is 0.01), with
+  each mode still producing its own distinct, unblurred image.
 - **DLSS / RR independence**: RR runs at any quality ratio, with motion vectors
   scaled by the render extent.

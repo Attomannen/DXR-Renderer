@@ -676,7 +676,14 @@ void DeferredRenderer::ResolveDxrLightingToHdr()
 		resolvedSrv = myTunables.taaDebugView == 0 ? myTaaSrv[next*2] : myTaaSrv[4];
 		myPreviousTaaJitter = myTaaJitter;
 		++myTaaFrameIndex;
-	} else myTaaHistoryValid = false;
+	}
+	// Only the *native* resolve invalidates history when it is skipped. This
+	// used to be an unconditional `else`, which ran whenever DLSS/DLAA/RR had
+	// resolved instead -- clearing the flag that branch had just set, so every
+	// frame afterwards passed reset=true to Streamline. DLSS then rebuilt from
+	// a single jittered frame each time, which is the sub-pixel wobble: it
+	// tracked the jitter amplitude and ignored its sign, exactly as measured.
+	else if (!dlaaResolved) myTaaHistoryValid = false;
 	// The only case where the finished image is already in myHdr: display-
 	// resolution fog was written there and nothing resolved it afterwards.
 	// This used to be `atmosphereApplied && !resolveTemporal`, which is also
