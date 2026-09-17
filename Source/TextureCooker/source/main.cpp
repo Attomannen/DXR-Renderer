@@ -1412,6 +1412,7 @@ struct Args
 	bool flipGreen = false, cpu = false, force = false, recursive = false, quiet = false;
 	bool srcNormalsGl = true;
 	bool noNvtt = false;
+	bool forceMaterials = false;   // --force-materials: overwrite authored .tgmat
 	bool unrealPacking = true;   // --packing unreal|tga
 	bool scanAlpha = false;      // --scan-alpha : only refresh baseColorHasAlpha
 	std::string nvttPath;
@@ -1469,6 +1470,7 @@ static bool ParseArgs(int argc, char** argv, Args& a)
 		else if (k == "--cpu") a.cpu = true;
 		else if (k == "--nvtt") a.nvttPath = next();
 		else if (k == "--no-nvtt") a.noNvtt = true;
+		else if (k == "--force-materials") a.forceMaterials = true;
 		else if (k == "--specular")
 		{
 			const std::string v = ToLower(next());
@@ -1500,6 +1502,7 @@ int main(int argc, char** argv)
 			"              [--game-root <dir>] [--manifest <cook.json>]\n"
 			"              [--src-normals gl|dx] [--flip-green] [--cpu] [--jobs N]\n"
 			"              [--only c,n,m,fx] [--packing unreal|tga] [--force] [--recursive] [--quiet]\n"
+			"              [--specular auto|orm|specgloss] [--force-materials]\n"
 			"              [--scan-alpha] refresh baseColorHasAlpha / surfaceType in existing .tgmat\n"
 			"              bare .hdr inputs -> <stem>.dds (R16G16B16A16_FLOAT)\n";
 		return 2;
@@ -2034,6 +2037,41 @@ int main(int argc, char** argv)
 				{ "emissiveMode", gUnrealPacking ? "RGB" : "Legacy" }, { "normalConvention", "DirectX" },
 				{ "normalStrength", 1.0f }, { "previewMesh", "Sphere" }, { "maps", maps }
 			};
+			// Reimporting a mesh must not throw away authored materials. This wrote
+			// generated defaults unconditionally, so every re-cook of an FBX reset
+			// glass back to opaque, emissives to zero strength and every scale to
+			// its default -- silently, the only symptom being the scene looking
+			// wrong afterwards.
+			//
+			// The cooker owns the texture paths, the emissive mode and the cutout
+			// flags it derives from the cooked base colour; everything else is the
+			// artist's. Keep an existing file's values for those and update only
+			// what this tool is the source of truth for. --force-materials
+			// restores the old overwrite.
+			std::error_code mec;
+			if (!a.forceMaterials && fs::exists(materialFile, mec))
+			{
+				json existing;
+				std::ifstream in(materialFile);
+				bool parsed = false;
+				if (in) { try { in >> existing; parsed = existing.is_object(); } catch (...) { parsed = false; } }
+				if (parsed)
+				{
+					existing["maps"] = material["maps"];
+					existing["emissiveMode"] = material["emissiveMode"];
+					existing["baseColorHasAlpha"] = cutout;
+					// Cutout is measured from the cooked base colour, so it is the
+					// cooker's to set -- but never demote a material the artist
+					// deliberately made Transparent, which this tool never emits.
+					if (existing.value("surfaceType", std::string("Opaque")) != "Transparent")
+						existing["surfaceType"] = cutout ? "Masked" : "Opaque";
+					// A material that has just gained an emissive map but no
+					// strength would stay invisible; one already tuned keeps its value.
+					if (hasEmissive && existing.value("emissiveStrength", 0.0f) <= 0.0f)
+						existing["emissiveStrength"] = emissiveStrength;
+					material = std::move(existing);
+				}
+			}
 			fs::create_directories(materialFile.parent_path());
 			std::ofstream(materialFile) << material.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
 			keepTgmatNames.insert(ToLower(materialFile.filename().string()));
