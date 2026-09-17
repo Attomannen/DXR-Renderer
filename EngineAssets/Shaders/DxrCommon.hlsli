@@ -1038,8 +1038,38 @@ float3 TraceReflection(float3 origin, float3 dir, float3 sunDirToLight, uint lig
 	// penumbra is a few texels wide and already blurred by the GGX lobe and the
 	// temporal resolve, so the extra three rays bought nothing visible.
 	const float3 lit = ShadeDirect(hs, shadowOrigin, viewDir, sunDirToLight, lightCount, sunRadiance, ambientIntensity, DXR_REFLECTION_SUN_SAMPLES) + hs.emissive;
-	const float3 environment = environmentMip >= 0.0f ?
-		(1.0f - hs.metalness) * hs.albedo * hs.ao * gDxrEnvironment.SampleLevel(gMaterialSampler, hs.worldNormal, 6.0f).rgb * environmentTint : 0.0f;
+	// Environment at the reflected hit, diffuse AND specular.
+	//
+	// Every indirect term here is weighted by (1 - metalness), because a metal
+	// has no diffuse lobe -- so without the specular half a metal seen in a
+	// reflection had only ShadeDirect left, and a *smooth* metal's GGX sun lobe
+	// is nearly a delta function: miss the sun and the surface came back pure
+	// black. That is what turned curtain rails and rims black in reflections.
+	// This is the same split-sum evaluation EvaluateEnvironmentLighting applies
+	// to primary hits, with the analytic Karis fit instead of the BRDF LUT,
+	// which is not bound for secondary rays.
+	float3 environment = 0.0f;
+	if (environmentMip >= 0.0f)
+	{
+		uint faceWidth, faceHeight, mipCount;
+		gDxrEnvironment.GetDimensions(0, faceWidth, faceHeight, mipCount);
+		const float maxMip = float(max(int(mipCount) - 1, 0));
+		const float diffuseMip = max(0.0f, maxMip - 3.0f);   // CubemapPrefilter's irradiance tail
+		const float p = saturate(hs.roughness);
+		const float specularMip = (p * (1.7f - 0.7f * p)) * diffuseMip;
+		const float nDotV = saturate(dot(hs.worldNormal, viewDir));
+		const float3 f0 = lerp(float3(0.04f, 0.04f, 0.04f), hs.albedo, hs.metalness);
+		const float4 c0 = float4(-1.0f, -0.0275f, -0.572f, 0.022f);
+		const float4 c1 = float4( 1.0f,  0.0425f, 1.04f, -0.04f);
+		const float4 r = p * c0 + c1;
+		const float a004 = min(r.x * r.x, exp2(-9.28f * nDotV)) * r.x + r.y;
+		const float2 ab = float2(-1.04f, 1.04f) * a004 + r.zw;
+		const float3 specularWeight = f0 * ab.x + ab.y;
+		const float3 diffuseEnv = gDxrEnvironment.SampleLevel(gMaterialSampler, hs.worldNormal, diffuseMip).rgb * environmentTint;
+		const float3 specularEnv = gDxrEnvironment.SampleLevel(gMaterialSampler, reflect(-viewDir, hs.worldNormal), specularMip).rgb * environmentTint;
+		environment = (1.0f - saturate(specularWeight)) * (1.0f - hs.metalness) * hs.albedo * hs.ao * diffuseEnv
+			+ specularEnv * specularWeight * hs.ao;
+	}
 	float3 result = lit + environment + (enableIndirectGi ? (1.0f - hs.metalness) * hs.albedo * hs.ao * EvaluateDxrGi(hitPos, hs.worldNormal) : 0.0f);
 	
 	// Clamp fireflies from extremely bright secondary hits (e.g. emissives)

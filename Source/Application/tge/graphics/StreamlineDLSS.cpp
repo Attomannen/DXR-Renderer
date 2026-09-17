@@ -185,8 +185,16 @@ namespace Tga
 		// The engine's jitter is the sample's offset from the pixel centre
 		// (uv = pixel + 0.5 + jitter); DLSS wants the opposite sign. On a frozen,
 		// noise-free camera this is the steadiest of every sign/scale tried.
+		// Motion vectors are written in render-resolution pixels as
+		// (previous - current), which is what NRD and the native TAA resolve
+		// consume. Streamline wants the opposite sign, hence the negative
+		// mvecScale: with the positive scale DLSS reprojected history the wrong
+		// way along the motion and smeared everything in motion. Measured on a
+		// moving camera by edge energy: 2.94 positive vs 3.22 negative, against
+		// native TAA's 3.15. Frozen-camera stability is identical either way,
+		// which is why this stayed hidden until the history reset was fixed.
 		constants.jitterOffset = { -aJitterX, -aJitterY };
-		constants.mvecScale = { 1.0f / float(aRenderWidth), 1.0f / float(aRenderHeight) };
+		constants.mvecScale = { -1.0f / float(aRenderWidth), -1.0f / float(aRenderHeight) };
 		constants.cameraPos = { aCameraTransform[12], aCameraTransform[13], aCameraTransform[14] };
 		constants.cameraRight = { aCameraTransform[0], aCameraTransform[1], aCameraTransform[2] };
 		constants.cameraUp = { aCameraTransform[4], aCameraTransform[5], aCameraTransform[6] };
@@ -253,7 +261,8 @@ namespace Tga
 		std::memcpy(&c.prevClipToClip, aPreviousClipToClip, sizeof(c.prevClipToClip));
 		// Jitter sign: see EvaluateDLSS.
 		// Motion vectors are written in render-resolution pixels.
-		c.jitterOffset = { -aJitterX, -aJitterY }; c.mvecScale = {1.f / float(aRenderWidth), 1.f / float(aRenderHeight)};
+		// Jitter and motion-vector sign: see EvaluateDLSS.
+		c.jitterOffset = { -aJitterX, -aJitterY }; c.mvecScale = {-1.f / float(aRenderWidth), -1.f / float(aRenderHeight)};
 		c.cameraPos = {aCameraTransform[12], aCameraTransform[13], aCameraTransform[14]};
 		c.cameraRight = {aCameraTransform[0], aCameraTransform[1], aCameraTransform[2]};
 		c.cameraUp = {aCameraTransform[4], aCameraTransform[5], aCameraTransform[6]};
