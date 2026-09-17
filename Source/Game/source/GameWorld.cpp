@@ -579,7 +579,12 @@ void GameWorld::Render()
 
 	const Frustum frustum = CalculateFrustum(s.camera);
 	ModelDrawer& md = ge.GetModelDrawer();
-	md.SetCullFrustum((s.frustumCull && s.models.size() > 1) ? &frustum : nullptr);
+	// The "more than one model" gate dated from scenes made of many small
+	// instances, where whole-model bounds were the only thing worth testing.
+	// A scene gathered into one FBX is a single instance spanning everything, so
+	// that gate turned culling off entirely; the per-sub-mesh paths below are
+	// what actually reject geometry now.
+	md.SetCullFrustum(s.frustumCull ? &frustum : nullptr);
 
 	// Phase-1 TLAS validation: include every static scene mesh, not only the
 	// raster-visible subset. RayQuery must see off-screen occluders as well.
@@ -683,7 +688,7 @@ void GameWorld::Render()
 			DeferredRenderer* dr = s.deferred;
 			ModelDrawer* mdp = &md;
 			Impl* sp = &s;
-			const Frustum* fr = (s.frustumCull && s.models.size() > 1) ? &frustum : nullptr;
+			const Frustum* fr = s.frustumCull ? &frustum : nullptr;
 
 			auto drawOpaque = [dr, mdp, sp, fr]()
 			{
@@ -700,6 +705,8 @@ void GameWorld::Render()
 				{
 					if (!sp->anyTransparent || sp->transparentMeshes[k].empty())
 						mdp->Draw(sp->models[k], gsh);              // whole model (keeps frustum cull)
+					else if (fr)
+						sp->models[k].Render(gsh, sp->opaqueMeshes[k], *fr);
 					else
 						sp->models[k].Render(gsh, sp->opaqueMeshes[k]);
 				}
@@ -738,7 +745,7 @@ void GameWorld::Render()
 					if (!sp->anyTransparent || sp->transparentMeshes[k].empty())
 						sp->models[k].Render(ssh, lf);           // sub-meshes culled to this shadow view
 					else
-						sp->models[k].Render(ssh, sp->opaqueMeshes[k]);
+						sp->models[k].Render(ssh, sp->opaqueMeshes[k], lf);
 				}
 			};
 

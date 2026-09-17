@@ -38,6 +38,10 @@ public:
 	void Render(const ModelShader& shader, const std::vector<int>& someMeshIndices) const;
 	// Draw only sub-meshes whose world-space bounds pass the frustum (shadow tiles).
 	void Render(const ModelShader& shader, const Frustum& frustum) const;
+	// Sub-mesh list AND frustum. A model built from one gathered FBX is a single
+	// instance covering the whole scene, so model-level culling can never reject
+	// it; only per-sub-mesh bounds can.
+	void Render(const ModelShader& shader, const std::vector<int>& someMeshIndices, const Frustum& frustum) const;
 private:
 
 	std::shared_ptr<Model> myModel{};

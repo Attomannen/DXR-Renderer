@@ -58,6 +58,8 @@ void ApplyStartupOverrides(GameWorld::Impl& s)
 
 void ApplyContentOverrides(GameWorld::Impl& s)
 {
+	// BENCH_CULL=0 disables frustum culling, to measure what it is worth.
+	s.frustumCull = EnvInt("BENCH_CULL", s.frustumCull ? 1 : 0) != 0;
 	s.showDebugBall = EnvInt("BENCH_MATBALL", 0) != 0;
 	s.pillarMaterialOverride = EnvInt("BENCH_PILLAR_OVERRIDE", 1) != 0;
 	if (const char* value = std::getenv("BENCH_PILLAR_ROUGHNESS")) s.pillarMat.roughness = std::clamp((float)atof(value), 0.f, 1.f);

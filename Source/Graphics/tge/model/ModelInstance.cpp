@@ -69,6 +69,33 @@ void ModelInstance::Render(const ModelShader& shader, const std::vector<int>& so
 	}
 }
 
+// Same per-sub-mesh cull as the whole-model frustum overload, restricted to a
+// caller-supplied sub-mesh list (the opaque/transparent split).
+void ModelInstance::Render(const ModelShader& shader, const std::vector<int>& someMeshIndices, const Frustum& frustum) const
+{
+	if (someMeshIndices.empty()) return;
+
+	const std::vector<Model::MeshData>& meshData = myModel->GetMeshDataList();
+	auto rowLen = [&](int r) {
+		return std::sqrt(myTransform(r, 1) * myTransform(r, 1) +
+		                 myTransform(r, 2) * myTransform(r, 2) +
+		                 myTransform(r, 3) * myTransform(r, 3));
+	};
+	const float scale = std::max(rowLen(1), std::max(rowLen(2), rowLen(3)));
+
+	bool didSetup = false;
+	for (int idx : someMeshIndices)
+	{
+		if (idx < 0 || idx >= (int)meshData.size()) continue;
+		const BoxSphereBounds& b = meshData[idx].bounds;
+		const Vector4f wc = Vector4f(b.center.x, b.center.y, b.center.z, 1.f) * myTransform;
+		if (!CheckFrustum(frustum, Vector3f(wc.x, wc.y, wc.z), b.radius * scale + 1.f))
+			continue;
+		if (!didSetup) { shader.RenderSetup(myTransform); didSetup = true; }
+		shader.RenderMesh(myTextures[idx], meshData[idx], myMaterials[idx]);
+	}
+}
+
 void ModelInstance::Render(const ModelShader& shader, const Frustum& frustum) const
 {
 	const std::vector<Model::MeshData>& meshData = myModel->GetMeshDataList();
