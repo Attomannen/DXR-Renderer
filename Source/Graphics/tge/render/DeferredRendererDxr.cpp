@@ -85,8 +85,8 @@ bool DeferredRenderer::CreateDxrLightingTargets(Vector2ui aResolution)
 {
 	ResetTemporalHistory();
 	rhi::IDevice* dev = DX11::Rhi();
-	// DLSS SR owns the reconstruction from this smaller input to the display
-	// resolution.  Keep DLAA/RR at 1:1; RR's guide textures share this input.
+	// DLSS SR and Ray Reconstruction both reconstruct the display image from
+	// this smaller input; mode 0/1 renders 1:1. RR's guide textures share it.
 	float renderScale = 1.f;
 	if (StreamlineDLSS::Get().IsAvailable())
 	{
@@ -294,21 +294,6 @@ void DeferredRenderer::RenderDxrLighting()
 	// still jittering would blend a just-moved shadow against no valid old
 	// sample, which reads as a visibly jumping sample.
 	myTaaJitter = {0,0};
-	if (taaActive && !lightingChanged && myTunables.taaJitter)
-	{
-		// DLSS asks for its phase count to scale with the upscale ratio so the
-		// extra samples actually cover the pixels being reconstructed; 8 is the
-		// baseline at 1:1 (DLAA / native temporal).
-		const float ratio = myDxrRenderResolution.x > 0
-			? float(myResolution.x) / float(myDxrRenderResolution.x) : 1.f;
-		const uint32_t phases = std::clamp(uint32_t(std::lround(8.f * ratio * ratio)), 8u, 64u);
-		const uint32_t index = (myTaaFrameIndex % phases) + 1u;
-		myTaaJitter = { RadicalInverse(index, 2u) - 0.5f, RadicalInverse(index, 3u) - 0.5f };
-		// The rays are jittered through gJitter. Do not also jitter
-		// myViewToProj: SetCamera compares it against the camera's projection
-		// and would reset temporal history every frame, and motion vectors
-		// would pick up the jitter delta.
-	}
 
 	{
 		DxrLightingConstants c{};
@@ -576,6 +561,7 @@ void DeferredRenderer::DenoiseDxrDiffuse(rhi::ICommandContext& ctx)
 void DeferredRenderer::ResolveDxrLightingToHdr()
 {
 	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
+	// Any mode that renders below the display resolution: DLSS SR and RR alike.
 	const bool superResolution = myTunables.dlssMode >= 2 && StreamlineDLSS::Get().IsAvailable();
 	// Fog is applied before the temporal/DLSS resolve in both modes. When DLSS
 	// upscales, it is applied at render resolution and becomes part of the image
@@ -587,7 +573,9 @@ void DeferredRenderer::ResolveDxrLightingToHdr()
 	const RenderTarget& foggedTarget = superResolution ? myAtmosphereRender.hdr : myHdr;
 	rhi::SrvHandle resolvedSrv = atmosphereApplied ? foggedTarget.GetSrv() : myDxrLightingSrv;
 	const bool dlaaRequested = (myTunables.dlssMode > 0 || myTunables.dlaaEnabled || myTunables.rayReconstructionEnabled) && myTunables.dxrLightingView == 0 && StreamlineDLSS::Get().IsAvailable();
-	const bool rrRequested = myTunables.rayReconstructionEnabled && !superResolution && StreamlineDLSS::Get().IsRayReconstructionAvailable();
+	// Ray Reconstruction is independent of the quality mode: it denoises and
+	// upscales in one step, so it runs at DLAA (1:1) or at any DLSS ratio.
+	const bool rrRequested = myTunables.rayReconstructionEnabled && StreamlineDLSS::Get().IsRayReconstructionAvailable();
 	bool dlaaResolved = false;
 	if (dlaaRequested && myDlaaTex.IsValid())
 	{
@@ -614,7 +602,9 @@ void DeferredRenderer::ResolveDxrLightingToHdr()
 			dlaaResolved = StreamlineDLSS::Get().EvaluateRayReconstruction(
 				DX11::Rhi()->GetNativeCommandList(), DX11::Rhi()->GetNativeTexture(color), DX11::Rhi()->GetNativeTexture(myDlaaTex),
 				DX11::Rhi()->GetNativeTexture(myTemporalTex[1]), DX11::Rhi()->GetNativeTexture(myTemporalTex[0]), DX11::Rhi()->GetNativeTexture(myTemporalTex[3]),
-				DX11::Rhi()->GetNativeTexture(myTemporalTex[4]), DX11::Rhi()->GetNativeTexture(myTemporalTex[5]), myResolution.x, myResolution.y,
+				DX11::Rhi()->GetNativeTexture(myTemporalTex[4]), DX11::Rhi()->GetNativeTexture(myTemporalTex[5]),
+				myDxrRenderResolution.x, myDxrRenderResolution.y, myResolution.x, myResolution.y,
+				myTunables.dlssMode > 0 ? myTunables.dlssMode : 1,
 				myTaaFrameIndex, myViewToProj.GetDataPtr(), myProjToView.GetDataPtr(), myWorldToView.GetDataPtr(), viewToWorld.GetDataPtr(),
 				clipToPrevious.GetDataPtr(), previousToClip.GetDataPtr(), myCameraTransform.GetDataPtr(), myNear, myFar, myTaaJitter.x, myTaaJitter.y,
 				!myTaaHistoryValid || myTaaLightingChanged);
@@ -628,7 +618,8 @@ void DeferredRenderer::ResolveDxrLightingToHdr()
 			if (sRrReported != rrState)
 			{
 				sRrReported = rrState;
-				if (dlaaResolved) INFO_PRINT("DXR denoiser: DLSS Ray Reconstruction active (%ux%u)", myResolution.x, myResolution.y);
+				if (dlaaResolved) INFO_PRINT("DXR denoiser: DLSS Ray Reconstruction active (%ux%u -> %ux%u)",
+					myDxrRenderResolution.x, myDxrRenderResolution.y, myResolution.x, myResolution.y);
 				else ERROR_PRINT("DXR denoiser: Ray Reconstruction requested but Streamline declined it; falling back to the native temporal resolve");
 			}
 		}

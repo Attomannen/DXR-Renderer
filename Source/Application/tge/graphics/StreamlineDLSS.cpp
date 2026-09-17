@@ -218,7 +218,8 @@ namespace Tga
 
 	bool StreamlineDLSS::EvaluateRayReconstruction(void* aCommandList, void* aColor, void* aOutput,
 		void* aDepth, void* aMotion, void* aNormalRoughness, void* aDiffuseAlbedo, void* aSpecularAlbedo,
-		uint32_t aWidth, uint32_t aHeight, uint32_t aFrameIndex, const float* aViewToClip,
+		uint32_t aRenderWidth, uint32_t aRenderHeight, uint32_t aOutputWidth, uint32_t aOutputHeight,
+		int aMode, uint32_t aFrameIndex, const float* aViewToClip,
 		const float* aClipToView, const float* aWorldToView, const float* aViewToWorld,
 		const float* aClipToPreviousClip, const float* aPreviousClipToClip, const float* aCameraTransform,
 		float aNearPlane, float aFarPlane, float aJitterX, float aJitterY, bool aReset)
@@ -228,8 +229,17 @@ namespace Tga
 		sl::FrameToken* token = nullptr;
 		if (!IsOk(myGetNewFrameToken(token, &aFrameIndex)) || !token) return false;
 		sl::DLSSDOptions options{};
-		options.mode = sl::DLSSMode::eDLAA; // RR at native resolution: denoise first, no spatial loss.
-		options.outputWidth = aWidth; options.outputHeight = aHeight;
+		// Ray Reconstruction replaces the denoiser AND the upscaler, so it runs
+		// at whichever DLSS quality mode is selected: eDLAA is simply the 1:1
+		// case, not a requirement.
+		switch (aMode) {
+		case 2: options.mode = sl::DLSSMode::eMaxQuality; break;
+		case 3: options.mode = sl::DLSSMode::eBalanced; break;
+		case 4: options.mode = sl::DLSSMode::eMaxPerformance; break;
+		case 5: options.mode = sl::DLSSMode::eUltraPerformance; break;
+		default: options.mode = sl::DLSSMode::eDLAA; break;
+		}
+		options.outputWidth = aOutputWidth; options.outputHeight = aOutputHeight;
 		options.colorBuffersHDR = sl::Boolean::eTrue;
 		options.normalRoughnessMode = sl::DLSSDNormalRoughnessMode::ePacked;
 		options.alphaUpscalingEnabled = sl::Boolean::eFalse;
@@ -242,12 +252,13 @@ namespace Tga
 		std::memcpy(&c.clipToPrevClip, aClipToPreviousClip, sizeof(c.clipToPrevClip));
 		std::memcpy(&c.prevClipToClip, aPreviousClipToClip, sizeof(c.prevClipToClip));
 		// Jitter sign: see EvaluateDLSS.
-		c.jitterOffset = { -aJitterX, -aJitterY }; c.mvecScale = {1.f / float(aWidth), 1.f / float(aHeight)};
+		// Motion vectors are written in render-resolution pixels.
+		c.jitterOffset = { -aJitterX, -aJitterY }; c.mvecScale = {1.f / float(aRenderWidth), 1.f / float(aRenderHeight)};
 		c.cameraPos = {aCameraTransform[12], aCameraTransform[13], aCameraTransform[14]};
 		c.cameraRight = {aCameraTransform[0], aCameraTransform[1], aCameraTransform[2]};
 		c.cameraUp = {aCameraTransform[4], aCameraTransform[5], aCameraTransform[6]};
 		c.cameraFwd = {aCameraTransform[8], aCameraTransform[9], aCameraTransform[10]};
-		c.cameraNear = aNearPlane; c.cameraFar = aFarPlane; c.cameraAspectRatio = float(aWidth) / float(aHeight);
+		c.cameraNear = aNearPlane; c.cameraFar = aFarPlane; c.cameraAspectRatio = float(aOutputWidth) / float(aOutputHeight);
 		c.depthInverted = sl::Boolean::eFalse; c.cameraMotionIncluded = sl::Boolean::eTrue;
 		c.motionVectors3D = sl::Boolean::eFalse; c.motionVectorsDilated = sl::Boolean::eFalse;
 		c.reset = aReset ? sl::Boolean::eTrue : sl::Boolean::eFalse;

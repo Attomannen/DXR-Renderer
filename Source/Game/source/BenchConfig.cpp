@@ -146,11 +146,12 @@ void ApplyRendererOverrides(DeferredRenderer::Tunables& tun)
 	tun.dlssMode = std::clamp(EnvInt("BENCH_DLSS_MODE", 0), 0, 5);
 	tun.dlaaEnabled = tun.dlssMode == 1;
 	tun.nrdEnabled = EnvInt("BENCH_NRD", tun.nrdEnabled ? 1 : 0) != 0;
+	// Ray Reconstruction replaces NRD; it runs at whatever BENCH_DLSS_MODE asks
+	// for (1 = DLAA / native, 2..5 = DLSS upscaling), so the two are independent.
 	if (EnvInt("BENCH_DXR_DENOISER", 0) != 0)
 	{
 		tun.rayReconstructionEnabled = true;
-		tun.dlaaEnabled = true;
-		tun.dlssMode = 1;
+		if (tun.dlssMode == 0) { tun.dlssMode = 1; tun.dlaaEnabled = true; }
 	}
 	tun.specularAaEnabled = EnvInt("BENCH_SPECULAR_AA", 1) != 0;
 	tun.taaDebugView = EnvInt("BENCH_TAA_VIEW", 0);

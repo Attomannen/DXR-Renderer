@@ -34,7 +34,8 @@ namespace Tga
 			bool aReset);
 		bool EvaluateRayReconstruction(void* aCommandList, void* aColor, void* aOutput,
 			void* aDepth, void* aMotion, void* aNormalRoughness, void* aDiffuseAlbedo,
-			void* aSpecularAlbedo, uint32_t aWidth, uint32_t aHeight, uint32_t aFrameIndex,
+			void* aSpecularAlbedo, uint32_t aRenderWidth, uint32_t aRenderHeight,
+			uint32_t aOutputWidth, uint32_t aOutputHeight, int aMode, uint32_t aFrameIndex,
 			const float* aViewToClip, const float* aClipToView, const float* aWorldToView,
 			const float* aViewToWorld, const float* aClipToPreviousClip,
 			const float* aPreviousClipToClip, const float* aCameraTransform,
