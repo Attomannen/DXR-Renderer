@@ -54,6 +54,9 @@ namespace Tga
 		// Engine-owned deferred renderer (G-buffer + PBR resolve + tonemap composite).
 		// Always constructed; check IsReady() before use. See DeferredRenderer.h.
 		DeferredRenderer& GetDeferredRenderer() const { return *myDeferredRenderer; };
+		// The game keeps the deferred renderer at the window size; the editor
+		// sizes it to its viewport instead and turns this off.
+		void SetDeferredFollowsWindowSize(bool aFollow) { myDeferredFollowsWindow = aFollow; }
 
 		// Frame-transient render-target pool shared by render-graph passes.
 		RenderResourcePool& GetRenderResourcePool() const { return *myRenderResourcePool; };
@@ -79,6 +82,7 @@ namespace Tga
 
 		std::unique_ptr<GraphicsStateStack> myGraphicsStateStack;
 		std::unique_ptr<DeferredRenderer> myDeferredRenderer;
+		bool myDeferredFollowsWindow = true;
 		std::unique_ptr<RenderResourcePool> myRenderResourcePool;
 
 		std::unique_ptr<FullscreenEffect> myFullscreenCopy;

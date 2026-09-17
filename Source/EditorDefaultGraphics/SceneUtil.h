@@ -1,10 +1,14 @@
 #pragma once
 
 #include <unordered_map>
+#include <chrono>
+#include <memory>
 #include <tge/stringRegistry/StringRegistry.h>
 #include <tge/math/Matrix4x4.h>
 
 #include "tge/animation/Pose.h"
+#include <vector>
+#include <tge/rhi/Descs.h>
 
 #include "tge/texture/Texture.h"
 
@@ -27,18 +31,32 @@ namespace Tga
 
 
 
+	struct MaterialAsset;
+
 	class SceneCache
 	{
 		std::unordered_map<StringId, Texture*> myTextureCache;
 		std::unordered_map<StringId, std::shared_ptr<Model>> myModelCache;
 		std::unordered_map<StringId, Scene*> mySceneCache;
+		// Materials are re-read for every mesh of every instance each frame;
+		// without this the editor does one file read per mesh per frame.
+		std::unordered_map<StringId, std::shared_ptr<MaterialAsset>> myMaterialCache;
 
 	public:
 		Texture* GetTextureUsingCache(StringId path, TextureSrgbMode srgbMode);
 		std::shared_ptr<Model> GetModelUsingCache(StringId path);
 		Scene* GetSceneUsingCache(StringId path);
+		// Null when the asset cannot be loaded. Cached until the next clear.
+		const MaterialAsset* GetMaterialUsingCache(StringId path);
 
 		void ClearCache();
+		// Drops the caches at most every aMinIntervalSeconds, so edited assets
+		// still appear while the editor is running without re-reading every
+		// model, texture and material from disk every frame.
+		void ClearCacheThrottled(float aMinIntervalSeconds = 0.5f);
+
+	private:
+		std::chrono::steady_clock::time_point myLastClear{};
 	};
 
 	struct DrawParameters
@@ -52,6 +70,18 @@ namespace Tga
 		ModelShader* overrideModelShader;
 
 		std::unordered_map<StringId, ModelSpacePose>* previewPoses;
+
+		// Which sub-meshes a static model draws: everything, only opaque /
+		// masked meshes (G-buffer, shadows) or only transparent ones (glass).
+		enum class MeshPass { All, Opaque, Transparent };
+		MeshPass meshPass = MeshPass::All;
+		// Locators and selection bounds belong to the editor overlay, not to
+		// the lit scene's extra passes.
+		bool drawHelpers = true;
+
+		// When set, static models are collected as ray-tracing instances for
+		// the TLAS instead of being drawn. One traversal, no draw calls.
+		std::vector<rhi::RaytracingInstanceDesc>* rayInstances = nullptr;
 	};
 
 	void SetupIdPass();

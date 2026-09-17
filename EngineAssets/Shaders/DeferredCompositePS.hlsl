@@ -8,7 +8,7 @@ Texture2D Hdr      : register(t0);
 Texture2D Bloom    : register(t1);
 Texture2D Exposure : register(t2);
 
-float3 main(FsIn i) : SV_TARGET
+float4 main(FsIn i) : SV_TARGET
 {
 	float3 hdr   = Hdr.SampleLevel(LinearClamp, i.uv, 0).rgb;
 	float3 bloom = Bloom.SampleLevel(LinearClamp, i.uv, 0).rgb;
@@ -34,5 +34,5 @@ float3 main(FsIn i) : SV_TARGET
 	// Bloom is gathered from the unexposed HDR, so expose it the same way.
 	float3 color = (hdr + bloom * gBloomIntensity) * exposure;
 	color = Tonemap(color);
-	return color;
+	return float4(color, 1.0f);   // opaque: the editor shows this target through ImGui
 }

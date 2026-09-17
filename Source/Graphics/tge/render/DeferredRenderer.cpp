@@ -39,18 +39,6 @@ bool DeferredRenderer::Init(Vector2ui aResolution)
 		return false;
 	}
 
-	myDebugMatShader = std::make_unique<ModelShader>();
-	if (!myDebugMatShader->Init("Shaders/PbrModelShaderVS", "Shaders/GBufferDebugMatPS"))
-	{
-		ERROR_PRINT("DeferredRenderer: debug material shader failed; material preview disabled");
-		myDebugMatShader.reset();
-	}
-	else
-	{
-		myDebugMatCb.Create(*DX11::Rhi(), 48, rhi::ShaderStage::Pixel, 11, "DebugMatCb");   // 3 x float4
-		if (!myDebugMatCb.IsValid()) myDebugMatShader.reset();
-	}
-
 	myGlassShader = std::make_unique<ModelShader>();
 	if (!myGlassShader->Init("Shaders/PbrModelShaderVS", "Shaders/GlassModelShaderPS"))
 	{
@@ -61,6 +49,7 @@ bool DeferredRenderer::Init(Vector2ui aResolution)
 	myLightingPs   = DX11::LoadPixelShader("Shaders/DeferredLightingPS");
 	myDebugPs      = DX11::LoadPixelShader("Shaders/DeferredDebugPS");
 	mySceneCopyPs  = DX11::LoadPixelShader("Shaders/PostprocessCopyPS");
+	myDxrDepthPs   = DX11::LoadPixelShader("Shaders/DxrDepthToBufferPS");
 	if (!myFullscreenVs || !myLightingPs || !myDebugPs || !mySceneCopyPs)
 	{
 		ERROR_PRINT("DeferredRenderer: failed to load fullscreen shaders");
@@ -193,7 +182,10 @@ bool DeferredRenderer::Init(Vector2ui aResolution)
 			else if (!CreateDxrBrdfLut())
 				ERROR_PRINT("DeferredRenderer: BRDF LUT generation failed; using the analytic IBL fallback.");
 			else
+			{
+				GraphicsEngine::GetInstance()->GetGraphicsStateStack().SetBrdfLutSrv(myDxrBrdfLutSrv);
 				INFO_PRINT("DeferredRenderer: DXR lighting pass ready (toggle with SetDxrLighting)");
+			}
 		}
 
 		// Ray-traced probe capture -- reuses myGiShBuffer (created above, if
@@ -430,18 +422,6 @@ void DeferredRenderer::SetReflectionProbeBox(const Vector3f& c, const Vector3f& 
 	myProbeCb.Update(DX11::Rhi()->GetContext(), myProbeBox, sizeof(myProbeBox));
 }
 
-void DeferredRenderer::BindDebugMaterial(const DebugMaterial& m)
-{
-	if (!myDebugMatCb.IsValid()) return;
-	float d[12];
-	d[0] = m.baseColor[0]; d[1] = m.baseColor[1]; d[2] = m.baseColor[2]; d[3] = 0.f;
-	d[4] = m.roughness; d[5] = m.metalness; d[6] = m.ao; d[7] = m.emissiveStrength;
-	d[8] = m.emissiveColor[0]; d[9] = m.emissiveColor[1]; d[10] = m.emissiveColor[2]; d[11] = 0.f;
-	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
-	myDebugMatCb.Update(ctx, d, sizeof(d));
-	myDebugMatCb.Bind(ctx);
-}
-
 void DeferredRenderer::RenderSSR()
 {
 	if (!IsSSR()) return;
@@ -507,6 +487,9 @@ void DeferredRenderer::RenderSSR()
 		const rhi::SrvHandle srvs2Null[2] = {};
 		ctx.SetShaderResources(rhi::ShaderStage::Pixel, 0, 2, srvs2Null);
 		gss.SetBlendState(BlendState::Disabled);
+		gss.UpdateGpuStates();
+		// t0 is the environment cube for every later pass.
+		gss.BindLightingTextures();
 	}
 }
 
@@ -977,6 +960,50 @@ void DeferredRenderer::BuildFrame(RenderGraph& aGraph,
                                  const std::function<void(const Camera&)>& aDrawShadowCasters,
                                  int aDebugChannel)
 {
+	// DXR produces its opaque scene directly into HDR, but authored transparent
+	// meshes still need the same post-ray forward composite as the raster path.
+	// Keep this in one helper so the two frame paths cannot silently diverge.
+	const auto addTransparentPass = [this, aDrawTransparent, &aGraph]()
+	{
+		if (!aDrawTransparent) return;
+		aGraph.AddPass("transparent", [this, aDrawTransparent](RenderGraph&)
+		{
+			// Glass must never sample the HDR texture currently bound as its render
+			// target. Snapshot the opaque HDR scene, then blend over it while using
+			// the opaque depth buffer as a read-only visibility test.
+			rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
+			SetTargets(ctx, { myOpaqueHdr.GetRtv() }, {}, myResolution);
+			ctx.SetShaderResource(rhi::ShaderStage::Pixel, 1, myHdr.GetSrv());
+			BindFullscreen(mySceneCopyPs);
+			ctx.Draw(3, 0);
+			ctx.SetShaderResource(rhi::ShaderStage::Pixel, 1, {});
+			SetTargets(ctx, { myHdr.GetRtv() }, DX11::DepthBuffer->GetDsv(), myResolution);
+			auto& gss = GraphicsEngine::GetInstance()->GetGraphicsStateStack();
+			gss.SetBlendState(BlendState::AlphaBlend);
+			gss.SetDepthStencilState(DepthStencilState::ReadOnlyLessOrEqual);
+			// Without depth writes, back faces of closed glass would blend over
+			// the front faces in triangle order.
+			gss.SetRasterizerState(RasterizerState::BackfaceCulling);
+			ctx.SetShaderResource(rhi::ShaderStage::Pixel, 9, myOpaqueHdr.GetSrv());
+			ctx.SetShaderResource(rhi::ShaderStage::Pixel, 6, DX11::DepthBuffer->GetSrv());
+			const bool preExposed = PreExposureActive();
+			if (preExposed) ctx.SetShaderResource(rhi::ShaderStage::Pixel, 7, myExposure[myPreExposureIndex].GetSrv());
+			// In the DXR renderer, reflect the same prefiltered environment the rays use.
+			const bool dxrEnvironment = IsDxrRenderer() && myGiEnvironmentEnabled;
+			const Vector3f tint = dxrEnvironment ? EnvironmentTint() : Vector3f{ 1.f, 1.f, 1.f };
+			gss.SetCustomShaderParameters({ preExposed ? 1.f : 0.f, tint.x, tint.y, tint.z });
+			gss.UpdateGpuStates();
+			if (dxrEnvironment) ctx.SetShaderResource(rhi::ShaderStage::Pixel, 0, myGiEnvironmentSrv);
+			aDrawTransparent();
+			gss.SetCustomShaderParameters({ 0.f, 0.f, 0.f, 0.f });
+			ctx.SetShaderResource(rhi::ShaderStage::Pixel, 9, {});
+			ctx.SetShaderResource(rhi::ShaderStage::Pixel, 6, {});
+			ctx.SetShaderResource(rhi::ShaderStage::Pixel, 7, {});
+			gss.SetBlendState(BlendState::Disabled);
+			gss.SetDepthStencilState(DepthStencilState::WriteLess);
+		});
+	};
+
 	// Full DXR renderer: the camera RayQuery pass is the sole producer of HDR
 	// radiance. Do this before any G-buffer, CSM, local-shadow-atlas, SSAO, SSR,
 	// or transparent raster work is scheduled, so no raster lighting input can
@@ -985,6 +1012,13 @@ void DeferredRenderer::BuildFrame(RenderGraph& aGraph,
 	{
 		aGraph.AddPass("dxrRenderer", [this](RenderGraph&) { RenderDxrLighting(); });
 		aGraph.AddPass("dxrRendererToHdr", [this](RenderGraph&) { ResolveDxrLightingToHdr(); });
+		// Glass and other forward materials composite over the ray-traced
+		// result, depth-tested against the ray-traced depth.
+		if (aDrawTransparent)
+		{
+			aGraph.AddPass("dxrDepth", [this](RenderGraph&) { WriteDxrDepthToDepthBuffer(); });
+			addTransparentPass();
+		}
 		aGraph.AddPass("atmosphere", [this](RenderGraph&) { RenderAtmosphere(); });
 		if (IsPostFx())
 			aGraph.AddPass("postfx", [this](RenderGraph&) { RenderPostFx(); });
@@ -1018,39 +1052,6 @@ void DeferredRenderer::BuildFrame(RenderGraph& aGraph,
 		BeginGeometryPass();
 		if (aDrawOpaque) aDrawOpaque();
 	});
-	// DXR produces its opaque scene directly into HDR, but authored transparent
-	// meshes still need the same post-ray forward composite as the raster path.
-	// Keep this in one helper so the two frame paths cannot silently diverge.
-	const auto addTransparentPass = [this, aDrawTransparent, &aGraph]()
-	{
-		if (!aDrawTransparent) return;
-		aGraph.AddPass("transparent", [this, aDrawTransparent](RenderGraph&)
-		{
-			// Glass must never sample the HDR texture currently bound as its render
-			// target. Snapshot the opaque HDR scene, then blend over it while using
-			// the opaque depth buffer as a read-only visibility test.
-			rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
-			SetTargets(ctx, { myOpaqueHdr.GetRtv() }, {}, myResolution);
-			ctx.SetShaderResource(rhi::ShaderStage::Pixel, 1, myHdr.GetSrv());
-			BindFullscreen(mySceneCopyPs);
-			ctx.Draw(3, 0);
-			ctx.SetShaderResource(rhi::ShaderStage::Pixel, 1, {});
-			SetTargets(ctx, { myHdr.GetRtv() }, DX11::DepthBuffer->GetDsv(), myResolution);
-			auto& gss = GraphicsEngine::GetInstance()->GetGraphicsStateStack();
-			gss.SetBlendState(BlendState::AlphaBlend);
-			gss.SetDepthStencilState(DepthStencilState::ReadOnlyLessOrEqual);
-			gss.SetCustomShaderParameters({ myTunables.glassIor, myTunables.glassRefractionScale,
-				myTunables.glassThickness, myTunables.glassAbsorption });
-			ctx.SetShaderResource(rhi::ShaderStage::Pixel, 5, myOpaqueHdr.GetSrv());
-			ctx.SetShaderResource(rhi::ShaderStage::Pixel, 6, DX11::DepthBuffer->GetSrv());
-			aDrawTransparent();
-			ctx.SetShaderResource(rhi::ShaderStage::Pixel, 5, {});
-			ctx.SetShaderResource(rhi::ShaderStage::Pixel, 6, {});
-			gss.SetCustomShaderParameters({ 0.f, 0.f, 0.f, 0.f });
-			gss.SetBlendState(BlendState::Disabled);
-			gss.SetDepthStencilState(DepthStencilState::WriteLess);
-		});
-	};
 	if (IsDxrSunShadows()) aGraph.AddPass("dxrSunShadows", [this](RenderGraph&) { RenderDxrSunShadows(); });
 
 	// DXR Stage-3 validation: independent of the debug-channel system (reads
@@ -1214,6 +1215,7 @@ void DeferredRenderer::ResolveLighting()
 
 	BindGBufferSrvs();
 	BindFullscreen(myLightingPs);
+	GraphicsEngine::GetInstance()->GetGraphicsStateStack().BindLightingTextures();
 	ctx.Draw(3, 0);
 	UnbindGBufferSrvs();
 

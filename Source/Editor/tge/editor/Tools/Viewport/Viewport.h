@@ -47,7 +47,9 @@ namespace Tga
 
 		void BeginDraw();
 		void SetupIdPass();
-		void SetupColorPass();
+		void SetupColorPass(bool aDrawGrid = true);
+		// Grid over an already-rendered colour target, depth-tested against it.
+		void DrawGrid();
 		void EndDraw();
 
 		void SetColorAsTarget(bool useDepth);

@@ -79,20 +79,6 @@ namespace Tga
 		bool HasGlassShader() const { return myGlassShader != nullptr; }
 		const ModelShader& GetGlassShader() const { return *myGlassShader; }
 
-		// Material-preview shader: renders a mesh into the G-buffer with constant PBR
-		// values (no textures) from BindDebugMaterial(). For a debug sphere.
-		struct DebugMaterial
-		{
-			float baseColor[3] = { 0.8f, 0.8f, 0.8f };
-			float roughness = 0.5f;
-			float metalness = 0.0f;
-			float ao = 1.0f;
-			float emissiveColor[3] = { 1.f, 1.f, 1.f };
-			float emissiveStrength = 0.0f;
-		};
-		bool HasDebugMatShader() const { return myDebugMatShader != nullptr; }
-		const ModelShader& GetDebugMatShader() const { return *myDebugMatShader; }
-		void BindDebugMaterial(const DebugMaterial& aMat);
 
 		// Register this frame's deferred passes on the graph:
 		//   geometry (aDrawOpaque fills the G-buffer) -> lighting -> transparent
@@ -270,13 +256,6 @@ namespace Tga
 			float sunDiskAngularRadius = 0.0093f; // radians; ~0.53 degrees, the real sun
 			float sunDiskIntensity = 24.f;        // HDR, shaped by the existing exposure/bloom path
 			int atmosphereDebugView = 0; // beauty, transmittance, sunlight
-
-			// Screen-space glass.  The values are deliberately shared while the
-			// material format has no explicit transmission extension yet.
-			float glassIor = 1.52f;
-			float glassRefractionScale = 1.0f;
-			float glassThickness = 12.0f; // scene centimetres
-			float glassAbsorption = 0.08f;
 
 			// --- post FX (bloom + exposure) ---
 			bool  bloomEnabled    = true;
@@ -473,6 +452,7 @@ namespace Tga
 		void RenderShadows(const std::function<void(const Camera&)>& aDrawShadowCasters);
 		void RenderDxrSunShadows();
 		void BindFullscreen(const PixelShader* aPixelShader);
+		void WriteDxrDepthToDepthBuffer();
 		void BindGBufferSrvs();
 		void UnbindGBufferSrvs();
 
@@ -487,13 +467,12 @@ namespace Tga
 		RenderTarget myOpaqueHdr;   // immutable HDR snapshot sampled by forward glass
 
 		std::unique_ptr<ModelShader> myGeometryShader;   // PbrModelShaderVS + GBufferPS
-		std::unique_ptr<ModelShader> myDebugMatShader;   // PbrModelShaderVS + GBufferDebugMatPS
 		std::unique_ptr<ModelShader> myGlassShader;      // PbrModelShaderVS + GlassModelShaderPS
-		rhi::ConstantBuffer myDebugMatCb;   // b11
 		const VertexShader* myFullscreenVs = nullptr;
 		const PixelShader*  myLightingPs   = nullptr;
 		const PixelShader*  myDebugPs      = nullptr;
 		const PixelShader*  mySceneCopyPs  = nullptr;
+		const PixelShader*  myDxrDepthPs   = nullptr;   // DXR device depth -> depth buffer
 
 		rhi::SamplerHandle myPointSampler;   // s1
 

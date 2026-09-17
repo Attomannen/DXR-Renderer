@@ -22,6 +22,11 @@
 #include "tge/render/RenderCommon.h"
 #include "tge/render/RenderGraph.h"
 #include "tge/render/DeferredRenderer.h"
+#include <tge/graphics/RenderTarget.h>
+#include <tge/graphics/DepthBuffer.h>
+#include <tge/texture/TextureManager.h>
+#include <tge/graphics/AmbientLight.h>
+#include <tge/graphics/DirectionalLight.h>
 #include "tge/settings/settings.h"
 #include "tge/texture/TextureManager.h"
 #include "tge/texture/texture.h"
@@ -32,6 +37,8 @@
 #include <tge/imgui/ImGuiPropertyEditor.h>
 #include <tge/editor/Editor.h>
 #include <tge/editor/Material/MaterialAsset.h>
+#include "Material/MaterialGraphBake.h"
+#include <tge/render/RayTracingMaterialTable.h>
 #include <tge/editor/imgui_widgets/imgui_widgets.h>
 #include <tge/graphics/DX11.h>
 #include <tge/rhi/Device.h>
@@ -99,6 +106,10 @@ namespace Tga
 		void Draw(const SceneDrawParameters& parameters) override;
 
 	private:
+		// Lit colour pass through the engine's deferred renderer. Returns false
+		// when the renderer is unavailable so the caller can draw forward.
+		bool DrawDeferredColorPass(const SceneDrawParameters& parameters, Frustum& frustum);
+
 		SceneCache myCache;
 
 		// Routes the color pass through the real deferred pipeline (G-buffer,
@@ -113,8 +124,11 @@ namespace Tga
 		// (see Scene::GetSunYaw() etc.) instead of here, so the hierarchy
 		// panel's Sun/Ambient pseudo-entries (SceneLightSelection) can expose
 		// and edit the same state this reads.
-		std::unique_ptr<DeferredRenderer> myDeferredRenderer;
 		Vector2ui myDeferredResolution{ 0, 0 };
+		// TLAS instances, rebuilt only when the scene's geometry changes.
+		std::vector<rhi::RaytracingInstanceDesc> myRayInstances;
+		uint64_t mySceneStamp = 0;
+		bool myRayTracedViewport = true;
 	};
 
 	class  DefaultAnimationClipEditorGraphics : public AnimationClipEditorGraphicsBase
@@ -137,24 +151,36 @@ namespace Tga
 	class DefaultMaterialEditorGraphics : public MaterialEditorGraphicsBase
 	{
 	public:
+		enum class PreviewViewMode { Lit, Unlit, Wireframe, Normals };
+
 		DefaultMaterialEditorGraphics()
 		{
 			if (!GraphicsEngine::GetInstance())
 				GraphicsEngine::Start();
 
 			myConstShader.Init("shaders/PbrModelShaderVs", "shaders/PbrConstModelShaderPS");
-
-			myMatCb.Create(*DX11::Rhi(), 48, rhi::ShaderStage::Pixel, 11, "MaterialEditorMatCb");   // 3 x float4
+			// Unlit reads the same per-mesh textures myInstance.SetTexture() below
+			// already binds -- it just skips the lighting stack entirely, same as
+			// UE's material preview "Unlit" view mode.
+			myUnlitShader.Init("shaders/PbrModelShaderVs", "shaders/model_shader_PS");
+			myNormalsShader.Init("shaders/PbrModelShaderVs", "shaders/DebugPixelNormalModelShaderPS");
 		}
 
 		void Draw(const MaterialEditorDrawParameters& parameters) override;
 		void DrawPreviewSettings() override;
+		bool BakeMaterialGraph(const MaterialGraphBakeRequest& request) override;
 
 	private:
 		ModelShader myConstShader;
-		rhi::ConstantBuffer myMatCb;
+		ModelShader myUnlitShader;
+		ModelShader myNormalsShader;
 		std::string myPreviewMeshLoaded;
 		ModelInstance myInstance;
+
+		PreviewViewMode myViewMode = PreviewViewMode::Lit;
+		bool myAutoRotate = true;
+		float myRotationSpeed = 30.f;   // degrees/sec
+		float myRotationAngle = 0.f;
 
 		float myLightYaw = 45.f;
 		float myLightPitch = -40.f;
@@ -173,8 +199,9 @@ void DefaultObjectDefinitionEditorGraphics::Draw(ObjectDefinitionDrawParameters&
 	if (!GraphicsEngine::GetInstance())
 		GraphicsEngine::Start();
 	GraphicsEngine::GetInstance()->BeginFrame();
-	// clearing out caches every frame to support updates to assets while the editor is running
-	myCache.ClearCache();
+	// Asset edits still show up while the editor runs, but re-reading every
+	// model, texture and material from disk every frame is far too expensive.
+	myCache.ClearCacheThrottled();
 	Camera& renderCamera = parameters.viewport->GetCamera();
 	Frustum frustum = CalculateFrustum(renderCamera);
 
@@ -403,8 +430,9 @@ void DefaultSceneEditorGraphics::Draw(const SceneDrawParameters& parameters)
 
 	GraphicsEngine::GetInstance()->BeginFrame();
 
-	// clearing out caches every frame to support updates to assets while the editor is running
-	myCache.ClearCache();
+	// Asset edits still show up while the editor runs, but re-reading every
+	// model, texture and material from disk every frame is far too expensive.
+	myCache.ClearCacheThrottled();
 
 	const Camera& renderCamera = parameters.viewport->GetCamera();
 	Frustum frustum = CalculateFrustum(renderCamera);
@@ -446,8 +474,9 @@ void DefaultSceneEditorGraphics::Draw(const SceneDrawParameters& parameters)
 			}
 		}
 
+		if (!DrawDeferredColorPass(parameters, frustum))
 		{
-			// And one pass to render to editor render-target
+			// Forward fallback: flat PBR, no shadows or glass.
 			parameters.viewport->SetupColorPass();
 
 			DrawParameters drawParameters = {
@@ -480,10 +509,239 @@ void DefaultSceneEditorGraphics::Draw(const SceneDrawParameters& parameters)
 
 }
 
+// Point and spot lights authored as scene objects, in the renderer's format.
+static void CollectSceneLights(const Scene& aScene, std::vector<DeferredLight>& outLights)
+{
+	for (const auto& entry : aScene.GetSceneObjects())
+	{
+		const SceneObject& object = *entry.second;
+		if (!object.IsLight() || (int)outLights.size() >= DeferredRenderer::kMaxLights) continue;
+
+		const Matrix4x4f transform = object.GetTransform();
+		const Vector3f position = transform.GetPosition();
+		const float* color = object.GetLightColor();
+		DeferredLight light = {};
+		light.position[0] = position.x; light.position[1] = position.y; light.position[2] = position.z;
+		light.range = object.GetLightRange();
+		light.color[0] = color[0]; light.color[1] = color[1]; light.color[2] = color[2];
+		light.radius = object.GetLightRadius();
+		if (object.GetType() == SceneObjectType::SpotLight)
+		{
+			const Vector3f direction = transform.GetForward();
+			light.spotDir[0] = direction.x; light.spotDir[1] = direction.y; light.spotDir[2] = direction.z;
+			light.spotCosOuter = std::cos(DegToRad(object.GetLightOuterAngle()));
+			light.spotCosInner = std::cos(DegToRad(std::min(object.GetLightInnerAngle(), object.GetLightOuterAngle())));
+		}
+		else
+		{
+			light.spotDir[1] = -1.f;
+			light.spotCosOuter = -1.f;
+			light.spotCosInner = -1.f;
+		}
+		light.shadowSlot = -1.f;
+		outLights.push_back(light);
+	}
+}
+
+// Changes that invalidate the ray-tracing instance list: which objects exist,
+// where they are and which model / materials they use.
+static uint64_t HashSceneGeometry(const Scene& aScene)
+{
+	uint64_t hash = 1469598103934665603ull;
+	auto mix = [&hash](uint64_t value) { hash = (hash ^ value) * 1099511628211ull; };
+	auto mixFloat = [&mix](float value) { uint32_t bits; std::memcpy(&bits, &value, 4); mix(bits); };
+	for (const auto& entry : aScene.GetSceneObjects())
+	{
+		mix(entry.first);
+		const TRS& trs = entry.second->GetTRS();
+		mixFloat(trs.translation.x); mixFloat(trs.translation.y); mixFloat(trs.translation.z);
+		mixFloat(trs.rotation.x); mixFloat(trs.rotation.y); mixFloat(trs.rotation.z);
+		mixFloat(trs.scale.x); mixFloat(trs.scale.y); mixFloat(trs.scale.z);
+	}
+	return hash;
+}
+
+bool DefaultSceneEditorGraphics::DrawDeferredColorPass(const SceneDrawParameters& parameters, Frustum& frustum)
+{
+	GraphicsEngine& ge = *GraphicsEngine::GetInstance();
+	DeferredRenderer& dr = ge.GetDeferredRenderer();
+	Scene* scene = parameters.scene ? parameters.scene : GetActiveScene();
+	size_t forwardFlagLength = 0;
+	getenv_s(&forwardFlagLength, nullptr, 0, "TGE_EDITOR_FORWARD");   // any value keeps the old forward view
+	if (!dr.IsReady() || !scene || forwardFlagLength > 0) return false;
+
+	EditorViewport& viewport = *parameters.viewport;
+	const Vector2ui resolution = viewport.GetRenderTarget().GetResolution();
+	if (resolution.x == 0 || resolution.y == 0) return false;
+
+	// The deferred renderer follows this viewport, not the editor window.
+	ge.SetDeferredFollowsWindowSize(false);
+	if (resolution != myDeferredResolution || resolution != dr.GetResolution())
+	{
+		dr.OnResize(resolution);
+		myDeferredResolution = resolution;
+	}
+
+	// Scene lighting. Scene pitch is negative-down; the renderer's is positive-down.
+	auto& gss = ge.GetGraphicsStateStack();
+	const float* sunColor = scene->GetSunColor();
+	const float sunIntensity = scene->GetSunIntensity();
+	DirectionalLight sun{};
+	sun.transform = Matrix4x4f::CreateFromRollPitchYaw({ -scene->GetSunPitch(), scene->GetSunYaw(), 0.f });
+	sun.color = Color{ sunColor[0] * sunIntensity, sunColor[1] * sunIntensity, sunColor[2] * sunIntensity };
+	gss.SetDirectionalLight(sun);
+
+	const float* ambientColor = scene->GetAmbientColor();
+	AmbientLight ambient{};
+	ambient.color = Color{ ambientColor[0], ambientColor[1], ambientColor[2] };
+	ambient.type = AmbientLightType::Custom;
+	ambient.cubemap = ge.GetTextureManager().GetTexture("Textures/horizonCubeMap.dds", TextureSrgbMode::None);
+	if (!ambient.cubemap) ambient.type = AmbientLightType::Uniform;
+	gss.SetAmbientLight(ambient);
+
+	// Scene point / spot lights. Authored as ordinary scene objects, so one
+	// pass over the hierarchy collects them.
+	std::vector<DeferredLight> lights;
+	CollectSceneLights(*scene, lights);
+	dr.UploadLights(lights.data(), (int)lights.size());
+
+	// The ray-traced path samples this cube for sky and ambient light.
+	if (ambient.cubemap)
+		dr.SetGiEnvironment(ambient.cubemap->GetSrv(), { ambientColor[0], ambientColor[1], ambientColor[2] }, true);
+	else
+		dr.SetGiEnvironment({}, { 0.f, 0.f, 0.f }, false);
+	// No irradiance probe volume in the editor yet.
+	dr.SetGiVolume({ 0.f, 0.f, 0.f }, { 1.f, 1.f, 1.f }, 1, 1, 1, 0.f, false);
+	dr.SetReflectionProbeBox({ 0.f, 0.f, 0.f }, { 1.f, 1.f, 1.f }, false);
+
+	// Ray tracing when the device supports it: the same renderer the game uses,
+	// fed by a TLAS built from this scene. Rebuilt only when the scene changes.
+	rhi::IDevice* device = DX11::Rhi();
+	const bool wantRayTracing = device && device->SupportsRaytracingTier11() && myRayTracedViewport;
+	const Camera& camera = viewport.GetCamera();
+	dr.SetShadows(true);
+	dr.SetSSAO(true);
+	dr.SetSSR(true);
+	dr.SetClustered(true);
+	dr.SetLocalShadows(false);
+	dr.SetPostFx(true);
+	const Vector3f cameraPos = camera.GetTransform().GetPosition();
+	dr.SetShadowLight(sun.transform.GetForward(), cameraPos, 5000.f);
+	dr.SetCamera(camera);
+	gss.SetCamera(camera);
+	// The id pass and editor overlays leave GPU state behind that the state
+	// stack does not track; start the lit frame from a known state.
+	gss.SetBlendState(BlendState::Disabled);
+	gss.SetDepthStencilState(DepthStencilState::WriteLess);
+	gss.SetRasterizerState(RasterizerState::BackfaceCulling);
+	gss.UpdateGpuStates(true);
+
+	bool rayTracing = false;
+	if (wantRayTracing)
+	{
+		// The instance list only changes when the scene does; a moving editor
+		// camera must not rebuild it.
+		const uint64_t sceneStamp = HashSceneGeometry(*scene);
+		if (sceneStamp != mySceneStamp || myRayInstances.empty())
+		{
+			myRayInstances.clear();
+			DrawParameters collect = {
+				.useIdShader = false,
+				.drawBounds = false,
+				.boundsColor = {},
+				.cache = myCache,
+				.frustum = frustum,
+				.viewport = viewport,
+				.overrideModelShader = nullptr,
+			};
+			collect.drawHelpers = false;
+			collect.rayInstances = &myRayInstances;
+			for (auto& object : scene->GetSceneObjects())
+				DrawSceneObject(*object.second, collect);
+			mySceneStamp = sceneStamp;
+		}
+		if (!myRayInstances.empty())
+		{
+			device->BuildRaytracingTlas(myRayInstances.data(), (uint32_t)myRayInstances.size());
+			dr.SetRaySceneStationary(true);   // static scene: only the camera moves
+			rayTracing = true;
+		}
+	}
+	dr.SetDxrRenderer(rayTracing);
+
+	// DeferredRenderer draws into the DX11 back/depth buffer globals.
+	RenderTarget* savedBackBuffer = DX11::BackBuffer;
+	DepthBuffer* savedDepthBuffer = DX11::DepthBuffer;
+	DX11::BackBuffer = &viewport.GetRenderTarget();
+	DX11::DepthBuffer = &viewport.GetColorDepthBuffer();
+	viewport.GetColorDepthBuffer().Clear(1.0f, 0);
+
+	auto makeParameters = [&](DrawParameters::MeshPass aPass, ModelShader* aShader, Frustum& aFrustum)
+	{
+		DrawParameters p = {
+			.useIdShader = false,
+			.drawBounds = false,
+			.boundsColor = {},
+			.cache = myCache,
+			.frustum = aFrustum,
+			.viewport = viewport,
+			.overrideModelShader = aShader,
+		};
+		p.meshPass = aPass;
+		p.drawHelpers = false;
+		return p;
+	};
+	auto drawScene = [this, scene](DrawParameters& p)
+	{
+		for (auto& object : scene->GetSceneObjects())
+			DrawSceneObject(*object.second, p);
+	};
+
+	ModelShader& geometryShader = const_cast<ModelShader&>(dr.GetGeometryShader());
+	ModelShader& shadowShader = const_cast<ModelShader&>(dr.GetShadowShader());
+	ModelShader* glassShader = dr.HasGlassShader() ? &const_cast<ModelShader&>(dr.GetGlassShader()) : nullptr;
+
+	auto drawOpaque = [&]()
+	{
+		DrawParameters p = makeParameters(DrawParameters::MeshPass::Opaque, &geometryShader, frustum);
+		drawScene(p);
+	};
+	auto drawTransparent = [&]()
+	{
+		DrawParameters p = makeParameters(DrawParameters::MeshPass::Transparent, glassShader, frustum);
+		drawScene(p);
+	};
+	auto drawShadowCasters = [&](const Camera& shadowCamera)
+	{
+		Frustum shadowFrustum = CalculateFrustum(shadowCamera);
+		DrawParameters p = makeParameters(DrawParameters::MeshPass::Opaque, &shadowShader, shadowFrustum);
+		drawScene(p);
+	};
+
+	{
+		RenderGraph graph(ge.GetRenderResourcePool(), nullptr);
+		// TGE_EDITOR_GBUF=1..8 shows one G-buffer channel instead of lighting.
+		char channel[8] = {};
+		size_t channelLength = 0;
+		getenv_s(&channelLength, channel, sizeof(channel), "TGE_EDITOR_GBUF");
+		dr.BuildFrame(graph, drawOpaque, drawTransparent, drawShadowCasters, channelLength ? atoi(channel) : 0);
+		graph.Execute();
+	}
+
+	DX11::BackBuffer = savedBackBuffer;
+	DX11::DepthBuffer = savedDepthBuffer;
+
+	// Editor overlay on top of the lit image.
+	gss.SetCamera(camera);
+	gss.UpdateGpuStates(true);
+	viewport.DrawGrid();
+	return true;
+}
+
 void DefaultAnimationClipEditorGraphics::Draw(const AnimationClipDrawParameters& parameters)
 {
 	Tga::LineDrawer& lineDrawer = GraphicsEngine::GetInstance()->GetLineDrawer();
-	myCache.ClearCache();
+	myCache.ClearCacheThrottled();
 
 	std::shared_ptr<Model> model;
 	FilePathStream dummyPath;
@@ -654,42 +912,114 @@ void DefaultMaterialEditorGraphics::Draw(const MaterialEditorDrawParameters& par
 		Matrix4x4f::CreateFromRollPitchYaw({ myLightPitch, myLightYaw, 0.f }),
 		myLightIntensity * myLightColor, 0.f });
 
-	// Centre the unit primitive (~100 units) in front of the camera focus.
-	Matrix4x4f xf = Matrix4x4f::CreateIdentityMatrix();
+	// Auto-spin, same idea as UE's material preview turntable -- driven off
+	// ImGui's frame delta since Draw() isn't handed one of its own.
+	if (myAutoRotate)
+	{
+		myRotationAngle += ImGui::GetIO().DeltaTime * myRotationSpeed;
+		if (myRotationAngle > 360.f) myRotationAngle -= 360.f;
+	}
+	Matrix4x4f xf = Matrix4x4f::CreateFromRollPitchYaw({ 0.f, myRotationAngle, 0.f });
 	myInstance.SetTransform(xf);
+
+	int triCount = 0;
+	int mapCount = 0;
+	for (int j = 0; j < 4; ++j) if (!mat.maps[j].empty()) ++mapCount;
 
 	if (myInstance.IsValid())
 	{
 		ModelDrawer& md = GraphicsEngine::GetInstance()->GetModelDrawer();
-		if (mat.AnyMaps())
+		auto& texMgr = GraphicsEngine::GetInstance()->GetTextureManager();
+		const int meshCount = myInstance.GetModel() ? (int)myInstance.GetModel()->GetMeshCount() : 0;
+		for (int m = 0; m < meshCount; ++m)
 		{
-			auto& texMgr = GraphicsEngine::GetInstance()->GetTextureManager();
-			const int meshCount = myInstance.GetModel() ? (int)myInstance.GetModel()->GetMeshCount() : 0;
-			for (int m = 0; m < meshCount; ++m)
-				for (int j = 0; j < 4; ++j)
-				{
-					if (mat.maps[j].empty()) continue;
-					const TextureSrgbMode srgb = (j == 0) ? TextureSrgbMode::ForceSrgbFormat : TextureSrgbMode::ForceNoSrgbFormat;
-					if (Texture* t = texMgr.GetTexture(mat.maps[j].c_str(), srgb))
-						myInstance.SetTexture(m, j, t);
-				}
-			md.Draw(myInstance, md.GetPbrShader());
-		}
-		else
-		{
-			// Pack the 48-byte b11 material cbuffer and bind it for the const shader.
-			if (myMatCb.IsValid())
+			triCount += myInstance.GetModel()->GetMeshData(m).numberOfIndices / 3;
+			for (int j = 0; j < 4; ++j)
 			{
-				float d[12];
-				d[0] = mat.baseColor[0]; d[1] = mat.baseColor[1]; d[2] = mat.baseColor[2]; d[3] = 1.f;
-				d[4] = mat.roughness;    d[5] = mat.metalness;    d[6] = mat.ao;           d[7] = mat.emissiveStrength;
-				d[8] = mat.emissiveColor[0]; d[9] = mat.emissiveColor[1]; d[10] = mat.emissiveColor[2]; d[11] = 1.f;
-				rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
-				myMatCb.Update(ctx, d, sizeof(d));
-				myMatCb.Bind(ctx);
+				if (mat.maps[j].empty()) continue;
+				const TextureSrgbMode srgb = mat.MapIsSrgb(j) ? TextureSrgbMode::ForceSrgbFormat : TextureSrgbMode::ForceNoSrgbFormat;
+				if (Texture* t = texMgr.GetTexture(mat.maps[j].c_str(), srgb))
+					myInstance.SetTexture(m, j, t);
 			}
-			md.Draw(myInstance, myConstShader);
 		}
+
+		// The preview is an ordinary material-table entry, so it renders with
+		// exactly the parameters the game uses (constants only without maps).
+		const uint32_t materialIndex = RayTracingMaterialTable::GetOrAssignMaterialIndex("editor/materialPreview"_tgaid);
+		RayTracingMaterialTable::SetMaterialParams(materialIndex, mat.ToParams());
+		myInstance.SetMaterialAll(materialIndex);
+
+		const bool wireframe = myViewMode == PreviewViewMode::Wireframe;
+		if (wireframe) stack.SetRasterizerState(RasterizerState::WireframeNoCulling);
+
+		const ModelShader* shader = &myConstShader;
+		if (myViewMode == PreviewViewMode::Unlit) shader = &myUnlitShader;
+		else if (myViewMode == PreviewViewMode::Normals) shader = &myNormalsShader;
+		md.Draw(myInstance, *shader);
+
+		if (wireframe) stack.SetRasterizerState(RasterizerState::BackfaceCulling);
+	}
+
+	// Small UE-style floating toolbar (view mode + turntable) and stats line,
+	// overlaid directly on the preview viewport rather than living in the
+	// separate Preview Settings panel -- those are one-off setup, this is
+	// what you reach for while actually looking at the material.
+	{
+		const Vector2i vpPos = parameters.viewport->GetViewportPos();
+		const ImGuiWindowFlags overlayFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize
+			| ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav
+			| ImGuiWindowFlags_NoMove;
+
+		// Every open Material document's DefaultMaterialEditorGraphics draws every
+		// frame, not just the focused tab -- a literal "##MaterialPreviewToolbar"
+		// window name is identical across all of them, which ImGui treats as one
+		// shared window. With two materials open, the last one drawn each frame
+		// wins the ID, so an inactive tab's stats/toolbar (e.g. a blank new
+		// material's "Maps: 0/4") could visibly clobber another tab's real one.
+		// 'this' is unique per document (each owns its own graphics interface
+		// instance), so folding it into the id makes each overlay its own window.
+		char toolbarId[48], statsId[48];
+		snprintf(toolbarId, sizeof toolbarId, "##MatPreviewToolbar%p", (void*)this);
+		snprintf(statsId, sizeof statsId, "##MatPreviewStats%p", (void*)this);
+
+		ImGui::SetNextWindowBgAlpha(0.6f);
+		ImGui::SetNextWindowPos(ImVec2((float)vpPos.x + 8.f, (float)vpPos.y + 8.f), ImGuiCond_Always);
+		if (ImGui::Begin(toolbarId, nullptr, overlayFlags))
+		{
+			auto modeButton = [&](const char* label, PreviewViewMode mode)
+			{
+				const bool active = myViewMode == mode;
+				if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+				if (ImGui::SmallButton(label)) myViewMode = mode;
+				if (active) ImGui::PopStyleColor();
+			};
+			modeButton("Lit", PreviewViewMode::Lit);
+			ImGui::SameLine();
+			modeButton("Unlit", PreviewViewMode::Unlit);
+			ImGui::SameLine();
+			modeButton("Wireframe", PreviewViewMode::Wireframe);
+			ImGui::SameLine();
+			modeButton("Normals", PreviewViewMode::Normals);
+			ImGui::SameLine();
+			ImGui::Dummy(ImVec2(6.f, 0.f));
+			ImGui::SameLine();
+			ImGui::Checkbox("Rotate", &myAutoRotate);
+			if (myAutoRotate)
+			{
+				ImGui::SameLine();
+				ImGui::SetNextItemWidth(80.f);
+				ImGui::DragFloat("##rotspeed", &myRotationSpeed, 1.f, -180.f, 180.f, "%.0f deg/s");
+			}
+		}
+		ImGui::End();
+
+		ImGui::SetNextWindowBgAlpha(0.6f);
+		ImGui::SetNextWindowPos(ImVec2((float)vpPos.x + 8.f, (float)vpPos.y + 40.f), ImGuiCond_Always);
+		if (ImGui::Begin(statsId, nullptr, overlayFlags))
+		{
+			ImGui::Text("Tris: %d   Maps: %d/4", triCount, mapCount);
+		}
+		ImGui::End();
 	}
 
 	parameters.viewport->EndDraw();
@@ -743,6 +1073,11 @@ void DefaultMaterialEditorGraphics::DrawPreviewSettings()
 		EndInspectorPropertyTable();
 	}
 	}
+}
+
+bool DefaultMaterialEditorGraphics::BakeMaterialGraph(const MaterialGraphBakeRequest& request)
+{
+	return Tga::BakeMaterialGraphImpl(request);
 }
 
 DefaultEditorGraphics::DefaultEditorGraphics()

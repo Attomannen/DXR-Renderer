@@ -13,5 +13,5 @@ float4 main(FsIn i) : SV_TARGET
 	float4 s   = Ssr.Sample(LinearClamp, i.uv);   // bilinear upsample from half res
 	float3 ibl = IblSpec.Sample(PointClamp, i.uv).rgb;
 	float3 delta = s.a * (s.rgb - ibl);
-	return float4(delta, 1.0f);
+	return float4(all(isfinite(delta)) ? delta : 0.0f, 1.0f);
 }

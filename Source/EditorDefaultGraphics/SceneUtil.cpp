@@ -11,6 +11,7 @@
 
 #include <tge/editor/Editor.h>
 #include <tge/editor/Material/MaterialAsset.h>
+#include <tge/render/RayTracingMaterialTable.h>
 #include <tge/editor/Tools/Viewport/Viewport.h>
 
 #include <tge/script/BaseProperties.h>
@@ -27,6 +28,8 @@
 
 #include <tge/model/ModelFactory.h>
 #include <tge/model/ModelInstance.h>
+#include <tge/model/Model.h>
+#include <tge/rhi/Device.h>
 
 #include <tge/drawers/ModelDrawer.h>
 #include <tge/drawers/LineDrawer.h>
@@ -68,20 +71,31 @@ namespace
 				}
 			}
 			if (materialPath.IsEmpty()) continue;
-			MaterialAsset material;
-			const std::filesystem::path absoluteMaterialPath = std::filesystem::path(Settings::GameAssetRoot()) / materialPath.GetString();
-			if (!material.Load(absoluteMaterialPath.string()))
-			{
-				ERROR_PRINT("Model material could not be loaded: %s", materialPath.GetString());
-				continue;
-			}
+			const MaterialAsset* cached = cache.GetMaterialUsingCache(materialPath);
+			if (!cached) continue;
+			const MaterialAsset& material = *cached;
 			for (int slot = 0; slot < 4; ++slot)
 			{
 				if (material.maps[slot].empty()) continue;
-				const TextureSrgbMode srgbMode = slot == 0 ? TextureSrgbMode::ForceSrgbFormat : TextureSrgbMode::ForceNoSrgbFormat;
+				const TextureSrgbMode srgbMode = material.MapIsSrgb(slot) ? TextureSrgbMode::ForceSrgbFormat : TextureSrgbMode::ForceNoSrgbFormat;
 				if (Texture* texture = cache.GetTextureUsingCache(StringRegistry::RegisterOrGetString(material.maps[slot]), srgbMode))
 					instance.SetTexture(mesh, slot, texture);
 			}
+
+			// Same material record the game builds (GameWorld::ApplySceneMaterial).
+			const std::string recordName = std::string("tgmat/") + materialPath.GetString() + "@"
+				+ instance.GetModel()->GetPath() + "#" + std::to_string(mesh);
+			const uint32_t materialIndex = RayTracingMaterialTable::GetOrAssignMaterialIndex(StringRegistry::RegisterOrGetString(recordName));
+			const TextureResource* const* textures = instance.GetTextures(mesh);
+			auto srv = [&](int slot) { return textures[slot] ? textures[slot]->GetSrv() : rhi::SrvHandle{}; };
+			RayTracingMaterialTable::SetMaterialTextures(materialIndex, { srv(0), srv(1), srv(2), srv(3) });
+			RayTracingMaterialTable::SetMaterialParams(materialIndex, material.ToParams());
+			// Same classification as GameWorld::RegisterMaterial.
+			const bool provablyOpaque = !material.IsMasked()
+				&& (material.maps[MaterialAsset::BaseColor].empty() || !material.baseColorHasAlpha);
+			RayTracingMaterialTable::SetRayVisibility(materialIndex, material.IsTransparent() ? RayTracingMaterialTable::kRayTransparent
+				: provablyOpaque ? RayTracingMaterialTable::kRayOpaque : RayTracingMaterialTable::kRayMasked);
+			instance.SetMaterial(mesh, materialIndex);
 		}
 	}
 }
@@ -209,6 +223,33 @@ void Tga::SceneCache::ClearCache()
 {
 	myTextureCache.clear();
 	myModelCache.clear();
+	myMaterialCache.clear();
+}
+
+void Tga::SceneCache::ClearCacheThrottled(float aMinIntervalSeconds)
+{
+	const auto now = std::chrono::steady_clock::now();
+	if (myLastClear.time_since_epoch().count() != 0 &&
+		std::chrono::duration<float>(now - myLastClear).count() < aMinIntervalSeconds)
+		return;
+	myLastClear = now;
+	ClearCache();
+}
+
+const Tga::MaterialAsset* Tga::SceneCache::GetMaterialUsingCache(StringId path)
+{
+	if (path.IsEmpty()) return nullptr;
+	if (auto it = myMaterialCache.find(path); it != myMaterialCache.end()) return it->second.get();
+
+	auto material = std::make_shared<MaterialAsset>();
+	const std::filesystem::path absolutePath = std::filesystem::path(Settings::GameAssetRoot()) / path.GetString();
+	if (!material->Load(absolutePath.string()))
+	{
+		ERROR_PRINT("Model material could not be loaded: %s", path.GetString());
+		material.reset();
+	}
+	myMaterialCache.emplace(path, material);
+	return material.get();
 }
 
 std::shared_ptr<Model> Tga::SceneCache::GetModelUsingCache(StringId path)
@@ -290,6 +331,47 @@ Scene* Tga::SceneCache::GetSceneUsingCache(StringId path)
 	return scene;
 }
 
+
+// One TLAS instance per sub-mesh, matching GameWorld's own TLAS build.
+static void CollectRayInstances(const Tga::ModelInstance& anInstance, const Tga::Matrix4x4f& aTransform,
+	std::vector<Tga::rhi::RaytracingInstanceDesc>& outInstances)
+{
+	using namespace Tga;
+	rhi::IDevice* device = DX11::Rhi();
+	const std::shared_ptr<Model> model = anInstance.GetModel();
+	if (!device || !model) return;
+
+	size_t meshIndex = 0;
+	for (const Model::MeshData& mesh : model->GetMeshDataList())
+	{
+		const size_t mesh_ = meshIndex++;
+		if (!mesh.rayGeometry.blas.IsValid()) continue;
+
+		rhi::RaytracingInstanceDesc desc = {};
+		desc.blas = mesh.rayGeometry.blas;
+		desc.instanceId = (uint32_t)outInstances.size();
+		desc.vertexSrv = device->RegisterRaySceneSrv(mesh.rayGeometry.vertexRawSrv);
+		desc.indexSrv = device->RegisterRaySceneSrv(mesh.rayGeometry.indexRawSrv);
+		desc.materialIndex = mesh_ < MAX_MESHES_PER_MODEL && anInstance.GetMaterialOverride(mesh_)
+			? anInstance.GetMaterialOverride(mesh_) : mesh.rayGeometry.materialIndex;
+		desc.rayOpaque = RayTracingMaterialTable::IsRayOpaque(desc.materialIndex);
+		desc.vertexStride = mesh.rayGeometry.vertexStride;
+		desc.positionOffset = mesh.rayGeometry.positionOffset;
+		desc.normalOffset = mesh.rayGeometry.normalOffset;
+		desc.uv0Offset = mesh.rayGeometry.uv0Offset;
+		desc.tangentOffset = mesh.rayGeometry.tangentOffset;
+		desc.binormalOffset = mesh.rayGeometry.binormalOffset;
+		desc.vertexFormat = (uint32_t)mesh.rayGeometry.vertexFormat;
+		for (uint32_t row = 0; row < 3; ++row)
+			for (uint32_t col = 0; col < 4; ++col)
+			{
+				desc.transform[row * 4 + col] = aTransform(col + 1, row + 1);
+				desc.previousTransform[row * 4 + col] = aTransform(col + 1, row + 1);
+			}
+		desc.motionHistoryValid = 1u;   // the editor camera moves, the scene does not
+		outInstances.push_back(desc);
+	}
+}
 
 bool Tga::CheckBounds(const Frustum& frustum, Tga::Matrix4x4f matrix, float maxScale, Model& model)
 {
@@ -475,7 +557,27 @@ bool Tga::DrawSceneProperty(const ScenePropertyDefinition& property, float maxSc
 
 					ApplyModelMaterials(value, instance, drawParameters.cache);
 
-					if (drawParameters.overrideModelShader)
+					if (drawParameters.rayInstances)
+					{
+						CollectRayInstances(instance, graphicsStateStack.GetTransform(), *drawParameters.rayInstances);
+					}
+					else if (drawParameters.meshPass != DrawParameters::MeshPass::All)
+					{
+						// Split by material: glass goes to the forward transparent pass.
+						const bool wantTransparent = drawParameters.meshPass == DrawParameters::MeshPass::Transparent;
+						std::vector<int> meshes;
+						for (int m = 0; m < (int)model->GetMeshCount(); ++m)
+						{
+							const uint32_t material = m < MAX_MESHES_PER_MODEL && instance.GetMaterialOverride(m)
+								? instance.GetMaterialOverride(m) : model->GetMeshData(m).rayGeometry.materialIndex;
+							const bool transparent = RayTracingMaterialTable::GetRayVisibility(material) == RayTracingMaterialTable::kRayTransparent;
+							if (transparent == wantTransparent) meshes.push_back(m);
+						}
+						const ModelShader& shader = drawParameters.overrideModelShader
+							? *drawParameters.overrideModelShader : Tga::GraphicsEngine::GetInstance()->GetModelDrawer().GetPbrShader();
+						instance.Render(shader, meshes);
+					}
+					else if (drawParameters.overrideModelShader)
 					{
 						Tga::GraphicsEngine::GetInstance()->GetModelDrawer().Draw(instance, *drawParameters.overrideModelShader);
 
@@ -486,7 +588,7 @@ bool Tga::DrawSceneProperty(const ScenePropertyDefinition& property, float maxSc
 					}
 				}
 
-				if (drawParameters.drawBounds)
+				if (drawParameters.drawBounds && drawParameters.drawHelpers)
 				{
 					const BoxSphereBounds& bounds = model->GetMeshData(0).bounds;
 					DrawBounds(bounds, drawParameters.boundsColor);
@@ -546,7 +648,7 @@ void Tga::DrawSceneObject(const SceneObject& sceneObject, DrawParameters& drawPa
 			hasBeenRendered = true;
 	}
 
-	if (!hasBeenRendered)
+	if (!hasBeenRendered && drawParameters.drawHelpers)
 	{
 		std::shared_ptr<Model> model = drawParameters.cache.GetModelUsingCache("models/locator.fbx"_tgaid);
 

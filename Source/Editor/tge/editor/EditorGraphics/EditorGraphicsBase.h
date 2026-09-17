@@ -1,10 +1,12 @@
 #pragma once
 #include <memory>
+#include <string>
 #include <string_view>
 #include <imgui/imgui.h>
 #include <tge/animation/Pose.h>
 #include <tge/math/Color.h>
 #include <tge/math/Vector.h>
+#include <tge/editor/Material/Graph/MaterialGraph.h>
 #include <unordered_map>
 #include <tge/stringRegistry/StringRegistry.h>
 namespace Tga
@@ -70,12 +72,31 @@ struct MaterialEditorDrawParameters
 	MaterialAsset* material;
 };
 
+// A node-graph "Bake" request: evaluate `graph`'s connected Output sockets
+// into real _C/_N/_M/_FX.dds files (written into the same folder as
+// `absoluteMatPath`, named from `gameRootRelativeStem`) and update `material`
+// to reference them, then save it. Implemented in EditorDefaultGraphics
+// (needs DirectXTex-backed pixel I/O via Tga::TextureCpu, which only that
+// project links) -- see MaterialGraphBake.cpp there.
+struct MaterialGraphBakeRequest
+{
+	const MaterialGraphNS::MaterialGraph* graph = nullptr;
+	MaterialAsset* material = nullptr;
+	std::string absoluteMatPath;        // e.g. C:/.../Source/Game/data/Sponza/Arches.tgmat
+	std::string gameRootRelativeStem;   // e.g. "Sponza/Arches" (no extension) -- what mat.maps[] stores
+	int width = 1024;
+	int height = 1024;
+};
+
 class MaterialEditorGraphicsBase
 {
 public:
 	virtual ~MaterialEditorGraphicsBase() = default;
 	virtual void Draw(const MaterialEditorDrawParameters& parameters) = 0;
 	virtual void DrawPreviewSettings() {}
+	// Returns false (default: unimplemented backend) or on any bake failure --
+	// the caller should treat that as "nothing was written", not a partial bake.
+	virtual bool BakeMaterialGraph(const MaterialGraphBakeRequest&) { return false; }
 };
 
 

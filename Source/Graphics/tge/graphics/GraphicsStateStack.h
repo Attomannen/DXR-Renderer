@@ -94,6 +94,16 @@ namespace Tga
 
 		void SetAmbientLight(AmbientLight light);
 		const AmbientLight& GetAmbientLight();
+		// The environment cube the current ambient light samples (t0). Passes
+		// that run after something cleared t0 rebind it with this: the stack
+		// itself only rebinds when the light changes.
+		rhi::SrvHandle GetAmbientCubemapSrv() const;
+		// Split-sum BRDF LUT sampled by every PBR shader (t5).
+		void SetBrdfLutSrv(rhi::SrvHandle aSrv) { myBrdfLutSrv = aSrv; }
+		rhi::SrvHandle GetBrdfLutSrv() const { return myBrdfLutSrv; }
+		// Binds t0 (environment) and t5 (BRDF LUT). Other passes reuse those
+		// slots, so every lit draw rebinds them.
+		void BindLightingTextures() const;
 
 		// These transform functions set a base coordinate system, used for drawing all objects (e.g. sprites, meshes, texts
 		// The transform of an object/sprite is interpreted as a local transform, relative to this coordinate system
@@ -119,6 +129,7 @@ namespace Tga
 
 		RenderState myGpuRenderState;
 		std::vector<RenderState> myRenderStateStack;
+		rhi::SrvHandle myBrdfLutSrv;
 
 		uint32_t myLatestShaderDataVersion = 0;
 		uint32_t myLatestLightDataVersion = 0;

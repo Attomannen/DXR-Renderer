@@ -710,3 +710,22 @@ void DeferredRenderer::ResolveDxrLightingToHdr()
 	// through both the ray pass and this resolve, then becomes frame-local.
 	myTaaLightingChanged = false;
 }
+
+// The forward transparent pass depth-tests against DX11::DepthBuffer, which
+// the DXR renderer never rasterises. Fill it from the ray-traced device depth.
+void DeferredRenderer::WriteDxrDepthToDepthBuffer()
+{
+	if (!myDxrDepthPs || !myTemporalSrv[1].IsValid()) return;
+	TGA_PROFILE_SCOPE(myProfiler, "DXR depth for transparents");
+	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
+	ctx.ClearDepthStencil(DX11::DepthBuffer->GetDsv(), 1.f, 0);
+	SetTargets(ctx, {}, DX11::DepthBuffer->GetDsv(), myResolution);
+	auto& gss = GraphicsEngine::GetInstance()->GetGraphicsStateStack();
+	gss.SetBlendState(BlendState::Disabled);
+	gss.SetDepthStencilState(DepthStencilState::WriteLessOrEqual);
+	ctx.SetShaderResource(rhi::ShaderStage::Pixel, 1, myTemporalSrv[1]);
+	BindFullscreen(myDxrDepthPs);
+	ctx.Draw(3, 0);
+	ctx.SetShaderResource(rhi::ShaderStage::Pixel, 1, {});
+	gss.SetDepthStencilState(DepthStencilState::WriteLess);
+}

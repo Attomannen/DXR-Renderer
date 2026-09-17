@@ -132,16 +132,21 @@ void EditorViewport::SetupIdPass()
 	myIdTarget.SetAsActiveTarget(&myDepth);
 }
 
-void EditorViewport::SetupColorPass()
+void EditorViewport::SetupColorPass(bool aDrawGrid)
 {
 	myDepth.Clear(1.0f, 0);
 	myRenderTarget.SetAsActiveTarget(&myDepth);
 	myRenderTarget.Clear();
 
-	if (Editor::GetEditor()->IsViewportGridVisible())
-	{
-		myViewportGrid.DrawViewportGrid();
-	}
+	if (aDrawGrid)
+		DrawGrid();
+}
+
+void EditorViewport::DrawGrid()
+{
+	if (!Editor::GetEditor()->IsViewportGridVisible()) return;
+	myRenderTarget.SetAsActiveTarget(&myDepth);
+	myViewportGrid.DrawViewportGrid();
 }
 
 void EditorViewport::SetColorAsTarget(bool useDepth)

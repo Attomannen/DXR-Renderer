@@ -182,7 +182,7 @@ bool GraphicsEngine::BeginFrame()
 	// next frame before any pass is recorded.  Previously only GameWorld::Init
 	// called OnResize(), leaving every off-screen target at its old size after a
 	// window resize or fullscreen transition.
-	if (myDeferredRenderer && myDeferredRenderer->IsReady())
+	if (myDeferredFollowsWindow && myDeferredRenderer && myDeferredRenderer->IsReady())
 	{
 		const Vector2ui renderSize = Application::GetInstance()->GetRenderSize();
 		if (renderSize.x > 0 && renderSize.y > 0 && renderSize != myDeferredRenderer->GetResolution())

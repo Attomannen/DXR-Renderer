@@ -439,15 +439,7 @@ void GraphicsStateStack::UpdateGpuStates(bool fullReset)
 
 		myLightCB = UploadEngineCB(data, ConstantBufferSlot::Light);
 
-		TextureResource* cubemap = nullptr;
-		switch (ambientLight.type)
-		{
-		case AmbientLightType::Custom:              cubemap = ambientLight.cubemap; break;
-		case AmbientLightType::Uniform:             cubemap = myDefaultCubemap; break;
-		case AmbientLightType::UniformAboveHorizon: cubemap = myDefaultHorizonCubemap; break;
-		}
-		DX11::Rhi()->GetContext().SetShaderResource(rhi::ShaderStage::Pixel, 0,
-			cubemap ? cubemap->GetSrv() : rhi::SrvHandle{});
+		DX11::Rhi()->GetContext().SetShaderResource(rhi::ShaderStage::Pixel, 0, GetAmbientCubemapSrv());
 
 #endif
 	}
@@ -506,4 +498,22 @@ bool GraphicsStateStack::CreateSamplers()
 	return true;
 }
 
+rhi::SrvHandle GraphicsStateStack::GetAmbientCubemapSrv() const
+{
+	const AmbientLight& ambientLight = myRenderStateStack.back().ambientLight;
+	TextureResource* cubemap = nullptr;
+	switch (ambientLight.type)
+	{
+	case AmbientLightType::Custom:              cubemap = ambientLight.cubemap; break;
+	case AmbientLightType::Uniform:             cubemap = myDefaultCubemap; break;
+	case AmbientLightType::UniformAboveHorizon: cubemap = myDefaultHorizonCubemap; break;
+	}
+	return cubemap ? cubemap->GetSrv() : rhi::SrvHandle{};
+}
 
+void GraphicsStateStack::BindLightingTextures() const
+{
+	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
+	ctx.SetShaderResource(rhi::ShaderStage::Pixel, 0, GetAmbientCubemapSrv());
+	ctx.SetShaderResource(rhi::ShaderStage::Pixel, 5, myBrdfLutSrv);
+}
