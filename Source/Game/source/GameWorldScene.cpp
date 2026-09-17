@@ -199,10 +199,44 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 		std::vector<bool> authoredMasked(meshCount, false);
 		std::vector<bool> authoredMaterial(meshCount, false);
 		std::vector<MaterialDef> materials(meshCount);
-		for (int m = 0; m < meshCount && m < (int)e.materials.size(); ++m)
+		// Resolve each mesh's material by NAME, not by slot order.
+		//
+		// A .tgo is a positional list, which silently assumed the exporter's
+		// material order and the importer's mesh order agree. They do not: on a
+		// reimported Bistro, mesh 1 carried the material the .tgo listed at slot
+		// 0, and the drift changed again further down the list -- so every mesh
+		// wore some other mesh's material. Match on the name the mesh actually
+		// reports instead, and keep the positional entry only as a fallback for
+		// meshes whose name is missing from the list.
+		//
+		// Names carry suffixes the material assets do not: Blender's ".001" dedup
+		// and tags like ".DoubleSided". Try the full name first, then drop
+		// dotted suffixes one at a time.
+		std::unordered_map<std::string, int> tgmatByName;
+		auto lower = [](std::string v) { for (char& c : v) c = (char)std::tolower((unsigned char)c); return v; };
+		for (int i = 0; i < (int)e.materials.size(); ++i)
 		{
-			if (e.materials[m].empty()) continue;
-			if (!LoadTgmat(fs::path(Settings::GameAssetRoot()) / e.materials[m], materials[m])) continue;
+			if (e.materials[i].empty()) continue;
+			std::string n = e.materials[i];
+			if (const size_t slash = n.find_last_of("/\\"); slash != std::string::npos) n = n.substr(slash + 1);
+			if (n.size() > 6) n = n.substr(0, n.size() - 6);   // ".tgmat"
+			tgmatByName.emplace(lower(n), i);
+		}
+		for (int m = 0; m < meshCount; ++m)
+		{
+			int slot = m < (int)e.materials.size() ? m : -1;
+			if (const char* meshMat = model->GetMaterialName(m).GetString(); meshMat && *meshMat)
+			{
+				for (std::string n = lower(meshMat);;)
+				{
+					if (auto it = tgmatByName.find(n); it != tgmatByName.end()) { slot = it->second; break; }
+					const size_t dot = n.rfind('.');
+					if (dot == std::string::npos) break;
+					n = n.substr(0, dot);
+				}
+			}
+			if (slot < 0 || e.materials[slot].empty()) continue;
+			if (!LoadTgmat(fs::path(Settings::GameAssetRoot()) / e.materials[slot], materials[m])) continue;
 			authoredMaterial[m] = true;
 			authoredTransparent[m] = materials[m].IsTransparent();
 			authoredMasked[m] = materials[m].IsMasked();
