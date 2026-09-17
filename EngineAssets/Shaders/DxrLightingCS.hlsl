@@ -14,6 +14,7 @@
 // This iteration factors it all into DxrCommon.hlsli for GiTraceInlineCS to reuse.
 
 #include "DxrCommon.hlsli"
+#include "Exposure.hlsli"
 
 RWTexture2D<float4> gOutput : register(u0);
 RWTexture2D<float2> gMotionVectors : register(u1);
@@ -29,55 +30,11 @@ RWTexture2D<float4> gSpecularAlbedo : register(u6); // linear F0/specular albedo
 RWTexture2D<float>  gNrdViewZ : register(u7);           // linear view depth, >NRD denoisingRange for sky
 RWTexture2D<float4> gNrdNormalRoughness : register(u8); // NRD_NORMAL_ENCODING 2 (R10G10B10A2 octahedral)
 RWTexture2D<float4> gNrdDiffuse : register(u9);         // demodulated indirect diffuse radiance + hit distance
+RWTexture2D<float4> gNrdSpecular : register(u10);       // demodulated specular radiance + reflection hit distance
 Texture2D<float2> gBrdfLut : register(t4);
+Texture2D<float> gPreviousEv100 : register(t6);   // exposure history (pre-exposure)
 
-// Minimal, self-contained camera -- deliberately not the engine's shared
-// per-frame camera cbuffer, so this smoke test has no dependency on
-// DeferredRenderer's cbuffer layout while that's still in flux.
-cbuffer SmokeTestCB : register(b0)
-{
-	float3 gCameraOrigin;
-	float  gTanHalfFovY;
-	float3 gCameraRight;
-	float  gAspect;
-	float3 gCameraUp;
-	float  _pad0;
-	float3 gCameraForward;
-	float  _pad1;
-	uint2  gOutputSize;
-	float2 _pad2;
-	float3 gSunDirToLight;   // normalized, surface -> light (SetShadowLight's dir, negated)
-	float  _pad3;
-	uint   gLightCount;
-	float3 gSunRadiance;        // Tunables::dxrSunTint * dxrSunIntensity
-	float  gAmbientIntensity;   // Tunables::dxrAmbientIntensity
-	float  gReflectionRoughnessCutoff;   // Tunables::dxrReflectionRoughnessCutoff; no reflection ray above this
-	float2 _pad4;                       // Match DxrSmokeCb's explicit 16-byte row padding.
-	float3 gEnvironmentTint;
-	float  gEnvironmentMip;
-	float  gAoDistance;
-	float  gAoStrength;
-	uint   gEnableDirectLighting;
-	uint   gEnableEnvironmentLighting;
-	uint   gEnableIndirectGi;
-	uint   gEnableReflections;
-	uint   gEnableAmbientOcclusion;
-	uint   gLightingView;
-	uint   gBrdfLutValid;
-	uint2  _pad5;
-	uint   gTextureFiltering;
-	uint   gReflectionSamples;
-	uint   gAoSamples;
-	uint2  _reflectionPad;
-	row_major float4x4 gWorldToClip;
-	row_major float4x4 gPreviousWorldToClip;
-	uint gTemporalHistoryValid;
-	float gSpecularAaStrength;
-	uint gReflectionFrameIndex;
-	uint gNrdEnabled;
-	float2 gJitter;
-	float2 gPreviousJitter;
-};
+#include "DxrLightingConstants.hlsli"
 
 float2 ClipToPixel(float4 clip)
 {
@@ -87,14 +44,11 @@ float2 ClipToPixel(float4 clip)
 void WriteTemporal(uint2 pixel, float4 currentClip, float4 previousClip, bool objectHistory)
 {
 	const bool valid = gTemporalHistoryValid != 0u && objectHistory && previousClip.w > 0.0001f && all(isfinite(previousClip));
-	// Motion is expressed against this pixel's CENTRE, not against the jittered
-	// sample position that produced currentClip. TemporalResolveCS point-fetches
-	// this texel and then evaluates `p + 0.5 + motion`, and DLSS/RR likewise
-	// document motion vectors as jitter-free; measuring from ClipToPixel(
-	// currentClip) instead leaves a sub-pixel bias equal to the jitter. This is
-	// exactly identical while gJitter is zero, and only starts to matter once it
-	// is not.
-	const float2 motion = valid ? ClipToPixel(previousClip) - (float2(pixel) + 0.5f) : float2(0,0);
+	// Motion of the surface that was actually hit: both ends are projected with
+	// the unjittered matrices, so a still camera gives exactly zero. (Measuring
+	// from the pixel centre instead mixed this frame's jitter into every vector,
+	// which DLSS and NRD read as the whole image moving: visible bouncing.)
+	const float2 motion = valid ? ClipToPixel(previousClip) - ClipToPixel(currentClip) : float2(0,0);
 	gMotionVectors[pixel] = all(isfinite(motion)) ? clamp(motion, -65504.0f, 65504.0f) : float2(0,0);
 	gMotionValidity[pixel] = float2(valid && all(isfinite(motion)) ? 1.0f : 0.0f, previousClip.w > 0 ? saturate(previousClip.z / previousClip.w) : 1.0f);
 	gTemporalDepth[pixel] = currentClip.w > 0.0f ? saturate(currentClip.z / currentClip.w) : 1.0f;
@@ -114,12 +68,62 @@ float4 PackNrdNormalRoughness(float3 n, float linearRoughness)
 	return float4(r, 0.0f);
 }
 
+// Checkerboard (NRD CheckerboardMode::BLACK for diffuse, specular opposite):
+// on even NRD frames diffuse owns the cells where x + y is even. Noisy
+// signals are packed into the left half of their textures, one texel per
+// active 2x1 pair; guides stay full resolution.
+bool CheckerboardOn() { return gNrdEnabled != 0u && gNrdCheckerboard != 0u && gLightingView == 0u; }
+bool DiffuseCell(uint2 pixel) { return !CheckerboardOn() || ((pixel.x + pixel.y + gCheckerboardPhase) & 1u) == 0u; }
+bool SpecularCell(uint2 pixel) { return !CheckerboardOn() || !DiffuseCell(pixel); }
+uint2 SignalTexel(uint2 pixel) { return CheckerboardOn() ? uint2(pixel.x >> 1, pixel.y) : pixel; }
+
+// NRD front-end packing (NRD.hlsli: REBLUR_FrontEnd_GetNormHitDist,
+// REBLUR_FrontEnd_PackRadianceAndNormHitDist, RELAX_FrontEnd_PackRadianceAndHitDist).
+// Hit-distance parameters B = 0.1 and C = 20 are NRD's defaults; A is in world
+// metres, like every other distance NRD sees.
+// NRD's thresholds assume metres; the engine works in centimetres. viewZ and
+// hit distances are converted on the way in (the view matrices on the C++ side).
+static const float kNrdMetersPerUnit = 0.01f;
+
+float NrdNormHitDist(float hitDist, float viewZ, float roughness)
+{
+	float smc = 1.0f - exp2(-200.0f * roughness * roughness);
+	smc *= pow(saturate(roughness), 0.5f);
+	const float f = (gNrdHitDistA + abs(viewZ) * 0.1f) * lerp(20.0f, 1.0f, smc);
+	return max(saturate(hitDist / f), 1e-6f);
+}
+
+float4 PackNrdSignal(float3 radiance, float hitDist, float viewZ, float roughness)
+{
+	radiance = all(isfinite(radiance)) ? clamp(radiance, 0.0f, 65504.0f) : 0.0f;
+	hitDist *= kNrdMetersPerUnit;
+	viewZ *= kNrdMetersPerUnit;
+	if (gNrdReblur < 0.5f)
+		return float4(radiance, clamp(hitDist, 0.0f, 65504.0f));
+	const float3 yCoCg = float3(
+		dot(radiance, float3(0.25f, 0.5f, 0.25f)),
+		dot(radiance, float3(0.5f, 0.0f, -0.5f)),
+		dot(radiance, float3(-0.25f, 0.5f, -0.25f)));
+	return float4(yCoCg, NrdNormHitDist(hitDist, viewZ, roughness));
+}
+
 void WriteNrdMiss(uint2 pixel)
 {
 	if (gNrdEnabled == 0u) return;
 	gNrdViewZ[pixel] = 1e7f; // beyond CommonSettings::denoisingRange: NRD skips it
 	gNrdNormalRoughness[pixel] = float4(0.5f, 0.5f, 1.0f, 0.0f);
-	gNrdDiffuse[pixel] = 0.0f;
+	if (DiffuseCell(pixel)) gNrdDiffuse[SignalTexel(pixel)] = 0.0f;
+	if (SpecularCell(pixel)) gNrdSpecular[SignalTexel(pixel)] = 0.0f;
+}
+
+float PreExposure()
+{
+	return gPreExposed != 0u ? PreExposureFromEv100(gPreviousEv100.Load(int3(0, 0, 0))) : 1.0f;
+}
+
+float4 PreExposed(float4 radiance)
+{
+	return float4(radiance.rgb * PreExposure(), radiance.a);
 }
 
 float Hash01(uint2 p, uint salt)
@@ -184,6 +188,31 @@ float TraceAmbientOcclusion(float3 position, float3 normal, uint sourceInstanceI
 	return visible * invAoSamples;
 }
 
+// Split-sum directional albedo of the GGX lobe (F0 * A + B): the fraction of
+// incoming radiance a specular surface reflects towards the viewer.
+float3 SpecularAlbedo(HitSurface hs, float3 viewDir)
+{
+	const float nDotV = saturate(dot(hs.worldNormal, viewDir));
+	const float p = saturate(hs.roughness);
+	const float3 f0 = lerp(float3(0.04f, 0.04f, 0.04f), hs.albedo, hs.metalness);
+	// Numerically integrated at startup with the same GGX distribution and
+	// Smith visibility term as the split-sum prefilter.  This is deliberately
+	// a LUT rather than the old fitted approximation so grazing and rough
+	// materials preserve reflection energy consistently.
+	float2 ab;
+	if (gBrdfLutValid != 0u)
+		ab = gBrdfLut.SampleLevel(gMaterialSampler, float2(nDotV, p), 0.0f);
+	else
+	{
+		const float4 c0 = float4(-1.0f, -0.0275f, -0.572f, 0.022f);
+		const float4 c1 = float4( 1.0f,  0.0425f, 1.04f, -0.04f);
+		const float4 r = p * c0 + c1;
+		const float a004 = min(r.x * r.x, exp2(-9.28f * nDotV)) * r.x + r.y;
+		ab = float2(-1.04f, 1.04f) * a004 + r.zw;
+	}
+	return f0 * ab.x + ab.y;
+}
+
 void EvaluateEnvironmentLighting(HitSurface hs, float3 viewDir, out float3 diffuse, out float3 specular)
 {
 	diffuse = 0.0f; specular = 0.0f;
@@ -203,22 +232,7 @@ void EvaluateEnvironmentLighting(HitSurface hs, float3 viewDir, out float3 diffu
 	const float3 diffuseEnv = gDxrEnvironment.SampleLevel(gMaterialSampler, hs.worldNormal, diffuseMip).rgb * gEnvironmentTint;
 	const float3 specularEnv = gDxrEnvironment.SampleLevel(gMaterialSampler, reflect(-viewDir, hs.worldNormal), specularMip).rgb * gEnvironmentTint;
 
-	// Numerically integrated at startup with the same GGX distribution and
-	// Smith visibility term as the split-sum prefilter.  This is deliberately
-	// a LUT rather than the old fitted approximation so grazing and rough
-	// materials preserve reflection energy consistently.
-	float2 ab;
-	if (gBrdfLutValid != 0u)
-		ab = gBrdfLut.SampleLevel(gMaterialSampler, float2(nDotV, p), 0.0f);
-	else
-	{
-		const float4 c0 = float4(-1.0f, -0.0275f, -0.572f, 0.022f);
-		const float4 c1 = float4( 1.0f,  0.0425f, 1.04f, -0.04f);
-		const float4 r = p * c0 + c1;
-		const float a004 = min(r.x * r.x, exp2(-9.28f * nDotV)) * r.x + r.y;
-		ab = float2(-1.04f, 1.04f) * a004 + r.zw;
-	}
-	const float3 specularWeight = f0 * ab.x + ab.y;
+	const float3 specularWeight = SpecularAlbedo(hs, viewDir);
 	diffuse = (1.0f - saturate(specularWeight)) * (1.0f - hs.metalness) * hs.albedo * diffuseEnv;
 	specular = specularEnv * specularWeight;
 }
@@ -264,10 +278,10 @@ void main(uint3 dtid : SV_DispatchThreadID)
 		// Raw background display, matching SkyboxPS's mip-0/intensity-1 sample
 		// exactly -- gEnvironmentTint is the GI-tuned scale (see SkyRadiance's
 		// comment) and must not dim what the player actually sees as sky.
-		gOutput[dtid.xy] = float4(SkyRadiance(dir, gEnvironmentMip, float3(1.0f, 1.0f, 1.0f)), 1.f);
-		if (gLightingView == 7u) gOutput[dtid.xy] = float4(saturate(0.5f + gMotionVectors[dtid.xy] / 32.0f), gMotionValidity[dtid.xy].x, 1);
-		if (gLightingView == 8u) gOutput[dtid.xy] = float4(0,0,0,1);
-		if (gLightingView == 9u) gOutput[dtid.xy] = float4(0,0,0,1);
+		gOutput[dtid.xy] = PreExposed(float4(SkyRadiance(dir, gEnvironmentMip, gSkyDisplayScale.xxx), 1.f));
+		if (gLightingView == 7u) gOutput[dtid.xy] = PreExposed(float4(saturate(0.5f + gMotionVectors[dtid.xy] / 32.0f), gMotionValidity[dtid.xy].x, 1));
+		if (gLightingView == 8u) gOutput[dtid.xy] = PreExposed(float4(0,0,0,1));
+		if (gLightingView == 9u) gOutput[dtid.xy] = PreExposed(float4(0,0,0,1));
 		return;
 	}
 
@@ -298,7 +312,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
 		if (gLightingView == 12u) diagnostic = hs.worldNormal * 0.5f + 0.5f;
 		if (gLightingView == 13u) diagnostic = saturate(dot(hs.worldNormal, gSunDirToLight)).xxx;
 		if (gLightingView == 14u) diagnostic = saturate(dot(hs.geoWorldNormal, gSunDirToLight)).xxx;
-		gOutput[dtid.xy] = float4(diagnostic, 1);
+		gOutput[dtid.xy] = PreExposed(float4(diagnostic, 1));
 		return;
 	}
 	if (gLightingView == 16u)
@@ -330,7 +344,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
 			const float closeness = lerp(0.35f, 1.0f, saturate(1.0f - sq.CommittedRayT() / 300.0f));
 			occ = (self ? (front ? float3(1,0,0) : float3(1,0,1)) : (front ? float3(0,0,1) : float3(0,1,1))) * closeness;
 		}
-		gOutput[dtid.xy] = float4(occ, 1);
+		gOutput[dtid.xy] = PreExposed(float4(occ, 1));
 		return;
 	}
 	if (gLightingView == 15u)
@@ -342,14 +356,18 @@ void main(uint3 dtid : SV_DispatchThreadID)
 		// much) from "there is real data, it's just small/scaled wrong" (shows
 		// visible colour/structure once amplified).
 		float3 rawGi = EvaluateDxrGi(hs.worldPosition, hs.worldNormal) * 5000.0f;
-		gOutput[dtid.xy] = float4(saturate(rawGi), 1);
+		gOutput[dtid.xy] = PreExposed(float4(saturate(rawGi), 1));
 		return;
 	}
 	const float3 viewDir = normalize(-ray.Direction);
 
 	float ao = hs.ao;
 	float aoHitDistance = max(gAoDistance, 0.05f);
-	if (gEnableAmbientOcclusion != 0u)
+	const bool diffuseCell = DiffuseCell(dtid.xy);
+	const bool specularCell = SpecularCell(dtid.xy);
+	// In checkerboard mode only the diffuse cells need traced AO: the rest
+	// only feed NRD's specular signal.
+	if (gEnableAmbientOcclusion != 0u && diffuseCell)
 		ao *= lerp(1.0f, TraceAmbientOcclusion(hs.worldPosition, hs.geoWorldNormal, hs.instanceId, hs.primitiveIndex, dtid.xy, gReflectionFrameIndex, aoHitDistance), saturate(gAoStrength));
 	float3 envDiffuse, envSpecular;
 	EvaluateEnvironmentLighting(hs, viewDir, envDiffuse, envSpecular);
@@ -367,8 +385,9 @@ void main(uint3 dtid : SV_DispatchThreadID)
 		gDiffuseAlbedo[dtid.xy].a = hs.ao;
 		float3 radiance = indirectDiffuse / max(demodulator, 0.01f);
 		radiance = all(isfinite(radiance)) ? clamp(radiance, 0.0f, 65504.0f) : 0.0f;
-		gNrdDiffuse[dtid.xy] = float4(radiance, aoHitDistance);
-		gNrdViewZ[dtid.xy] = dot(hitPos - gCameraOrigin, gCameraForward);
+		const float nrdViewZ = dot(hitPos - gCameraOrigin, gCameraForward);
+		if (diffuseCell) gNrdDiffuse[SignalTexel(dtid.xy)] = PackNrdSignal(radiance * PreExposure(), aoHitDistance, nrdViewZ, 1.0f);
+		gNrdViewZ[dtid.xy] = nrdViewZ * kNrdMetersPerUnit;
 		gNrdNormalRoughness[dtid.xy] = PackNrdNormalRoughness(hs.worldNormal, hs.roughness);
 	}
 	else
@@ -376,18 +395,23 @@ void main(uint3 dtid : SV_DispatchThreadID)
 		color += indirectDiffuse;
 	}
 	if (gEnableDirectLighting != 0u)
-		color += ShadeDirect(hs, shadowOrigin, viewDir, gSunDirToLight, gLightCount, gSunRadiance, gAmbientIntensity);
+		color += ShadeDirect(hs, shadowOrigin, viewDir, gSunDirToLight, gLightCount, gSunRadiance, gAmbientIntensity, clamp(gSunShadowSamples, 1u, 4u),
+			gSunShadowSamples < 4u ? frac(float(gReflectionFrameIndex) * 0.618034f) : 0.0f);
 	// Replace environment specular smoothly; do not add the same sky twice.
 	// Keep the prefiltered environment as a conservative fallback at the rough
 	// end where one scene ray is too noisy without a dedicated denoiser.
 	// A couple of stochastic scene rays cannot fully converge a broad GGX
 	// lobe while the camera is moving. The environment remains the fallback
 	// at the rough end of the cutoff, while smooth surfaces retain contacts.
+	// Environment-only specular is infinitely far away as far as NRD's
+	// reflection reprojection is concerned.
+	float specularHitDistance = 65504.0f;
 	const float rayWeight = 1.0f - smoothstep(gReflectionRoughnessCutoff * 0.70f,
 		max(gReflectionRoughnessCutoff, 0.001f), hs.roughness);
-	if (gEnableReflections != 0u && hs.roughness < gReflectionRoughnessCutoff && rayWeight > 0.01f)
+	if (gEnableReflections != 0u && specularCell && hs.roughness < gReflectionRoughnessCutoff && rayWeight > 0.01f)
 	{
 		float3 reflection = 0.0f;
+		float reflectionHitDistance = 0.0f;
 		// Spend the per-pixel budget only where it buys variance reduction.
 		// The estimator below is an average of unbiased GGX samples, so the
 		// sample count changes noise, never the expected result.
@@ -411,13 +435,32 @@ void main(uint3 dtid : SV_DispatchThreadID)
 				lerp(float3(0.04f, 0.04f, 0.04f), hs.albedo, hs.metalness), xi,
 				reflectionDir, brdfOverPdf);
 			[branch] if (any(brdfOverPdf > 0.0f))
+			{
 				reflection += TraceReflection(OffsetRayOrigin(hs.worldPosition, hs.geoWorldNormal, reflectionDir), reflectionDir, gSunDirToLight, gLightCount, gSunRadiance, gAmbientIntensity, gEnvironmentMip, gEnvironmentTint, gEnableIndirectGi != 0u, coneSpread * q.CommittedRayT(), coneSpread, gSpecularAaStrength) * brdfOverPdf;
+				reflectionHitDistance += gLastReflectionHitDistance;
+			}
 		}
 		reflection /= float(reflectionSamples);
 		envSpecular = lerp(envSpecular, reflection, rayWeight);
+		specularHitDistance = lerp(specularHitDistance, reflectionHitDistance / float(reflectionSamples), rayWeight);
 	}
 	// Specular occlusion relaxes toward smooth surfaces, preserving mirrors.
-	color += envSpecular * lerp(1.0f, ao, hs.roughness);
+	const float3 specular = envSpecular * lerp(1.0f, ao, hs.roughness);
+	if (gNrdEnabled != 0u && gLightingView == 0u)
+	{
+		// Same demodulation contract as the diffuse signal: NrdCompositeCS
+		// multiplies by gSpecularAlbedo.rgb afterwards.
+		const float3 demodulator = max(SpecularAlbedo(hs, viewDir) * lerp(1.0f, ao, hs.roughness), 0.01f);
+		gSpecularAlbedo[dtid.xy] = float4(demodulator, 1.0f);
+		float3 radiance = specular / demodulator;
+		radiance = all(isfinite(radiance)) ? clamp(radiance, 0.0f, 65504.0f) : 0.0f;
+		if (specularCell) gNrdSpecular[SignalTexel(dtid.xy)] = PackNrdSignal(radiance * PreExposure(), specularHitDistance,
+			dot(hitPos - gCameraOrigin, gCameraForward), hs.roughness);
+	}
+	else
+	{
+		color += specular;
+	}
 	if (gLightingView == 1u) color = ao.xxx;
 	if (gLightingView == 2u) color = envDiffuse * ao + envSpecular;
 	if (gLightingView == 3u) color = gi;
@@ -429,5 +472,5 @@ void main(uint3 dtid : SV_DispatchThreadID)
 	if (gLightingView == 9u) color = float3(saturate(hs.roughnessAdjustment*8.0f),hs.roughness,0);
 	// Reject invalid math without clipping legitimate HDR radiance.
 	color = all(isfinite(color)) ? max(color, 0.0f) : float3(1, 0, 1);
-	gOutput[dtid.xy] = float4(color, 1.f);
+	gOutput[dtid.xy] = PreExposed(float4(color, 1.f));
 }

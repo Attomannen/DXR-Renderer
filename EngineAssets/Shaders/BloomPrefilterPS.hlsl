@@ -13,7 +13,9 @@ float3 main(FsIn i) : SV_TARGET
 	c = (c == c) ? c : (float3)0.0f;          // NaN -> 0 (componentwise)
 	c = clamp(c, 0.0f, 60000.0f);            // Inf / overbright -> finite
 
-	float br = max(c.r, max(c.g, c.b));
+	// Threshold in scene units, but keep the (pre-exposed) signal so a night
+	// scene's bloom does not underflow the R11G11B10 mip chain.
+	float br = max(c.r, max(c.g, c.b)) / HdrPreExposure();
 
 	// Soft knee curve around gBloomThreshold.
 	float knee = gBloomThreshold * gBloomKnee + 1e-5f;

@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <tge/debugging/CpuProfiler.h>
 #include <tge/graphics/DX11.h>
 #include <tge/rhi/Device.h>
 #include <tge/rhi/DxcCompiler.h>
@@ -341,7 +342,10 @@ bool DX11::InitDx12(WindowsWindow* aWindowHandler)
 	dd.enableGpuValidation = std::getenv("TGE_DX12_GPU_VALIDATION") != nullptr;
 #endif
 
-	ourRhiDevice = rhi::CreateDevice(rhi::Backend::DX12, dd);
+	{
+		TGA_CPU_SCOPE("DX12 device create");
+		ourRhiDevice = rhi::CreateDevice(rhi::Backend::DX12, dd);
+	}
 	if (!ourRhiDevice)
 	{
 		ERROR_PRINT("%s", "Failed to create DX12 device");
@@ -899,6 +903,7 @@ const ComputeShader* DX11::LoadComputeShaderDxil(const char* aShaderPath)
 
 const ComputeShader* DX11::ForceLoadComputeShaderDxil(const char* aShaderPath, bool addToFileWatcher)
 {
+	TGA_CPU_SCOPE("Shader load (DXIL compute)");
 	rhi::IDevice* r = Rhi();
 	if (!r || r->GetBackend() != rhi::Backend::DX12) { ERROR_PRINT("DXIL compute shader requested without DX12: %s", aShaderPath); return nullptr; }
 	FilePathStream output; output << Settings::CookedAssetRoot() << "/" << aShaderPath << ".dxil"; output.NormalizePath();
@@ -929,6 +934,7 @@ const ComputeShader* DX11::ForceLoadComputeShaderDxil(const char* aShaderPath, b
 
 const PixelShader* DX11::ForceLoadPixelShader(const char* aShaderPath, bool addToFileWatcher)
 {
+	TGA_CPU_SCOPE("Shader load (pixel)");
 	FilePathStream csoStream;
 	csoStream << Settings::CookedAssetRoot() << "/" << aShaderPath << ".cso";
 	csoStream.NormalizePath();
@@ -988,6 +994,7 @@ const PixelShader* DX11::ForceLoadPixelShader(const char* aShaderPath, bool addT
 
 const VertexShader* DX11::ForceLoadVertexShader(const char* aShaderPath, bool addToFileWatcher)
 {
+	TGA_CPU_SCOPE("Shader load (vertex)");
 	StringId id = StringRegistry::RegisterOrGetString(aShaderPath);
 	VertexShader& shader = ourLoadedVertexShaders[id];
 
@@ -1047,6 +1054,7 @@ const VertexShader* DX11::ForceLoadVertexShader(const char* aShaderPath, bool ad
 
 const ComputeShader* DX11::ForceLoadComputeShader(const char* aShaderPath, bool addToFileWatcher)
 {
+	TGA_CPU_SCOPE("Shader load (compute)");
 	StringId id = StringRegistry::RegisterOrGetString(aShaderPath);
 	ComputeShader& shader = ourLoadedComputeShaders[id];
 

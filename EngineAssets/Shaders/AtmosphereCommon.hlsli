@@ -11,7 +11,7 @@ cbuffer AtmosphereParams : register(b8)
     uint FogWidth, FogHeight, FogSteps, FogAffectSky;
     uint FogVolumeEnabled, FogDebugView; float2 FogJitter;
 	float FogSunDiskAngularRadius, FogSunDiskIntensity;
-	uint FogSunDiskEnabled; float FogSunDiskPad;
+	uint FogSunDiskEnabled; float FogPreExposed;
 };
 Texture2D<float> FogDepth : register(t4);
 float3 FogWorld(float2 uv, float depth)

@@ -23,6 +23,7 @@ namespace Tga
 	struct ComputeShader;
 	
 	namespace rhi::dx12 { 	class NrdWrapper; }
+	class GpuProfiler;
 
 	// One point light for the deferred structured-buffer path. Layout must match
 	// GpuLight in DeferredLightingPS.hlsl (two float4s). radius 0 = punctual.
@@ -154,13 +155,18 @@ namespace Tga
 		// the inline DXR GI pass.  It is intentionally not a replacement for the
 		// final resolve's primary IBL.
 		void SetGiEnvironment(rhi::SrvHandle aSrv, const Vector3f& aTint, bool aEnabled);
+		// GPU profiler that sub-pass scopes report into (null: CPU timing only).
+		void SetProfiler(GpuProfiler* aProfiler) { myProfiler = aProfiler; }
+		// Average luminance (scene units) of the environment's sky hemisphere,
+		// measured on the GPU whenever the environment changes; < 0 until known.
+		float GetEnvironmentAverageLuminance() const { return myEnvAverageLuminance; }
 		void ClearGi();   // zero the whole SH buffer -- call before a fresh (re-)prime
 		void GiProjectProbe(rhi::SrvHandle aCubeSrv, int aProbeIndex,
 		                    float aHysteresis, int aFaceRes);
 
 		// Ray-traced alternative to GiProjectProbe: shoots aRayCount rays from
 		// aProbePos over the full sphere and shades each hit with the SAME
-		// analytic model DxrSmokeTestCS.hlsl uses (real textures, real shadow
+		// analytic model DxrLightingCS.hlsl uses (real textures, real shadow
 		// rays, real point/spot lights) instead of relying on a rasterized
 		// cubemap capture -- a drop-in replacement that writes the identical SH
 		// buffer GiProjectProbe does, without re-rendering the scene 6 times per
@@ -259,6 +265,7 @@ namespace Tga
 			float volumetricAnisotropy = 0.45f;
 			float volumetricDistance = 120.f;
 			int volumetricSteps = 32;
+			int volumetricResolution = 1;   // volume march at 1/(2^n) of the fog target: 0 full, 1 half, 2 quarter
 			bool sunDiskEnabled = true;
 			float sunDiskAngularRadius = 0.0093f; // radians; ~0.53 degrees, the real sun
 			float sunDiskIntensity = 24.f;        // HDR, shaped by the existing exposure/bloom path
@@ -276,13 +283,26 @@ namespace Tga
 			float bloomThreshold  = 2.0f;    // HDR luma where bloom starts
 			float bloomKnee       = 0.5f;    // soft-knee width (fraction of threshold)
 			float bloomIntensity  = 0.04f;   // additive blend weight in the composite
-			bool  exposureAuto    = true;    // auto keeps every camera angle well-exposed
-			float exposureKey     = 0.14f;   // auto: target average scene luma
-			float manualExposure  = 1.0f;    // used when exposureAuto == false
-			float exposureMin     = 0.10f;
-			float exposureMax     = 4.0f;
+			// Physical camera (see Photometry.h). Manual exposure comes from
+			// aperture/shutter/ISO; auto meters the scene like a reflected-light
+			// meter. Defaults are the "sunny 16" rule, EV100 ~15.
+			bool  exposureAuto    = false;          // averaging meters over-brighten mostly shaded daylight views
+			float cameraAperture  = 16.0f;          // f-number
+			float cameraShutter   = 1.0f / 125.0f;  // seconds
+			float cameraIso       = 100.0f;
+			float autoEvMin       = -2.0f;          // metered EV100 clamp
+			float autoEvMax       = 17.0f;
 			float exposureSpeed   = 2.5f;    // adaptation rate (per second)
-			float exposureComp    = 0.0f;    // EV bias (stops)
+			float exposureComp    = 0.0f;    // EV compensation (stops, +1 = brighter)
+			int   tonemapper      = 0;       // 0 AgX, 1 AgX Punchy, 2 ACES (fitted), 3 none
+			// DXR renderer: write lighting already multiplied by the previous
+			// frame's exposure, so moonlit and sunlit scenes both stay inside
+			// FP16's precise range. Invisible otherwise.
+			bool  preExposure     = true;
+			// > 0: scale the environment map so its sky hemisphere averages this
+			// luminance in cd/m² (clear day ~8 000, overcast ~2 000, night ~0.01).
+			// 0 keeps the legacy relative "IBL scale".
+			float skyLuminanceNits = 8000.0f;
 
 			// --- screen-space reflections ---
 			bool  ssrEnabled        = true;
@@ -330,9 +350,25 @@ namespace Tga
 			// NVIDIA RTX path.  DLAA runs at native resolution and replaces the
 			// custom temporal resolve only when Streamline reports it available.
 			int dlssMode = 0;       // 0=off, 1=Native(DLAA), 2=Quality, 3=Balanced, 4=Performance, 5=UltraPerf
-			bool dlaaEnabled = true; // Use DLSS to anti-alias the native resolution
+			// Off by default: DLSS keeps per-frame ray noise as detail, and even with
+			// NRD the engine's own TAA measured steadier on a still camera.
+			bool dlaaEnabled = false; // Use DLSS to anti-alias the native resolution
+			int dlssPreset = 0;       // 0 default, 1 J, 2 K, 3 L (steadiest measured), 4 M
 			bool rayReconstructionEnabled = false; // Override dlaaEnabled and dlssMode to 1
-			bool nrdEnabled = false;
+			bool nrdEnabled = true;    // 1-2 ray AO/reflections are unusably noisy without it
+			// NRD only: trace AO and reflection rays on alternating half-pixel
+			// checkerboards (NRD reconstructs full resolution). ~Halves both.
+			bool nrdCheckerboard = false;
+			// 0 REBLUR (NVIDIA's choice for low-sample path-traced signals),
+			// 1 RELAX (tuned for clean, high-sample signals such as RTXDI).
+			int nrdDenoiser = 0;
+			float nrdHistorySeconds = 0.5f;   // longer = smoother but more lag / smearing
+			int nrdFastHistoryFrames = 6;      // responsive history used to clamp the long one
+			bool nrdAntilag = true;            // reset history where lighting changes quickly
+			bool nrdValidation = false;        // NRD's debug overlay (motion, depth, normals, history)
+			// Sun shadow rays per pixel (1-4); fewer rays rotate per frame and
+			// rely on the temporal resolve for the soft penumbra.
+			int dxrSunShadowSamples = 4;
 			// The depth/motion rejection protects disocclusions. Keep more history
 			// on valid samples so single-sample DXR AO and reflections converge
 			// rather than visibly pulse while the camera is still.
@@ -342,7 +378,7 @@ namespace Tga
 			int dxrLightingView = 0; // beauty, AO, environment, diffuse GI
 		};
 		Tunables& GetTunables() { return myTunables; }
-		bool RecreateDxrTargets() { return myDxrSmokeCS ? CreateDxrSmokeTarget(myResolution) : false; }
+		bool RecreateDxrTargets() { return myDxrLightingCS ? CreateDxrLightingTargets(myResolution) : false; }
 
 		// Post FX: bloom + auto-exposure, applied during Composite (HDR -> backbuffer).
 		// Off => Composite falls back to the plain engine tonemap.
@@ -364,21 +400,20 @@ namespace Tga
 		// BeginFrame) earlier in the SAME frame this pass runs in -- BuildFrame
 		// is called after BeginFrame, so by construction this pass always sees
 		// this frame's own TLAS, never a stale or null one from frame zero.
-		void SetDxrSmokeTest(bool aOn) { myDxrSmokeTestWanted = aOn; }
-		bool IsDxrSmokeTest() const { return myDxrSmokeTestWanted && myDxrSmokeCS != nullptr; }
-		rhi::SrvHandle GetDxrSmokeTestSrv() const { return myDxrSmokeTestSrv; }
+		void SetDxrLighting(bool aOn) { myDxrLightingWanted = aOn; }
+		bool IsDxrLighting() const { return myDxrLightingWanted && myDxrLightingCS != nullptr; }
+		rhi::SrvHandle GetDxrLightingSrv() const { return myDxrLightingSrv; }
 
 		// When on, BuildFrame skips the normal lit scene entirely and blits
 		// this pass's output straight to the backbuffer at full resolution,
 		// same short-circuit shape as the aDebugChannel>0 path below.
-		void SetDxrSmokeFullscreen(bool aOn) { myDxrSmokeFullscreenWanted = aOn; }
-		bool IsDxrSmokeFullscreen() const { return IsDxrSmokeTest() && myDxrSmokeFullscreenWanted; }
+		void SetDxrFullscreen(bool aOn) { myDxrFullscreenWanted = aOn; }
+		bool IsDxrFullscreen() const { return IsDxrLighting() && myDxrFullscreenWanted; }
 
 		// Full DXR mode owns HDR lighting. It bypasses the G-buffer lighting
-		// resolve and all raster shadow/AO/reflection passes; the older smoke
-		// naming remains only for its existing resource names.
-		void SetDxrRenderer(bool aOn) { SetDxrSmokeTest(aOn); SetDxrSmokeFullscreen(aOn); }
-		bool IsDxrRenderer() const { return IsDxrSmokeFullscreen(); }
+		// resolve and all raster shadow/AO/reflection passes.
+		void SetDxrRenderer(bool aOn) { SetDxrLighting(aOn); SetDxrFullscreen(aOn); }
+		bool IsDxrRenderer() const { return IsDxrFullscreen(); }
 
 		// Froxel grid config.
 		static constexpr int kTilePx        = 32;
@@ -390,10 +425,10 @@ namespace Tga
 		bool CreateClusterBuffers(Vector2ui aResolution);
 		bool CreateShadowMaps();
 		bool CreateLocalShadowAtlas();
-		bool CreateDxrSmokeTarget(Vector2ui aResolution);
+		bool CreateDxrLightingTargets(Vector2ui aResolution);
 		bool CreateDxrBrdfLut();
-		void RenderDxrSmokeTest();
-		void ResolveDxrSmokeToHdr();
+		void RenderDxrLighting();
+		void ResolveDxrLightingToHdr();
 		// One fogged-HDR target plus its half-resolution sun-shaft volume.
 		struct AtmosphereTargetSet
 		{
@@ -419,6 +454,10 @@ namespace Tga
 		const ComputeShader* myVolumeRTCS = nullptr;
 		RenderTarget myAtmosphereHdr;
 		rhi::TextureHandle myVolumeTex;
+		uint32_t myVolumeDivisor = 2;       // divisor the volume textures were allocated with
+		bool CreateVolumeTexture(Vector2ui aTargetSize, const char* aName, rhi::TextureHandle& aTex, rhi::SrvHandle& aSrv, rhi::UavHandle& aUav);
+		bool myNrdCheckerboardActive = false;
+		rhi::ConstantBuffer myNrdCompositeCb;
 		rhi::SrvHandle myVolumeSrv;
 		rhi::UavHandle myVolumeUav;
 		// Render-resolution fog outputs; only allocated while DLSS renders the
@@ -474,15 +513,15 @@ namespace Tga
 		Matrix4x4f myProjToView;
 		Matrix4x4f myViewToProj;
 		Matrix4x4f myWorldToView;
-		Matrix4x4f myCameraTransform;   // world transform (SetCamera); DXR smoke test needs position + basis, not just the view matrix
+		Matrix4x4f myCameraTransform;   // world transform (SetCamera); DXR lighting pass needs position + basis, not just the view matrix
 		float myNear = 1.f, myFar = 100000.f;
 
-		// --- DXR Stage-3 validation: RayQuery smoke test ---
-		const ComputeShader* myDxrSmokeCS = nullptr;
-		rhi::TextureHandle myDxrSmokeTex;                 // RGBA16F HDR ray-traced radiance
+		// --- DXR Stage-3 validation: RayQuery DXR lighting pass ---
+		const ComputeShader* myDxrLightingCS = nullptr;
+		rhi::TextureHandle myDxrLightingTex;                 // RGBA16F HDR ray-traced radiance
 		Vector2ui myDxrRenderResolution{ 0, 0 };           // DLSS input resolution; display target stays myResolution
-		rhi::SrvHandle myDxrSmokeTestSrv;
-		rhi::UavHandle myDxrSmokeUav;
+		rhi::SrvHandle myDxrLightingSrv;
+		rhi::UavHandle myDxrLightingUav;
 		rhi::TextureHandle myDlaaTex;                     // native-resolution DLAA output
 		rhi::SrvHandle myDlaaSrv;
 		rhi::UavHandle myDlaaUav;
@@ -498,6 +537,7 @@ namespace Tga
 		std::array<rhi::SrvHandle, 6> myTemporalSrv;
 		std::array<rhi::UavHandle, 6> myTemporalUav;
 		Matrix4x4f myPreviousWorldToClip;
+		Matrix4x4f myResolvePreviousWorldToClip;   // previous frame's matrix, as seen by the resolve pass
 		bool myTemporalHistoryValid = false;
 		const ComputeShader* myTaaCS = nullptr;
 		rhi::ConstantBuffer myTaaCb;
@@ -513,21 +553,25 @@ namespace Tga
 		uint32_t myTaaFrameIndex = 0, myTaaHistoryIndex = 0;
 		uint32_t myDxrFrameIndex = 0; // advances even when TAA is disabled; seeds stochastic DXR work
 		Vector2f myTaaJitter{0,0}, myPreviousTaaJitter{0,0};
-		rhi::ConstantBuffer myDxrSmokeCb;   // CS b0
-		rhi::SamplerHandle myDxrSmokeSampler;   // CS s0, for the material albedo fetch
-		const PixelShader* myDxrSmokeCopyPs = nullptr; // linear HDR copy into myHdr
-		bool myDxrSmokeTestWanted = false;
-		bool myDxrSmokeFullscreenWanted = false;
+		rhi::ConstantBuffer myDxrLightingCb;   // CS b0
+		rhi::SamplerHandle myDxrMaterialSampler;   // CS s0, for the material albedo fetch
+		const PixelShader* myDxrCopyPs = nullptr; // linear HDR copy into myHdr
+		bool myDxrLightingWanted = false;
+		bool myDxrFullscreenWanted = false;
 		
-		// NVIDIA NRD (RELAX diffuse) over the DXR pass's indirect diffuse.
+		// NVIDIA NRD (RELAX diffuse + specular) over the DXR pass's indirect lighting.
 		// Created lazily on first use and dropped on every target resize.
 		std::unique_ptr<rhi::dx12::NrdWrapper> myNrd;
+		GpuProfiler* myProfiler = nullptr;
 		bool myNrdFailed = false;          // don't retry creation every frame
 		bool myNrdHistoryValid = false;
-		// viewZ (R32F), normal+roughness (R10G10B10A2), noisy diffuse, denoised diffuse (RGBA16F)
-		std::array<rhi::TextureHandle, 4> myNrdTex;
-		std::array<rhi::SrvHandle, 4> myNrdSrv;
-		std::array<rhi::UavHandle, 4> myNrdUav;
+		// viewZ (R32F), normal+roughness (R10G10B10A2), then RGBA16F noisy
+		// diffuse, noisy specular, denoised diffuse, denoised specular.
+		// The first four are DxrLightingCS's u7..u10.
+		enum { kNrdViewZ, kNrdNormal, kNrdDiffuse, kNrdSpecular, kNrdDiffuseOut, kNrdSpecularOut, kNrdValidation, kNrdTexCount };
+		std::array<rhi::TextureHandle, kNrdTexCount> myNrdTex;
+		std::array<rhi::SrvHandle, kNrdTexCount> myNrdSrv;
+		std::array<rhi::UavHandle, kNrdTexCount> myNrdUav;
 		const ComputeShader* myNrdCompositeCS = nullptr;
 		Matrix4x4f myNrdPrevWorldToView, myNrdPrevViewToClip;
 		bool NrdActive() const;
@@ -581,6 +625,20 @@ namespace Tga
 		rhi::SrvHandle myGiEnvironmentSrv;          // CS t3, prefiltered environment
 		Vector3f myGiEnvironmentTint{ 0.f, 0.f, 0.f };
 		bool myGiEnvironmentEnabled = false;
+		// Physical sky: EnvironmentAverageCS measures the sky hemisphere once per
+		// environment; the readback lands the frame after the dispatch.
+		const ComputeShader* myEnvAverageCS = nullptr;
+		rhi::TextureHandle myEnvAverageTex;
+		rhi::UavHandle myEnvAverageUav;
+		rhi::SrvHandle myEnvAverageMeasured;     // environment the value belongs to
+		rhi::SrvHandle myEnvAveragePending;      // dispatched, awaiting readback
+		float myEnvAverageLuminance = -1.f;
+		void MeasureEnvironment(rhi::ICommandContext& ctx);
+		Vector3f EnvironmentTint() const;        // tint for every environment lookup
+		float SkyDisplayScale() const;           // primary-ray sky scale
+		float SkyBrightnessScale() const;        // physical sky relative to a clear day
+		bool PreExposureActive() const;
+		void EnsureExposureHistory();
 
 		// --- cascaded shadow maps (directional) ---
 		static constexpr int kShadowRes = 3072;
@@ -625,8 +683,9 @@ namespace Tga
 		std::array<RenderTarget, kBloomMips> myBloomMip;   // [0] = half res, each next halved
 		std::array<Vector2ui, kBloomMips>    myBloomSize{};
 		std::array<RenderTarget, 7> myExpMip;              // 64,32,16,8,4,2,1 log-luma
-		RenderTarget myExposure[2];                        // persistent 1x1 ping-pong
+		RenderTarget myExposure[2];                        // persistent 1x1 EV100 ping-pong
 		int  myExposureSrc = 0;
+		int  myPreExposureIndex = 0;                       // history the current HDR was exposed with
 		bool myExposureCleared = false;
 		rhi::SamplerHandle myLinearSampler;   // s3
 		rhi::ConstantBuffer myPostFxCb;              // b10

@@ -127,4 +127,38 @@ void GpuProfiler::Resolve(Frame& f)
 	myResults = std::move(results);
 	myFrameGpuMs = total;
 	myReadyOnce = true;
+
+	// Fold into rolling per-path stats (path = chain of names down to this scope).
+	++myResolveCount;
+	uint64_t pathAtDepth[64] = {};
+	for (const ScopeResult& r : myResults)
+	{
+		const int d = std::clamp(r.depth, 0, 63);
+		const uint64_t parent = d == 0 ? 1469598103934665603ull : pathAtDepth[d - 1];
+		const uint64_t path = (parent ^ std::hash<std::string>()(r.name)) * 1099511628211ull;
+		pathAtDepth[d] = path;
+		ScopeStats& st = myStats[path];
+		if (st.name.empty()) { st.name = r.name; st.depth = r.depth; st.order = myNextOrder++; }
+		if (st.lastResolve == myResolveCount)
+			st.samples[(st.head + 239) % 240] += float(r.ms);
+		else
+		{
+			st.samples[st.head] = float(r.ms);
+			st.head = (st.head + 1) % 240;
+			st.count = std::min(st.count + 1, 240);
+			st.lastResolve = myResolveCount;
+		}
+	}
+	myFrameHistory[myFrameHistoryHead] = float(total);
+	myFrameHistoryHead = (myFrameHistoryHead + 1) % 240;
+	myFrameHistoryCount = std::min(myFrameHistoryCount + 1, 240);
+}
+
+std::vector<const GpuProfiler::ScopeStats*> GpuProfiler::GetStats() const
+{
+	std::vector<const ScopeStats*> out;
+	for (const auto& [path, st] : myStats)
+		if (myResolveCount - st.lastResolve < 240) out.push_back(&st);
+	std::sort(out.begin(), out.end(), [](const ScopeStats* a, const ScopeStats* b) { return a->order < b->order; });
+	return out;
 }

@@ -51,6 +51,18 @@ namespace Tga
 		                          const char* aUnresolvedPath, TextureSrgbMode aSrgbMode, Texture* aExistingTexture);
 
 		std::unordered_map<StringId, std::unique_ptr<Texture>> myResourceViews;
+
+	public:
+		// Reads and decodes these DDS files (engine asset paths) on worker
+		// threads, so the GetTexture calls that follow only create GPU
+		// resources. Anything not requested afterwards is dropped by
+		// ClearPrefetchedTextures().
+		void PrefetchTextures(const std::vector<std::string>& aTexturePaths);
+		void ClearPrefetchedTextures();
+
+	private:
+		struct PrefetchedImage;
+		std::unordered_map<std::wstring, std::unique_ptr<PrefetchedImage>> myPrefetched;
 		void CreateErrorSquareTexture();
 		void CreateWhiteSquareTexture();
 		void CreateDefaultNormalmapTexture();

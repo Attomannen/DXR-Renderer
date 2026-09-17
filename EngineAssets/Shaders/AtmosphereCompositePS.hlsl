@@ -3,6 +3,8 @@ struct FsIn { float4 position : SV_POSITION; float2 uv : UV; };
 Texture2D<float4> FogHdr : register(t1);
 Texture2D<float4> FogSunlight : register(t2);
 SamplerState FogLinear : register(s3);
+Texture2D<float> FogPreviousEv100 : register(t5);
+#include "Exposure.hlsli"
 float4 main(FsIn input) : SV_TARGET
 {
     int2 p = min(int2(input.position.xy + FogJitter), int2(FogWidth - 1, FogHeight - 1));
@@ -31,6 +33,9 @@ float4 main(FsIn input) : SV_TARGET
     if (FogDebugView == 1) return float4(transmittance.xxx,1);
     if (FogDebugView == 2) return float4(sunlight,1);
     float3 hdr = FogHdr.SampleLevel(FogLinear,input.uv,0).rgb;
+    // The DXR HDR carries pre-exposure; bring this pass's own light to match.
+    const float preExposure = FogPreExposed > 0.5f ? PreExposureFromEv100(FogPreviousEv100.Load(int3(0,0,0))) : 1.0f;
+    sunlight *= preExposure;
 	// The disk is a directional sky feature, not a screen-space sprite. It
 	// shares FogSunDirection with direct lighting and the shadowed volume march,
 	// so rotating the directional light moves the visible sun and its shafts
@@ -46,7 +51,7 @@ float4 main(FsIn input) : SV_TARGET
 		// atmospheric cue that makes forward-scattered shafts readable.
 		const float halo = pow(saturate((cosAngle - cos(FogSunDiskAngularRadius * 12.0f)) /
 			max(innerCos - cos(FogSunDiskAngularRadius * 12.0f), 1e-5f)), 3.0f) * 0.08f;
-		hdr += FogSunRadiance * FogSunDiskIntensity * (disk + halo);
+		hdr += FogSunRadiance * FogSunDiskIntensity * (disk + halo) * preExposure;
 	}
-    return float4(hdr * transmittance + FogColor * (1-transmittance) + sunlight,1);
+    return float4(hdr * transmittance + FogColor * preExposure * (1-transmittance) + sunlight,1);
 }

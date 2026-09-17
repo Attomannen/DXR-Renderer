@@ -22,6 +22,8 @@ namespace Tga
 		bool IsRayReconstructionAvailable() const { return myRayReconstructionAvailable; }
 
 		// aMode: 1=DLAA, 2=Quality, 3=Balanced, 4=Performance, 5=Ultra Performance.
+		// 0 default, 1 J, 2 K, 3 L, 4 M (see sl::DLSSPreset).
+		void SetPreset(int aPreset) { myPreset = aPreset; }
 		bool EvaluateDLSS(void* aCommandList, void* aColor, void* aOutput,
 			void* aDepth, void* aMotion, uint32_t aRenderWidth, uint32_t aRenderHeight,
 			uint32_t aOutputWidth, uint32_t aOutputHeight, int aMode,
@@ -48,6 +50,7 @@ namespace Tga
 		bool myInitialized = false;
 		bool myAvailable = false;
 		bool myRayReconstructionAvailable = false;
+		int myPreset = 0;
 		PFun_slInit* myInit = nullptr;
 		PFun_slShutdown* myShutdown = nullptr;
 		PFun_slSetD3DDevice* mySetD3DDevice = nullptr;

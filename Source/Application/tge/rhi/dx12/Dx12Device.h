@@ -103,6 +103,10 @@ namespace Tga::rhi::dx12
 		Backend GetBackend() const override { return Backend::DX12; }
 		bool SupportsRaytracingTier11() const override { return myRaytracingTier11; }
 		RaytracingBlasHandle CreateRaytracingBlas(const RaytracingBlasDesc&) override;
+		void CreateRaytracingBlases(const RaytracingBlasDesc* descs, uint32_t count, RaytracingBlasHandle* out) override;
+		void BeginUploadBatch() override { ++myUploadBatchDepth; }
+		bool QueryVideoMemory(uint64_t& outUsage, uint64_t& outBudget) override;
+		void EndUploadBatch() override;
 		void Destroy(RaytracingBlasHandle) override;
 		void BuildRaytracingTlas(const RaytracingInstanceDesc*, uint32_t count) override;
 		bool BindRaytracingSceneForCompute() override;
@@ -176,6 +180,8 @@ namespace Tga::rhi::dx12
 		void* CreateInputLayoutNative(const InputElement*, uint32_t, const void*, uint32_t) override;
 		bool CaptureBackBufferPng(const wchar_t* utf16Path) override;
 		bool ReadBackUintPixel4(TextureHandle texture, uint32_t x, uint32_t y, uint32_t outValues[4]) override;
+		bool ReadBackFloatPixel4(TextureHandle texture, uint32_t x, uint32_t y, float outValues[4]) override;
+		bool ReadBackPixel16(TextureHandle texture, uint32_t x, uint32_t y, void* outTexel);   // any 16-byte texel format
 
 		// ---- backend-internal accessors used by Dx12CommandContext ----
 		ID3D12Device*        Raw() { return myDevice.Get(); }
@@ -260,7 +266,7 @@ namespace Tga::rhi::dx12
 
 		static constexpr uint32_t kNumCbvRegisters = 14;   // b0..b13
 		static constexpr uint32_t kNumSrvRegisters = 24;   // t0..t23
-		static constexpr uint32_t kNumUavRegisters = 10;   // u0..u9 (DXR output + temporal/RR guides + NRD guides)
+		static constexpr uint32_t kNumUavRegisters = 11;   // u0..u10 (DXR output + temporal/RR guides + NRD guides)
 		static constexpr uint32_t kNumSamplerRegisters = 6; // s0..s5
 		static constexpr uint32_t kRaySceneRootParameter = kNumCbvRegisters + 3;
 		// Fixed root SRVs in space2, bound directly by GPU virtual address --
@@ -301,6 +307,18 @@ namespace Tga::rhi::dx12
 		// creation only -- per-frame streaming should use AllocateDynamicConstants
 		// or a future dedicated upload ring instead).
 		void UploadBufferData(ID3D12Resource* dst, const void* data, size_t size);
+		void UploadBufferFill(ID3D12Resource* dst, size_t size, const std::function<void(void*)>& fill);
+		BufferHandle CreateBufferImpl(const BufferDesc&, const std::function<void(void*)>* fill);
+	public:
+		BufferHandle CreateBufferWith(const BufferDesc& desc, const std::function<void(void* mapped)>& fill) override
+		{
+			return CreateBufferImpl(desc, &fill);
+		}
+	private:
+		// The upload list is either closed or open collecting a batch.
+		ID3D12GraphicsCommandList* OpenUploadList();
+		void SubmitUploadList();                               // execute + wait, if open
+		void FinishUpload(ComPtr<ID3D12Resource> staging, uint64_t bytes);
 		void UploadTextureData(ID3D12Resource* dst, const TextureDesc&, const SubresourceData* initial, uint32_t count);
 
 		static constexpr uint32_t kFramesInFlight = 3;
@@ -342,6 +360,7 @@ namespace Tga::rhi::dx12
 		static constexpr uint32_t kImGuiSrvCapacity = 4096;   // shader-visible, owned exclusively by imgui_impl_dx12
 
 		ComPtr<IDXGIFactory6> myFactory;
+		ComPtr<IDXGIAdapter3> myAdapter;
 		ComPtr<ID3D12Device>  myDevice;
 		// DXR entry points live on these versioned interfaces.  Keep both base
 		// interfaces too: the rest of the renderer remains ordinary D3D12.
@@ -397,6 +416,10 @@ namespace Tga::rhi::dx12
 		// UploadTextureData (separate from the main per-frame list/allocator).
 		ComPtr<ID3D12CommandAllocator> myUploadAllocator;
 		ComPtr<ID3D12GraphicsCommandList> myUploadCmdList;
+		int myUploadBatchDepth = 0;
+		bool myUploadListOpen = false;
+		std::vector<ComPtr<ID3D12Resource>> myUploadStaging;   // kept alive until the batch executes
+		uint64_t myUploadStagingBytes = 0;
 
 		TextureHandle myBackBufferTex[kFramesInFlight];
 		RtvHandle     myBackBufferRtv[kFramesInFlight];        // sRGB write view (default DX11::BackBuffer)
@@ -456,7 +479,7 @@ namespace Tga::rhi::dx12
 		ComPtr<ID3D12QueryHeap> myTimestampHeap;
 		ComPtr<ID3D12Resource>  myTimestampReadback;
 		ComPtr<ID3D12Resource>  myPixelReadbackBuffer;
-		static constexpr uint32_t kMaxTimestamps = 512;
+		static constexpr uint32_t kMaxTimestamps = 2048;   // GpuProfiler: 96 scopes x 5 buffered frames x 2
 		double myGpuTimestampFrequency = 0.0;
 		uint32_t myNextTimestampSlot = 0;       // monotonic allocator for CreateTimestampQuery
 		uint32_t myTimestampFrameMin = UINT32_MAX;  // min heap index written this frame

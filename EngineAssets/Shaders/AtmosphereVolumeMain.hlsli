@@ -3,7 +3,10 @@ RWTexture2D<float4> FogVolume : register(u0);
 [numthreads(8,8,1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
-    uint2 size = uint2((FogWidth + 1) / 2, (FogHeight + 1) / 2);
+    // The volume texture's own size sets the march resolution (see
+    // Tunables::volumetricResolution); every other term is resolution-free.
+    uint2 size;
+    FogVolume.GetDimensions(size.x, size.y);
     if (any(tid.xy >= size)) return;
     float2 uv = (tid.xy + 0.5) / size;
     int2 pixel = min(int2(uv * float2(FogWidth, FogHeight) + FogJitter), int2(FogWidth - 1, FogHeight - 1));

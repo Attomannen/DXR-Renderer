@@ -11,6 +11,6 @@ float main(FsIn i) : SV_TARGET
 	c += Hdr.SampleLevel(LinearClamp, i.uv + float2(-o.x,  o.y), 0).rgb;
 	c += Hdr.SampleLevel(LinearClamp, i.uv + float2( o.x,  o.y), 0).rgb;
 	c *= 0.25f;
-	float l = max(Luma(c), 1e-4f);
+	float l = max(Luma(c) / HdrPreExposure(), 1e-9f);
 	return log2(l);
 }

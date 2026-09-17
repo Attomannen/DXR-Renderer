@@ -141,7 +141,7 @@ namespace Tga::rhi::dx12
 		// kNumUav must equal Dx12Device::kNumUavRegisters: the root signature
 		// declares that many UAVs, so a shorter table leaves the remaining
 		// registers aliasing whatever the scratch heap allocates next.
-		static constexpr uint32_t kNumCbv = 14, kNumSrv = 24, kNumUav = 10, kNumSampler = 6;
+		static constexpr uint32_t kNumCbv = 14, kNumSrv = 24, kNumUav = 11, kNumSampler = 6;
 		SrvHandle     myBoundSrv[kNumSrv] = {};
 		UavHandle     myBoundUav[kNumUav] = {};
 		SamplerHandle myBoundSampler[kNumSampler] = {};

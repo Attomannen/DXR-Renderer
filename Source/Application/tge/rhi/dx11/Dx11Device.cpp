@@ -744,6 +744,16 @@ namespace Tga::rhi::dx11
 
 	bool Dx11Device::ReadBackUintPixel4(TextureHandle texture, uint32_t x, uint32_t y, uint32_t outValues[4])
 	{
+		return ReadBackPixel16(texture, x, y, outValues);
+	}
+
+	bool Dx11Device::ReadBackFloatPixel4(TextureHandle texture, uint32_t x, uint32_t y, float outValues[4])
+	{
+		return ReadBackPixel16(texture, x, y, outValues);
+	}
+
+	bool Dx11Device::ReadBackPixel16(TextureHandle texture, uint32_t x, uint32_t y, void* outValues)
+	{
 		// Moved here from Viewport.cpp's MouseOver() (2026-09-12) so a DX12
 		// implementation could exist behind the same call -- logic unchanged
 		// from what was already there and working.
@@ -755,7 +765,10 @@ namespace Tga::rhi::dx11
 		textureDesc.Height = 1;
 		textureDesc.MipLevels = 1;
 		textureDesc.ArraySize = 1;
-		textureDesc.Format = DXGI_FORMAT_R32G32B32A32_UINT;
+		D3D11_TEXTURE2D_DESC sourceDesc = {};
+		static_cast<ID3D11Texture2D*>(t->res.Get())->GetDesc(&sourceDesc);
+		if (sourceDesc.Format != DXGI_FORMAT_R32G32B32A32_UINT && sourceDesc.Format != DXGI_FORMAT_R32G32B32A32_FLOAT) return false;
+		textureDesc.Format = sourceDesc.Format;
 		textureDesc.SampleDesc.Count = 1;
 		textureDesc.SampleDesc.Quality = 0;
 		textureDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
@@ -781,7 +794,7 @@ namespace Tga::rhi::dx11
 		hr = myCtx->Map(tmp.Get(), 0, D3D11_MAP_READ, 0, &msr);
 		if (FAILED(hr)) return false;
 
-		memcpy(outValues, msr.pData, sizeof(uint32_t) * 4);
+		memcpy(outValues, msr.pData, 16);
 		myCtx->Unmap(tmp.Get(), 0);
 		return true;
 	}

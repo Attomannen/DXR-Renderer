@@ -1,4 +1,6 @@
 #pragma once
+#include <functional>
+#include <vector>
 #include <memory>
 #include <tge/math/Vector.h>
 #include "tge/rhi/Descs.h"
@@ -21,6 +23,12 @@ namespace Tga::rhi
 		// Returns an invalid handle on backends without DXR. Creation is intended
 		// for immutable model geometry and may synchronously compact at load time.
 		virtual RaytracingBlasHandle CreateRaytracingBlas(const RaytracingBlasDesc&) = 0;
+		// Builds several BLASes with one GPU round trip for the builds and one
+		// for compaction, instead of two per BLAS.
+		virtual void CreateRaytracingBlases(const RaytracingBlasDesc* descs, uint32_t count, RaytracingBlasHandle* out)
+		{
+			for (uint32_t i = 0; i < count; ++i) out[i] = CreateRaytracingBlas(descs[i]);
+		}
 		virtual void Destroy(RaytracingBlasHandle) = 0;
 		virtual void BuildRaytracingTlas(const RaytracingInstanceDesc*, uint32_t count) = 0;
 		virtual uint32_t RegisterRaySceneSrv(SrvHandle) = 0;
@@ -34,7 +42,23 @@ namespace Tga::rhi
 		virtual uint32_t GetFrameIndex() const = 0;
 
 		// ---- resources ----
+		// Load-time batching: initial-data uploads made between Begin and End
+		// share GPU submissions instead of waiting for the GPU one by one.
+		// Nestable. A no-op on backends without explicit upload lists.
+		virtual void BeginUploadBatch() {}
+		// Local (dedicated) video memory in use by this process and the OS budget.
+		virtual bool QueryVideoMemory(uint64_t& /*outUsage*/, uint64_t& /*outBudget*/) { return false; }
+		virtual void EndUploadBatch() {}
+
 		virtual BufferHandle  CreateBuffer(const BufferDesc&, const void* initialData = nullptr) = 0;
+		// Like CreateBuffer with initial data, but `fill` writes the byteSize
+		// bytes straight into upload memory -- no intermediate CPU copy.
+		virtual BufferHandle  CreateBufferWith(const BufferDesc& desc, const std::function<void(void* mapped)>& fill)
+		{
+			std::vector<uint8_t> bytes(desc.byteSize);
+			fill(bytes.data());
+			return CreateBuffer(desc, bytes.data());
+		}
 		virtual TextureHandle CreateTexture(const TextureDesc&, const SubresourceData* initial = nullptr,
 		                                    uint32_t initialCount = 0) = 0;
 		// The format a texture was actually created with -- Unknown for an
@@ -150,6 +174,10 @@ namespace Tga::rhi
 		// class). Returns false (leaving outValues untouched) if `texture` is
 		// invalid or (x,y) is out of bounds.
 		virtual bool ReadBackUintPixel4(TextureHandle texture, uint32_t x, uint32_t y, uint32_t outValues[4]) = 0;
+		// Same synchronous one-pixel readback for an R32G32B32A32_FLOAT texture.
+		// For rare, event-driven measurements (e.g. an environment map's average
+		// luminance when it changes), never per frame.
+		virtual bool ReadBackFloatPixel4(TextureHandle texture, uint32_t x, uint32_t y, float outValues[4]) = 0;
 
 		// ---- Stage-1 migration bridge: adopt a view created by legacy raw-D3D11
 		// code so the wrapper can hand out an rhi handle. Removed in Stage 2 when

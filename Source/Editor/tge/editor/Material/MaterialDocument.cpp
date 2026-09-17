@@ -212,10 +212,17 @@ void MaterialDocument::DrawProperties()
 	if (emissionSection.IsOpen() && Tga::BeginInspectorPropertyTable("EmissionProperties"))
 	{
 		Tga::InspectorPropertyLabel("Enable Emission"); Tga::InspectorPropertyValue(); bool emission = myMaterial.emissiveStrength > 0.f;
-		if (ImGui::Checkbox("##EmissionEnabled", &emission)) { myMaterial.emissiveStrength = emission ? 1.f : 0.f; changed = true; }
+		// Default to a bright but ordinary emitter: 1000 cd/m² (a backlit sign).
+		if (ImGui::Checkbox("##EmissionEnabled", &emission)) { myMaterial.emissiveStrength = emission ? Tga::Photometry::NitsToUnits(1000.f) : 0.f; changed = true; }
 		ImGui::BeginDisabled(!emission);
 		Tga::InspectorPropertyLabel("Emissive Colour"); Tga::InspectorPropertyValue(); changed |= ImGui::ColorEdit3("##EmissiveColour", myMaterial.emissiveColor, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
-		Tga::InspectorPropertyLabel("Intensity"); Tga::InspectorPropertyValue(); changed |= ImGui::SliderFloat("##EmissiveStrength", &myMaterial.emissiveStrength, 0.f, 16.f, "%.2f");
+		Tga::InspectorPropertyLabel("Luminance"); Tga::InspectorPropertyValue();
+		float luminance = myMaterial.emissiveStrength * Tga::Photometry::kNitsPerUnit;
+		if (ImGui::SliderFloat("##EmissiveLuminance", &luminance, 0.f, 1.0e7f, "%.0f cd/m2", ImGuiSliderFlags_Logarithmic))
+		{
+			myMaterial.emissiveStrength = Tga::Photometry::NitsToUnits(luminance);
+			changed = true;
+		}
 		ImGui::EndDisabled(); Tga::EndInspectorPropertyTable();
 	}
 	}

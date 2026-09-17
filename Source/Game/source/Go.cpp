@@ -1,6 +1,9 @@
 #define _CRT_SECURE_NO_WARNINGS
 
 #include "GameWorld.h"
+#include <tge/debugging/CpuProfiler.h>
+#include <chrono>
+#include <cstdio>
 
 #include <tge/input/InputManager.h>
 #include <tge/scene/Scene.h>
@@ -78,7 +81,18 @@ void Go()
 	
 	cfg.enableVSync = false; // Forced off for testing
 
-	if (!Tga::Application::Start() || !Tga::GraphicsEngine::Start())
+	const auto startupBegin = std::chrono::steady_clock::now();
+	bool started = false;
+	{
+		TGA_CPU_SCOPE("Application start (window, device)");
+		started = Tga::Application::Start();
+	}
+	if (started)
+	{
+		TGA_CPU_SCOPE("Graphics engine start");
+		started = Tga::GraphicsEngine::Start();
+	}
+	if (!started)
 	{
 		ERROR_PRINT("Fatal error! Engine could not start!");
 		system("pause");
@@ -87,17 +101,31 @@ void Go()
 
 	{
 		GameWorld gameWorld;
-		gameWorld.Init();
+		{
+			TGA_CPU_SCOPE("GameWorld init (scene load)");
+			gameWorld.Init();
+		}
+		const double startupMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - startupBegin).count();
+		std::printf("Startup took %.0f ms\n", startupMs);
+		Tga::CpuProfiler::Get().PrintLoadReport(5.0);
 
 		Tga::Application& application = *Tga::Application::GetInstance();
 		Tga::GraphicsEngine& graphicsEngine = *Tga::GraphicsEngine::GetInstance();
 
 		while (application.BeginFrame() && graphicsEngine.BeginFrame())
 		{
-			gameWorld.Update(application.GetDeltaTime());
-			gameWorld.Render();
-
-			graphicsEngine.EndFrame();
+			{
+				TGA_CPU_SCOPE("Game update");
+				gameWorld.Update(application.GetDeltaTime());
+			}
+			{
+				TGA_CPU_SCOPE("Game render");
+				gameWorld.Render();
+			}
+			{
+				TGA_CPU_SCOPE("Graphics end frame");
+				graphicsEngine.EndFrame();
+			}
 			application.EndFrame();
 		}
 	}

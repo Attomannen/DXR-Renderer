@@ -1,7 +1,7 @@
 ﻿// Shared bindless-scene declarations + direct-lighting helpers for every DXR
-// compute pass in the engine (DxrSmokeTestCS.hlsl, GiTraceInlineCS.hlsl).
+// compute pass in the engine (DxrLightingCS.hlsl, GiTraceInlineCS.hlsl).
 // Kept as one header so the TLAS/material/light bindings and the BRDF can't
-// drift apart between passes the way they briefly did across DxrSmokeTestCS's
+// drift apart between passes the way they briefly did across DxrLightingCS's
 // own iterations. See Dx12Device::kRayTlasRootParameter and friends for what
 // binds each of these on the C++ side.
 #ifndef DXR_COMMON_HLSLI
@@ -306,11 +306,13 @@ float3 OffsetRayOrigin(float3 position, float3 geometricNormal, float3 outgoingD
 	return position + n * (dot(n, outgoingDirection) >= 0.0f ? 0.05f : -0.05f);
 }
 
-float TraceSunVisibility(float3 position, float3 geometricNormal, float3 dir, uint sourceInstanceId, uint sourcePrimitive, uint sampleCount = 4u)
+float TraceSunVisibility(float3 position, float3 geometricNormal, float3 dir, uint sourceInstanceId, uint sourcePrimitive, uint sampleCount = 4u, float rotationOffset = 0.0f)
 {
 	const float3 t = normalize(abs(dir.y) < 0.99f ? cross(dir, float3(0,1,0)) : cross(dir, float3(1,0,0)));
 	const float3 b = cross(dir, t);
-	const float rotation = frac(sin(dot(position, float3(12.9898f, 78.233f, 37.719f))) * 43758.5453f);
+	// rotationOffset varies per frame when few samples are traced, so the
+	// temporal resolve can integrate the penumbra instead of freezing a pattern.
+	const float rotation = frac(sin(dot(position, float3(12.9898f, 78.233f, 37.719f))) * 43758.5453f + rotationOffset);
 	float visibility = 0.0f;
 	const uint sunSamples = clamp(sampleCount, 1u, 4u);
 	const float invSunSamples = 1.0f / float(sunSamples);
@@ -409,7 +411,7 @@ float3 EvaluatePunctualLight(GpuLight L, float3 surfacePosition, float3 geoNorma
 // scale or clamp) -- the raster skybox samples the cube raw and trusts the
 // existing HDR auto-exposure + ACES tonemap pass (Composite) to compress it,
 // and the DXR path shares that exact same Composite pass (see
-// ResolveDxrSmokeToHdr -> myHdr -> Composite), so it must feed it the same
+// ResolveDxrLightingToHdr -> myHdr -> Composite), so it must feed it the same
 // kind of un-pre-exposed value. The earlier *0.025 + clamp(4) fudge here
 // pre-baked its own guessed exposure on top of the real one, and `tint` was
 // the GI-tuned kDxrEnvironmentScale (0.12) rather than 1 -- together making
@@ -861,13 +863,13 @@ HitSurface DecodeHit(RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES> q, float cone
 // panel rather than baked in here, so they're one place to tune instead of
 // a shader edit + recompile.
 float3 ShadeDirect(HitSurface hs, float3 shadowOrigin, float3 viewDir, float3 sunDirToLight, uint lightCount,
-                    float3 sunRadiance, float ambientIntensity, uint sunSamples = 4u)
+                    float3 sunRadiance, float ambientIntensity, uint sunSamples = 4u, float sunRotation = 0.0f)
 {
 	float3 sunLit = 0.f;
 	const float sunNdotl = saturate(dot(hs.worldNormal, sunDirToLight));
 	if (sunNdotl > 0.f)
 	{
-		const float sunShadow = TraceSunVisibility(hs.shadowPosition, hs.geoWorldNormal, sunDirToLight, hs.instanceId, hs.primitiveIndex, sunSamples);
+		const float sunShadow = TraceSunVisibility(hs.shadowPosition, hs.geoWorldNormal, sunDirToLight, hs.instanceId, hs.primitiveIndex, sunSamples, sunRotation);
 		float3 kd;
 		const float3 specular = CookTorrance(hs.worldNormal, viewDir, sunDirToLight, hs.albedo, hs.roughness, hs.metalness, kd);
 		const float3 diffuse = kd * hs.albedo / 3.14159265f;
@@ -969,6 +971,11 @@ void SampleGgxReflection(float3 viewDir, float3 normal, float roughness, float3 
 // miss. Call sites should skip this entirely above a roughness cutoff; a
 // rough surface's reflection is too blurred for a single unfiltered sample
 // to read as anything but noise.
+// Distance to the surface the last TraceReflection call hit (65504, NRD's
+// FP16 "infinitely far", for a sky miss). A static rather than an out
+// parameter so existing call sites and default arguments stay as they are.
+static float gLastReflectionHitDistance = 65504.0f;
+
 float3 TraceReflection(float3 origin, float3 dir, float3 sunDirToLight, uint lightCount,
 	                        float3 sunRadiance, float ambientIntensity, float environmentMip, float3 environmentTint, bool enableIndirectGi, float coneWidth, float coneSpread, float specularAaStrength = 0.0f)
 {
@@ -987,7 +994,11 @@ float3 TraceReflection(float3 origin, float3 dir, float3 sunDirToLight, uint lig
 	}
 
 	if (q.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
+	{
+		gLastReflectionHitDistance = 65504.0f;
 		return SkyRadiance(dir, environmentMip, environmentTint);
+	}
+	gLastReflectionHitDistance = q.CommittedRayT();
 
 	const HitSurface hs = DecodeHit(q, coneWidth, coneSpread, specularAaStrength);
 	const float3 hitPos = hs.worldPosition;

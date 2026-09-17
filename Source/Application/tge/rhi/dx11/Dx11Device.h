@@ -113,6 +113,8 @@ namespace Tga::rhi::dx11
 		bool CaptureBackBufferPng(const wchar_t*) override { return false; }   // DX11 has its own path, see Device.h's comment
 		void* ImGuiFontSrvGpuHandle() override { return nullptr; }
 		bool ReadBackUintPixel4(TextureHandle texture, uint32_t x, uint32_t y, uint32_t outValues[4]) override;
+		bool ReadBackFloatPixel4(TextureHandle texture, uint32_t x, uint32_t y, float outValues[4]) override;
+		bool ReadBackPixel16(TextureHandle texture, uint32_t x, uint32_t y, void* outTexel);   // any 16-byte texel format
 
 		SrvHandle WrapNativeSrv(void* nativeSrv) override;
 		RtvHandle WrapNativeRtv(void* nativeRtv) override;

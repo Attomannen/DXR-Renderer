@@ -19,6 +19,8 @@
 #include <tge/graphics/AmbientLight.h>
 #include <tge/graphics/DirectionalLight.h>
 #include <tge/graphics/PointLight.h>
+#include <tge/math/Photometry.h>
+#include <tge/debugging/CpuProfiler.h>
 #include <tge/drawers/ModelDrawer.h>
 #include <tge/render/GpuProfiler.h>
 #include <tge/model/Model.h>
@@ -122,6 +124,17 @@ namespace
 		std::array<std::string, 4> maps{ "", "", "", "" };
 	};
 
+#ifndef _RETAIL
+	// Edits an emissive strength (scene units) as surface luminance in cd/m².
+	bool EmissiveLuminanceSlider(const char* aLabel, float& aStrength)
+	{
+		float nits = aStrength * Photometry::kNitsPerUnit;
+		if (!ImGui::SliderFloat(aLabel, &nits, 0.f, 1.0e7f, "%.0f cd/m2", ImGuiSliderFlags_Logarithmic)) return false;
+		aStrength = Photometry::NitsToUnits(nits);
+		return true;
+	}
+#endif
+
 	bool LoadTgmat(const fs::path& path, MaterialDef& out)
 	{
 		std::ifstream in(path);
@@ -138,6 +151,10 @@ namespace
 		out.metalness        = j.value("metalness", out.metalness);
 		out.ao               = j.value("ao", out.ao);
 		out.emissiveStrength = j.value("emissiveStrength", out.emissiveStrength);
+		// Physical alternative: surface luminance in cd/m² (a lit phone screen
+		// is ~500, a frosted bulb ~100 000).
+		if (j.contains("emissiveLuminance"))
+			out.emissiveStrength = Photometry::NitsToUnits(j["emissiveLuminance"].get<float>());
 		if (j.contains("maps") && j["maps"].is_object())
 		{
 			const json& m = j["maps"];
@@ -388,7 +405,18 @@ struct GameWorld::Impl
 	float sunPitch = 55.f, sunYaw = -35.f;
 	float sunColor[3] = { 1.0f, 0.96f, 0.88f };
 	float sunSoftness = 0.f;
-	float sunIntensity = 1.0f;
+	// Physical sun. Scene files store sunIntensity as a multiple of a 100 000
+	// lux clear-sky sun, which is what the renderer's scene units are built on
+	// (see Photometry.h), so sunIntensity 1 == 100 000 lux.
+	float sunIlluminanceLux = 100000.0f;
+	float sunTemperatureK = 5800.0f;
+	bool  sunUseTemperature = false;   // false: use the authored sunColor
+	Vector3f SunColor() const
+	{
+		return sunUseTemperature ? Photometry::BlackbodyToLinearSrgb(sunTemperatureK)
+			: Vector3f{ sunColor[0], sunColor[1], sunColor[2] };
+	}
+	float SunIntensity() const { return sunIlluminanceLux / 100000.0f; }
 	float ambientColor[3] = { 0.35f, 0.42f, 0.55f };
 	float ambientScale = 1.0f;   // BENCH_AMBIENT env; scales the ambient/IBL term
 	int   cubemapIdx = 0;        // panel Cubemap combo
@@ -512,11 +540,37 @@ struct GameWorld::Impl
 	bool  giUseRT = true;
 	bool  giBatchProbes = true;   // BENCH_GI_BATCH=0 reverts to one dispatch per probe (A/B)
 	int   giRTRayCount = 256;
+	int   giProbeBudget = 0;           // RT probes traced per frame while updating; 0 = auto (32k rays)
 	// RT probe capture waits for the current frame's TLAS construction.
 	bool  giRtCapturePending = false;
 	bool  debugUiOpen = true;
 	bool  showLightMarkers = true;
 	bool  showPerfOverlay = true;
+
+	// ---- feature cost sweep (Profiler tab) ----
+	// Turns one feature off at a time and measures the median GPU frame time,
+	// which splits the single "Ray trace + shade" dispatch into its parts.
+	struct CostProbe
+	{
+		const char* name;
+		std::function<bool()> isOn;           // false: skip, nothing to measure
+		std::function<void(bool)> set;        // true restores the original setting
+	};
+	struct CostResult { const char* name; float frameMs; float deltaMs; bool skipped; float spreadMs = 0.f; };
+	std::vector<CostProbe> costProbes;
+	std::vector<CostResult> costResults;
+	std::vector<float> costSamples;
+	std::vector<float> costOnMs;
+	int   costProbe = -2;                     // -2 idle, >= 0 probe index
+	int   costFrame = 0;
+	bool  costPhaseOff = false;               // measuring with the probe turned off
+	int   costCycle = 0;                      // on/off alternations done for this probe
+	float costCurrentOnMs = 0.f, costCurrentOffMs = 0.f;
+	std::vector<float> costDeltas;
+	float costBaselineMs = 0.f;
+	static constexpr int kCostWarmupFrames = 20;
+	static constexpr int kCostMeasureFrames = 40;
+	static constexpr int kCostCycles = 3;
 	std::string screenshotPath;
 	int  shotFrame = 0;   // BENCH_SHOT_FRAME; 0 = default (end of run)
 	bool screenshotTaken = false;
@@ -565,7 +619,11 @@ struct GameWorld::Impl
 
 	void SetScriptedCamera()
 	{
-		const float u = benchFrames > 1 ? (float)frame / (float)(benchFrames - 1) : 0.f;
+		// BENCH_FREEZE_FRAME=N holds the scripted camera where it was at frame N,
+		// for judging temporal stability with a truly still view.
+		static const int freezeFrame = EnvInt("BENCH_FREEZE_FRAME", 0);
+		const int cameraFrame = freezeFrame > 0 ? std::min(frame, freezeFrame) : frame;
+		const float u = benchFrames > 1 ? (float)cameraFrame / (float)(benchFrames - 1) : 0.f;
 
 		if (camLoaded && camMode == CamMode::Fixed)
 		{
@@ -747,6 +805,17 @@ struct GameWorld::Impl
 				ex.spotCosOuter = std::cos(outer * 3.14159265f / 180.0f);
 				ex.spotCosInner = std::cos(inner * 3.14159265f / 180.0f);
 			}
+			// Photometric alternatives to the unitless "intensity": luminous
+			// intensity in candela, or flux in lumens spread over the cone.
+			if (L.contains("candela") || L.contains("lumens"))
+			{
+				const float candela = L.contains("candela") ? L["candela"].get<float>()
+					: ex.spotCosOuter > -1.f
+					? Photometry::SpotLumensToCandela(L["lumens"].get<float>(), std::acos(ex.spotCosOuter))
+					: Photometry::PointLumensToCandela(L["lumens"].get<float>());
+				const float units = Photometry::CandelaToUnits(candela) * exposure;
+				pointLights.back().color = Color{ col.x * units, col.y * units, col.z * units, 1.f };
+			}
 			lightExtra.push_back(ex);
 			++n;
 		}
@@ -775,10 +844,16 @@ struct GameWorld::Impl
 	// switch scenes (free-fly). aEnv = honour BENCH_* overrides (Init only).
 	bool LoadSceneContent(const std::string& sceneName, bool aEnv)
 	{
+		// Every mesh/texture upload below shares GPU submissions.
+		struct UploadBatch
+		{
+			UploadBatch() { if (rhi::IDevice* d = DX11::Rhi()) d->BeginUploadBatch(); }
+			~UploadBatch() { if (rhi::IDevice* d = DX11::Rhi()) d->EndUploadBatch(); }
+		} uploadBatch;
 		previousRayTransforms.clear();
 		if (deferred) deferred->ResetTemporalHistory();
 		if (sceneName != currentScene) {
-			sunPitch = 55.f; sunYaw = -35.f; sunIntensity = 1.f;
+			sunPitch = 55.f; sunYaw = -35.f; sunIlluminanceLux = 100000.f; sunUseTemperature = false;
 			sunColor[0] = 1.f; sunColor[1] = 0.96f; sunColor[2] = 0.88f;
 			ambientColor[0] = 0.35f; ambientColor[1] = 0.42f; ambientColor[2] = 0.55f;
 		}
@@ -791,7 +866,12 @@ struct GameWorld::Impl
 					const auto& lighting = document["lighting"];
 					sunPitch = lighting.value("sunPitch", sunPitch);
 					sunYaw = lighting.value("sunYaw", sunYaw);
-					sunIntensity = lighting.value("sunIntensity", sunIntensity);
+					sunIlluminanceLux = lighting.value("sunIlluminance", lighting.value("sunIntensity", SunIntensity()) * 100000.0f);
+					if (lighting.contains("sunTemperature"))
+					{
+						sunTemperatureK = lighting["sunTemperature"].get<float>();
+						sunUseTemperature = true;
+					}
 					for (int i = 0; i < 3; ++i) {
 						if (lighting.contains("sunColor") && lighting["sunColor"].size() == 3) sunColor[i] = lighting["sunColor"][i].get<float>();
 						if (lighting.contains("ambientColor") && lighting["ambientColor"].size() == 3) ambientColor[i] = lighting["ambientColor"][i].get<float>();
@@ -822,6 +902,22 @@ struct GameWorld::Impl
 			ERROR_PRINT("bench: scene '%s' contains no loadable objects", sceneName.c_str());
 			return false;
 		}
+
+		// Decode every texture the scene's materials reference in parallel
+		// before the (main-thread) per-instance texture assignment below.
+		{
+			std::vector<std::string> texturePaths;
+			for (const SceneEntry& e : entries)
+				for (const std::string& materialFile : e.materials)
+				{
+					MaterialDef material;
+					if (materialFile.empty() || !LoadTgmat(fs::path(Settings::GameAssetRoot()) / materialFile, material)) continue;
+					for (const std::string& map : material.maps)
+						if (!map.empty()) texturePaths.push_back(map);
+				}
+			texMgr.PrefetchTextures(texturePaths);
+		}
+		struct PrefetchCleanup { TextureManager& t; ~PrefetchCleanup() { t.ClearPrefetchedTextures(); } } prefetchCleanup{ texMgr };
 
 		const auto tLoad0 = std::chrono::high_resolution_clock::now();
 		const int side = (int)std::ceil(std::sqrt((double)sponzaCopies));
@@ -1057,6 +1153,23 @@ struct GameWorld::Impl
 				: std::accumulate(samples.begin(), samples.end(), 0.0) / samples.size();
 			o << ", \"" << name << "\": " << m;
 		}
+		o << " },\n";
+		if (!costResults.empty())
+		{
+			o << "  \"feature_costs_ms\": { \"baseline\": " << costBaselineMs;
+			for (const CostResult& r : costResults)
+				if (!r.skipped) o << ", \"" << r.name << "\": [" << r.deltaMs << ", " << r.spreadMs << "]";
+			o << " },\n";
+		}
+		o << "  \"cpu_scopes_ms\": {";
+		{
+			bool first = true;
+			for (const CpuProfiler::ScopeStats* st : CpuProfiler::Get().GetStats())
+			{
+				o << (first ? " " : ", ") << "\"" << std::string(st->depth * 2, ' ') << st->name << "\": " << st->Average();
+				first = false;
+			}
+		}
 		o << " }\n";
 		o << "}\n";
 		o.close();
@@ -1064,6 +1177,312 @@ struct GameWorld::Impl
 		INFO_PRINT("=== Sponza bench: %zu frames | frame %.3f ms (%.1f fps) | cpu %.3f ms | %.0f draw calls | report -> %s",
 			frameMs.size(), fMean, fMean > 0 ? 1000.0 / fMean : 0.0, cMean, dcMean, reportPath.c_str());
 	}
+
+	void BuildCostProbes()
+	{
+		costProbes.clear();
+		if (!deferred) return;
+		DeferredRenderer::Tunables* t = &deferred->GetTunables();
+		auto flag = [&](const char* name, bool* value)
+		{
+			const bool original = *value;
+			costProbes.push_back({ name, [=]() { return original; }, [=](bool on) { *value = on ? original : false; } });
+		};
+		auto reduce = [&](const char* name, int* value, int reduced)
+		{
+			const int original = *value;
+			costProbes.push_back({ name, [=]() { return original > reduced; }, [=](bool on) { *value = on ? original : reduced; } });
+		};
+		flag("Reflections", &t->dxrReflections);
+		reduce("Reflection samples -> 1", &t->dxrReflectionSamples, 1);
+		flag("Ambient occlusion", &t->dxrAmbientOcclusion);
+		reduce("AO samples -> 1", &t->dxrAoSamples, 1);
+		flag("Direct light + shadows", &t->dxrDirectLighting);
+		flag("Indirect GI lookup", &t->dxrIndirectGi);
+		flag("Environment light", &t->dxrEnvironmentLighting);
+		flag("Texture filtering (ray cones)", &t->dxrTextureFiltering);
+		flag("Specular AA", &t->specularAaEnabled);
+		flag("NRD denoiser", &t->nrdEnabled);
+		if (t->nrdEnabled)
+		{
+			const bool original = t->nrdCheckerboard;
+			costProbes.push_back({ "Full-res AO + reflections (vs checkerboard)", [=]() { return !original; },
+				[=](bool on) { t->nrdCheckerboard = on ? original : true; } });
+		}
+		reduce("Sun shadow rays -> 1", &t->dxrSunShadowSamples, 1);
+		{
+			const int original = t->volumetricResolution;
+			costProbes.push_back({ "Fog volume at quarter res", [=]() { return original < 2; },
+				[=](bool on) { t->volumetricResolution = on ? original : 2; } });
+		}
+		flag("TAA", &t->taaEnabled);
+		flag("DLAA", &t->dlaaEnabled);
+		flag("Fog", &t->fogEnabled);
+		flag("Volumetric sunlight", &t->volumetricEnabled);
+		flag("Bloom", &t->bloomEnabled);
+		flag("GI probe updates", &giKeepUpdating);
+		reduce("GI rays per probe -> 32", &giRTRayCount, 32);
+	}
+
+	void StartCostSweep()
+	{
+		BuildCostProbes();
+		costResults.clear();
+		costSamples.clear();
+		costOnMs.clear();
+		costProbe = -1;
+		costFrame = 0;
+		costPhaseOff = false;
+		AdvanceCostProbe();
+	}
+
+	void StopCostSweep()
+	{
+		if (costProbe >= 0 && costProbe < (int)costProbes.size()) costProbes[costProbe].set(true);
+		costProbe = -2;
+	}
+
+	static float Percentile(std::vector<float> v, float q)
+	{
+		if (v.empty()) return 0.f;
+		std::sort(v.begin(), v.end());
+		return v[std::min(v.size() - 1, size_t(q * float(v.size())))];
+	}
+	static float Median(std::vector<float> v) { return Percentile(std::move(v), 0.5f); }
+
+	// Moves to the next probe with something to turn off; skipped ones are
+	// recorded as such.
+	void AdvanceCostProbe()
+	{
+		for (++costProbe; costProbe < (int)costProbes.size(); ++costProbe)
+		{
+			if (costProbes[costProbe].isOn()) { costPhaseOff = false; costCycle = 0; costDeltas.clear(); return; }
+			costResults.push_back({ costProbes[costProbe].name, 0.f, 0.f, true });
+		}
+		costProbe = -2;
+		if (!costOnMs.empty()) costBaselineMs = Median(costOnMs);
+		std::stable_sort(costResults.begin(), costResults.end(),
+			[](const CostResult& a, const CostResult& b) { return a.deltaMs > b.deltaMs; });
+	}
+
+	// Each probe measures "on" and then "off" back to back, so slow drift
+	// (thermals, background load) cancels out of the difference.
+	void StepCostSweep()
+	{
+		if (costProbe < 0 || !gpu.IsReady()) return;
+		if (++costFrame > kCostWarmupFrames) costSamples.push_back(float(gpu.GetFrameGpuMs()));
+		if (costFrame < kCostWarmupFrames + kCostMeasureFrames) return;
+
+		// Lower quartile: the steady-state frame, ignoring intermittent spikes
+		// such as GI probe batches or shader/PSO hitches.
+		const float ms = Percentile(costSamples, 0.25f);
+		costSamples.clear();
+		costFrame = 0;
+		CostProbe& probe = costProbes[costProbe];
+		if (!costPhaseOff)
+		{
+			costCurrentOnMs = ms;
+			costOnMs.push_back(ms);
+			probe.set(false);
+			costPhaseOff = true;
+			return;
+		}
+		probe.set(true);
+		costPhaseOff = false;
+		costDeltas.push_back(costCurrentOnMs - ms);
+		costCurrentOffMs = ms;
+		if (++costCycle < kCostCycles) return;
+		const auto [lo, hi] = std::minmax_element(costDeltas.begin(), costDeltas.end());
+		costResults.push_back({ probe.name, costCurrentOffMs, Median(costDeltas), false, (*hi - *lo) * 0.5f });
+		AdvanceCostProbe();
+	}
+
+#ifndef _RETAIL
+	static const char* ScopeName(const char* n) { return n ? n : "?"; }
+	static const char* ScopeName(const std::string& n) { return n.c_str(); }
+
+	template <class Stats>
+	static void DrawScopeTable(const char* id, const std::vector<const Stats*>& stats, float frameMs, std::string& report)
+	{
+		if (!ImGui::BeginTable(id, 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp))
+			return;
+		ImGui::TableSetupColumn("Scope", ImGuiTableColumnFlags_WidthStretch, 3.0f);
+		ImGui::TableSetupColumn("Last", ImGuiTableColumnFlags_WidthStretch, 0.8f);
+		ImGui::TableSetupColumn("Avg", ImGuiTableColumnFlags_WidthStretch, 0.8f);
+		ImGui::TableSetupColumn("Max", ImGuiTableColumnFlags_WidthStretch, 0.8f);
+		ImGui::TableSetupColumn("% frame", ImGuiTableColumnFlags_WidthStretch, 1.4f);
+		ImGui::TableHeadersRow();
+		for (const Stats* st : stats)
+		{
+			const float avg = st->Average();
+			const float frac = frameMs > 0.f ? std::clamp(avg / frameMs, 0.f, 1.f) : 0.f;
+			ImGui::TableNextRow();
+			ImGui::TableNextColumn();
+			ImGui::Indent(float(st->depth) * 12.f + 0.01f);
+			ImGui::TextUnformatted(ScopeName(st->name));
+			ImGui::Unindent(float(st->depth) * 12.f + 0.01f);
+			ImGui::TableNextColumn(); ImGui::Text("%.3f", st->Last());
+			ImGui::TableNextColumn();
+			const ImVec4 hot = avg > 2.0f ? ImVec4(1, .45f, .35f, 1) : avg > 0.5f ? ImVec4(1, .85f, .4f, 1) : ImVec4(.85f, .85f, .85f, 1);
+			ImGui::TextColored(hot, "%.3f", avg);
+			ImGui::TableNextColumn(); ImGui::Text("%.3f", st->Max());
+			ImGui::TableNextColumn();
+			char overlay[16];
+			std::snprintf(overlay, sizeof(overlay), "%.0f%%", frac * 100.f);
+			ImGui::ProgressBar(frac, ImVec2(-FLT_MIN, 0), overlay);
+
+			char line[256];
+			std::snprintf(line, sizeof(line), "%*s%-40s last %8.3f  avg %8.3f  max %8.3f ms\n",
+				st->depth * 2, "", ScopeName(st->name), st->Last(), avg, st->Max());
+			report += line;
+		}
+		ImGui::EndTable();
+	}
+
+	static void DrawHistory(const char* label, const float* history, int offset, int count, float target)
+	{
+		if (count <= 0) return;
+		float peak = target;
+		for (int i = 0; i < count; ++i) peak = std::max(peak, history[i]);
+		char overlay[64];
+		std::snprintf(overlay, sizeof(overlay), "%s (max %.2f ms)", label, peak);
+		ImGui::PlotLines("##history", history, count, count == CpuProfiler::kHistory ? offset : 0, overlay, 0.f, peak * 1.1f, ImVec2(-FLT_MIN, 64));
+	}
+
+	void DrawProfilerTab()
+	{
+		std::string report;
+		CpuProfiler& cpu = CpuProfiler::Get();
+		auto historyAverage = [](const float* h, int count)
+		{
+			double sum = 0.0;
+			for (int i = 0; i < count; ++i) sum += h[i];
+			return count ? float(sum / count) : 0.f;
+		};
+		// The frame scope includes the time the CPU sits blocked on the GPU;
+		// report CPU work without it.
+		float gpuWaitMs = 0.f;
+		for (const CpuProfiler::ScopeStats* st : cpu.GetStats())
+			if (st->depth == 0 && std::string_view(st->name) == "Device begin frame (GPU wait)") gpuWaitMs = st->Average();
+		const float cpuFrameMs = historyAverage(cpu.GetFrameHistory(), cpu.GetFrameHistoryCount());
+		const float cpuWorkMs = std::max(cpuFrameMs - gpuWaitMs, 0.f);
+		const float gpuMs = historyAverage(gpu.GetFrameHistory(), gpu.GetFrameHistoryCount());
+		ImGui::Text("Frame %.2f ms (%.0f fps)   CPU work %.2f ms   GPU %.2f ms   (averages)",
+			ImGui::GetIO().DeltaTime * 1000.f, ImGui::GetIO().Framerate, cpuWorkMs, gpuMs);
+		{
+			char line[160];
+			std::snprintf(line, sizeof(line), "Frame %.2f ms | CPU %.2f ms | GPU %.2f ms\n", ImGui::GetIO().DeltaTime * 1000.f, cpuWorkMs, gpuMs);
+			report += line;
+		}
+		if (rhi::IDevice* dev = DX11::Rhi())
+		{
+			uint64_t usage = 0, budget = 0;
+			if (dev->QueryVideoMemory(usage, budget))
+			{
+				const float frac = budget ? float(double(usage) / double(budget)) : 0.f;
+				char overlay[64];
+				std::snprintf(overlay, sizeof(overlay), "VRAM %.2f / %.2f GB", usage / 1073741824.0, budget / 1073741824.0);
+				ImGui::ProgressBar(frac, ImVec2(-FLT_MIN, 0), overlay);
+				if (frac > 0.9f) ImGui::TextColored(ImVec4(1, .4f, .3f, 1), "Near the VRAM budget: expect paging stalls.");
+				report += std::string(overlay) + "\n";
+			}
+		}
+		if (deferred)
+		{
+			const DeferredRenderer::Tunables& t = deferred->GetTunables();
+			ImGui::TextDisabled("%s | NRD %s | DLSS mode %d | DLAA %s | RR %s | reflections %d spp | AO %d spp | GI %d rays/probe",
+				dxrRenderer ? "DXR" : "Raster", t.nrdEnabled ? "on" : "off", t.dlssMode, t.dlaaEnabled ? "on" : "off",
+				t.rayReconstructionEnabled ? "on" : "off", t.dxrReflectionSamples, t.dxrAoSamples, giRTRayCount);
+		}
+
+		DrawHistory("CPU work", cpu.GetFrameHistory(), cpu.GetFrameHistoryOffset(), cpu.GetFrameHistoryCount(), 8.33f);
+		DrawHistory("GPU", gpu.GetFrameHistory(), gpu.GetFrameHistoryOffset(), gpu.GetFrameHistoryCount(), 8.33f);
+		bool enabled = cpu.IsEnabled();
+		if (ImGui::Checkbox("Collect CPU scopes", &enabled)) cpu.SetEnabled(enabled);
+		ImGui::SameLine();
+		if (ImGui::Button("Reset stats")) { cpu.ResetStats(); gpu.ResetStats(); }
+		ImGui::SameLine();
+		const bool copy = ImGui::Button("Copy report");
+
+		if (ImGui::CollapsingHeader("GPU scopes", ImGuiTreeNodeFlags_DefaultOpen))
+		{
+			report += "-- GPU scopes --\n";
+			DrawScopeTable("gpuScopes", gpu.GetStats(), gpuMs, report);
+			ImGui::TextDisabled("\"Ray trace + shade\" is one dispatch; use the feature cost sweep to split it.");
+		}
+		if (ImGui::CollapsingHeader("CPU scopes", ImGuiTreeNodeFlags_DefaultOpen))
+		{
+			report += "-- CPU scopes --\n";
+			DrawScopeTable("cpuScopes", cpu.GetStats(), cpuFrameMs, report);
+			ImGui::TextDisabled("\"Device begin frame (GPU wait)\" is the CPU blocked on the GPU, not CPU work.");
+		}
+		if (ImGui::CollapsingHeader("Feature cost sweep", ImGuiTreeNodeFlags_DefaultOpen))
+		{
+			ImGui::TextWrapped("Toggles each enabled feature off and on %d times, lets the image settle, and compares steady-state GPU frame times. "
+				"Keep the camera still while it runs (about %d s per feature at 60 fps).", kCostCycles, 2 * kCostCycles * (kCostWarmupFrames + kCostMeasureFrames) / 60);
+			if (costProbe < 0)
+			{
+				if (ImGui::Button("Measure feature costs")) StartCostSweep();
+			}
+			else
+			{
+				const float window = float(costFrame) / float(kCostWarmupFrames + kCostMeasureFrames);
+				const float phase = (float(costCycle) + (costPhaseOff ? 0.5f : 0.f) + 0.5f * window) / float(kCostCycles);
+				const float progress = (float(costProbe) + phase) / float(std::max<size_t>(costProbes.size(), 1));
+				char overlay[96];
+				std::snprintf(overlay, sizeof(overlay), "%s (%s)", costProbes[costProbe].name, costPhaseOff ? "off" : "on");
+				ImGui::ProgressBar(progress, ImVec2(-FLT_MIN, 0), overlay);
+				if (ImGui::Button("Stop")) StopCostSweep();
+			}
+			if (!costResults.empty() && ImGui::BeginTable("costs", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV))
+			{
+				report += "-- Feature costs (baseline " + std::to_string(costBaselineMs) + " ms) --\n";
+				ImGui::TableSetupColumn("Feature (turned off)");
+				ImGui::TableSetupColumn("GPU ms without");
+				ImGui::TableSetupColumn("Cost");
+				ImGui::TableSetupColumn("+/- spread");
+				ImGui::TableHeadersRow();
+				for (const CostResult& r : costResults)
+				{
+					ImGui::TableNextRow();
+					ImGui::TableNextColumn(); ImGui::TextUnformatted(r.name);
+					if (r.skipped)
+					{
+						ImGui::TableNextColumn(); ImGui::TextDisabled("already off");
+						ImGui::TableNextColumn();
+						ImGui::TableNextColumn();
+						continue;
+					}
+					ImGui::TableNextColumn(); ImGui::Text("%.2f", r.frameMs);
+					ImGui::TableNextColumn();
+					const ImVec4 hot = r.deltaMs > 2.f ? ImVec4(1, .45f, .35f, 1) : r.deltaMs > 0.5f ? ImVec4(1, .85f, .4f, 1) : ImVec4(.7f, .9f, .7f, 1);
+					const bool withinNoise = std::abs(r.deltaMs) <= r.spreadMs;
+					ImGui::TextColored(withinNoise ? ImVec4(.6f, .6f, .6f, 1) : hot, "%+.2f ms", r.deltaMs);
+					ImGui::TableNextColumn(); ImGui::TextDisabled("%.2f", r.spreadMs);
+					char line[128];
+					std::snprintf(line, sizeof(line), "%-34s %+7.2f ms  (+/- %.2f)\n", r.name, r.deltaMs, r.spreadMs);
+					report += line;
+				}
+				ImGui::EndTable();
+				ImGui::TextDisabled("Frame with everything on: %.2f ms. Grey costs are within the measurement spread. Costs overlap (reflections include their own GI lookups), so they need not sum to it.", costBaselineMs);
+			}
+		}
+		if (ImGui::CollapsingHeader("Startup / load profile"))
+		{
+			report += "-- Load profile --\n";
+			for (const CpuProfiler::LoadEntry& e : cpu.GetLoadReport())
+			{
+				if (e.ms < 1.0) continue;
+				if (e.calls > 1) ImGui::Text("%*s%-40s %9.1f ms (%d calls)", e.depth * 2, "", e.name, e.ms, e.calls);
+				else ImGui::Text("%*s%-40s %9.1f ms", e.depth * 2, "", e.name, e.ms);
+				char line[160];
+				std::snprintf(line, sizeof(line), "%*s%-40s %9.1f ms (%d)\n", e.depth * 2, "", e.name, e.ms, e.calls);
+				report += line;
+			}
+		}
+		if (copy) ImGui::SetClipboardText(report.c_str());
+	}
+#endif
 
 	// Always-on GPU/CPU timing HUD (free-fly only). Reads the per-pass scopes the
 	// RenderGraph pushes into the profiler.
@@ -1219,7 +1638,8 @@ struct GameWorld::Impl
 		// frame, which makes emissive/direct changes start propagating immediately.
 		// Maintain an approximately constant trace budget when a low ray count
 		// is selected, so each probe gets fresh temporal samples quickly.
-		const int rtBatch = std::clamp(32768 / std::max(giRTRayCount, 1), 1, 256);
+		const int autoBatch = std::clamp(32768 / std::max(giRTRayCount, 1), 1, 256);
+		const int rtBatch = giProbeBudget > 0 ? std::min(giProbeBudget, 256) : autoBatch;
 		const int batch = giPriming ? (useRT ? std::max(giPrimeBatch, rtBatch) : giPrimeBatch)
 			: (useRT ? std::max(giTrickle, rtBatch) : 1);
 		std::vector<int> prioritizedProbes;
@@ -1462,13 +1882,19 @@ void GameWorld::Init()
 		s.currentScene = *firstScene;
 		INFO_PRINT("bench: BENCH_SCENE not set; loading first scene '%s'", s.currentScene.c_str());
 	}
-	if (!s.LoadSceneContent(s.currentScene, true))
-		return;
+	{
+		TGA_CPU_SCOPE("Load scene content");
+		if (!s.LoadSceneContent(s.currentScene, true))
+			return;
+	}
 
 	if (HWND* hwnd = Application::GetInstance()->GetHWND())
 		s.input = std::make_unique<InputManager>(*hwnd);
 
-	s.gpu.Init();
+	{
+		TGA_CPU_SCOPE("GPU profiler init");
+		s.gpu.Init();
+	}
 
 	// --- reflection probe (Phase 5 stage A) ---
 	s.showDebugBall = EnvInt("BENCH_MATBALL", 0) != 0;
@@ -1624,7 +2050,9 @@ void GameWorld::Init()
 	s.wantSSR       = EnvInt("BENCH_SSR", 1) != 0;
 	if (const char* p = std::getenv("BENCH_SUN_PITCH")) s.sunPitch = (float)atof(p);
 	if (const char* y = std::getenv("BENCH_SUN_YAW"))   s.sunYaw   = (float)atof(y);
-	if (const char* v = std::getenv("BENCH_SUN_INTENSITY")) s.sunIntensity = std::max(0.f,(float)atof(v));
+	if (const char* v = std::getenv("BENCH_SUN_INTENSITY")) s.sunIlluminanceLux = std::max(0.f,(float)atof(v)) * 100000.f;
+	if (const char* v = std::getenv("BENCH_SUN_LUX")) s.sunIlluminanceLux = std::max(0.f,(float)atof(v));
+	if (const char* v = std::getenv("BENCH_SUN_KELVIN")) { s.sunTemperatureK = (float)atof(v); s.sunUseTemperature = true; }
 	if (auto* dr = (s.useDeferred && GraphicsEngine::GetInstance()) ? &GraphicsEngine::GetInstance()->GetDeferredRenderer() : nullptr)
 		dr->GetTunables().shadowShowCascades = EnvInt("BENCH_SHADOW_VIZ", 0) != 0;
 	s.screenshotPath = EnvStr("BENCH_SCREENSHOT", "");
@@ -1656,7 +2084,7 @@ void GameWorld::Init()
 			// 0 = native temporal, 1 = DLAA, 2..5 = DLSS Quality..Ultra Performance.
 			tun.dlssMode = std::clamp(EnvInt("BENCH_DLSS_MODE", 0), 0, 5);
 			tun.dlaaEnabled = tun.dlssMode == 1;
-			tun.nrdEnabled = EnvInt("BENCH_NRD", 0) != 0;
+			tun.nrdEnabled = EnvInt("BENCH_NRD", tun.nrdEnabled ? 1 : 0) != 0;
 			if (EnvInt("BENCH_DXR_DENOISER", 0) != 0)
 			{
 				tun.rayReconstructionEnabled = true;
@@ -1683,7 +2111,22 @@ void GameWorld::Init()
 			tun.dxrReflections = EnvInt("BENCH_DXR_REFLECTIONS", 1) != 0;
 			tun.dxrReflectionSamples = std::clamp(EnvInt("BENCH_DXR_REFLECTION_SAMPLES", 4), 1, 4);
 			if (const char* rc = std::getenv("BENCH_DXR_REFLECTION_CUTOFF")) tun.dxrReflectionRoughnessCutoff = std::clamp((float)atof(rc), 0.f, 1.f);
-			tun.exposureAuto = EnvInt("BENCH_AUTOEXPOSURE", 1) != 0;
+			tun.exposureAuto = EnvInt("BENCH_AUTOEXPOSURE", tun.exposureAuto ? 1 : 0) != 0;
+			tun.tonemapper = std::clamp(EnvInt("BENCH_TONEMAP", tun.tonemapper), 0, 3);
+			tun.nrdCheckerboard = EnvInt("BENCH_NRD_CHECKERBOARD", tun.nrdCheckerboard ? 1 : 0) != 0;
+			tun.nrdDenoiser = std::clamp(EnvInt("BENCH_NRD_DENOISER", tun.nrdDenoiser), 0, 1);
+			tun.nrdValidation = EnvInt("BENCH_NRD_VALIDATION", 0) != 0;
+			tun.nrdAntilag = EnvInt("BENCH_NRD_ANTILAG", tun.nrdAntilag ? 1 : 0) != 0;
+			if (const char* v = std::getenv("BENCH_NRD_HISTORY")) tun.nrdHistorySeconds = std::max(0.01f, (float)atof(v));
+			tun.dxrSunShadowSamples = std::clamp(EnvInt("BENCH_SUN_SHADOW_SAMPLES", tun.dxrSunShadowSamples), 1, 4);
+			tun.volumetricResolution = std::clamp(EnvInt("BENCH_FOG_RESOLUTION", tun.volumetricResolution), 0, 3);
+			s.giProbeBudget = std::clamp(EnvInt("BENCH_GI_PROBES_PER_FRAME", s.giProbeBudget), 0, 256);
+			tun.preExposure = EnvInt("BENCH_PRE_EXPOSURE", tun.preExposure ? 1 : 0) != 0;
+			if (const char* v = std::getenv("BENCH_SKY_NITS")) tun.skyLuminanceNits = std::max(0.f, (float)atof(v));
+			if (const char* v = std::getenv("BENCH_EV_COMP")) tun.exposureComp = (float)atof(v);
+			if (const char* v = std::getenv("BENCH_APERTURE")) tun.cameraAperture = std::max(0.5f, (float)atof(v));
+			if (const char* v = std::getenv("BENCH_SHUTTER")) tun.cameraShutter = std::max(1e-6f, (float)atof(v));
+			if (const char* v = std::getenv("BENCH_ISO")) tun.cameraIso = std::max(1.f, (float)atof(v));
 			tun.contactShadows = EnvInt("BENCH_CONTACT", 1) != 0;
 			tun.contactViz = EnvInt("BENCH_CONTACT_VIZ", 0) != 0;
 			tun.localShadowViz = EnvInt("BENCH_LOCALSH_VIZ", 0) != 0;
@@ -1725,6 +2168,8 @@ void GameWorld::Update(float aDeltaTime)
 		s.orbitAngle += aDeltaTime * s.orbitSpeed;
 
 	if (s.frame == 1) s.firstFrameMs = (double)aDeltaTime * 1000.0;
+	if (s.benchFrames > 0 && s.frame == s.warmupFrames && EnvInt("BENCH_COST_SWEEP", 0) != 0)
+		s.StartCostSweep();
 
 	// record previous frame's timing (skip warmup)
 	if (s.frame > 0 && s.frame > s.warmupFrames && (s.benchFrames == 0 || s.frame <= s.benchFrames))
@@ -1843,6 +2288,18 @@ void GameWorld::DrawDebugUI()
 						"The temporal resolve converges low counts; raise only if AO looks noisy when still.");
 					ImGui::EndDisabled();
 					if (ImGui::Checkbox("Ray texture filtering", &tun->dxrTextureFiltering)) s.StartGiPrime();
+					ImGui::SeparatorText("Resolution and ray budgets");
+					ImGui::BeginDisabled(!tun->nrdEnabled);
+					ImGui::Checkbox("Half-resolution AO + reflections (NRD checkerboard)", &tun->nrdCheckerboard);
+					ImGui::EndDisabled();
+					ImGui::SetItemTooltip("Each pixel traces either AO or reflection rays, alternating every frame; NRD reconstructs full resolution. Requires the NRD denoiser.");
+					ImGui::SliderInt("Sun shadow rays / pixel", &tun->dxrSunShadowSamples, 1, 4);
+					ImGui::SetItemTooltip("Below 4 the sample pattern rotates per frame and the temporal resolve smooths the penumbra.");
+					const char* fogResolutions[] = { "Full", "Half", "Quarter", "Eighth" };
+					ImGui::Combo("Fog volume resolution", &tun->volumetricResolution, fogResolutions, IM_ARRAYSIZE(fogResolutions));
+					ImGui::SliderInt("GI probes / frame", &s.giProbeBudget, 0, 256, s.giProbeBudget == 0 ? "auto" : "%d");
+					ImGui::SetItemTooltip("RT GI probes re-traced per frame while the volume updates. Auto = 32768 rays per frame.");
+					ImGui::TextDisabled("Overall ray-trace resolution: DLSS mode below (Quality = 67%%, Performance = 50%%).");
 					ImGui::SeparatorText("Image stability");
 					ImGui::Checkbox("Temporal anti-aliasing", &tun->taaEnabled);
 					ImGui::BeginDisabled(!tun->taaEnabled);
@@ -1858,13 +2315,36 @@ void GameWorld::DrawDebugUI()
 						s.deferred->ResetTemporalHistory();
 						s.StartGiPrime();
 					}
-					if (ImGui::Checkbox("NVIDIA NRD indirect diffuse denoiser", &tun->nrdEnabled))
+					if (ImGui::Checkbox("NVIDIA NRD denoiser (diffuse + specular)", &tun->nrdEnabled))
 					{
 						if (tun->nrdEnabled) tun->rayReconstructionEnabled = false;
 						s.deferred->ResetTemporalHistory();
 					}
-					ImGui::TextDisabled("RELAX denoises the ray-traced AO/GI/sky term before TAA or DLSS.");
+					ImGui::TextDisabled("Denoises ray-traced indirect diffuse and reflections before TAA or DLSS.");
+					if (tun->nrdEnabled)
+					{
+						ImGui::Indent();
+						const char* denoisers[] = { "REBLUR (low-sample input)", "RELAX (clean input)" };
+						if (ImGui::Combo("Denoiser", &tun->nrdDenoiser, denoisers, 2)) s.deferred->ResetTemporalHistory();
+						ImGui::SliderFloat("History length", &tun->nrdHistorySeconds, 0.05f, 1.0f, "%.2f s");
+						ImGui::SetItemTooltip("Shorter = less smearing on moving objects and lights, more residual noise.");
+						ImGui::SliderInt("Fast history (frames)", &tun->nrdFastHistoryFrames, 1, 16);
+						ImGui::SetItemTooltip("The responsive history that clamps the long one. Lower reacts faster.");
+						ImGui::Checkbox("Anti-lag", &tun->nrdAntilag);
+						ImGui::Checkbox("Validation overlay", &tun->nrdValidation);
+						ImGui::SetItemTooltip("NRD's debug view: checks motion vectors, depth, normals and history length. Best viewed with Tonemapper = None.");
+						ImGui::Unindent();
+					}
 					ImGui::TextDisabled("DLSS SR modes render DXR at lower resolution and reconstruct HDR at display resolution.");
+					if (tun->dlssMode > 0 || tun->dlaaEnabled)
+					{
+						const char* presets[] = { "Default", "J", "K", "L", "M" };
+						ImGui::Combo("DLSS model preset", &tun->dlssPreset, presets, IM_ARRAYSIZE(presets));
+						ImGui::SetItemTooltip("L measured slightly steadier than the default on a still camera.");
+						ImGui::TextDisabled("DLSS keeps a slight sub-pixel wobble with jitter; native TAA is steadier.");
+					}
+					if ((tun->dlssMode > 0 || tun->dlaaEnabled) && !tun->nrdEnabled && !tun->rayReconstructionEnabled)
+						ImGui::TextColored(ImVec4(1, .6f, .3f, 1), "DLSS keeps ray noise as detail: enable NRD or Ray Reconstruction.");
 					if (ImGui::Checkbox("DLSS Ray Reconstruction denoiser (RTX)", &tun->rayReconstructionEnabled))
 					{
 						if (tun->rayReconstructionEnabled)
@@ -1966,8 +2446,13 @@ void GameWorld::DrawDebugUI()
 					ImGui::BeginDisabled(sealed);
 					ImGui::SliderFloat("Pitch", &s.sunPitch, -89.f, 89.f, "%.1f deg");
 					ImGui::SliderFloat("Yaw",   &s.sunYaw, -180.f, 180.f, "%.1f deg");
-					ImGui::ColorEdit3("Colour", s.sunColor);
-					ImGui::SliderFloat("Intensity", &s.sunIntensity, 0.f, 4.f);
+					ImGui::Checkbox("Colour from temperature", &s.sunUseTemperature);
+					if (s.sunUseTemperature)
+						ImGui::SliderFloat("Temperature", &s.sunTemperatureK, 1700.f, 12000.f, "%.0f K");
+					else
+						ImGui::ColorEdit3("Colour", s.sunColor);
+					ImGui::SliderFloat("Illuminance", &s.sunIlluminanceLux, 0.f, 150000.f, "%.0f lux", ImGuiSliderFlags_Logarithmic);
+					ImGui::TextDisabled("Clear noon ~100k lux, overcast ~10k, sunset ~400.");
 					if (!s.dxrRenderer) ImGui::SliderFloat("Softness", &s.sunSoftness, 0.f, 1.f);
 					ImGui::EndDisabled();
 					if (sealed) ImGui::TextDisabled("Sun is disabled by scene sealing.");
@@ -1976,6 +2461,21 @@ void GameWorld::DrawDebugUI()
 				{
 					ImGui::BeginDisabled(sealed);
 					ImGui::ColorEdit3("Ambient", s.ambientColor);
+					if (s.deferred)
+					{
+						auto* skyTun = &s.deferred->GetTunables();
+						bool physicalSky = skyTun->skyLuminanceNits > 0.f;
+						if (ImGui::Checkbox("Physical sky", &physicalSky))
+							skyTun->skyLuminanceNits = physicalSky ? 8000.f : 0.f;
+						if (physicalSky)
+						{
+							ImGui::SliderFloat("Sky luminance", &skyTun->skyLuminanceNits, 0.001f, 30000.f, "%.3g cd/m2", ImGuiSliderFlags_Logarithmic);
+							ImGui::TextDisabled("Clear day ~8000, overcast ~2000, dusk ~10, moonlit ~0.01.");
+							const float measured = s.deferred->GetEnvironmentAverageLuminance();
+							if (measured > 0.f) ImGui::TextDisabled("Environment map as authored: %.3g cd/m2", measured * Photometry::kNitsPerUnit);
+							else ImGui::TextDisabled("Measuring environment map...");
+						}
+					}
 					ImGui::SliderFloat("IBL scale", &s.ambientScale, 0.f, 4.f, "%.2f");
 					static const char* kCubes[] = { "horizonCubeMap", "env_studio", "env_powerplant", "env_slipway" };
 					if (ImGui::Combo("Cubemap", &s.cubemapIdx, kCubes, IM_ARRAYSIZE(kCubes)))
@@ -2085,7 +2585,7 @@ void GameWorld::DrawDebugUI()
 						ImGui::SliderFloat("Metalness", &dm.metalness, 0.f, 1.f, "%.3f");
 						ImGui::SliderFloat("AO", &dm.ao, 0.f, 1.f, "%.3f");
 						ImGui::ColorEdit3("Emissive colour", dm.emissiveColor);
-						ImGui::SliderFloat("Emissive strength", &dm.emissiveStrength, 0.f, 16.f, "%.2f");
+						EmissiveLuminanceSlider("Emissive luminance", dm.emissiveStrength);
 						ImGui::InputTextWithHint("##dbgtgmat", "path/to/foo.tgmat", s.dbgTgmatPath, sizeof(s.dbgTgmatPath));
 						ImGui::SameLine();
 						if (ImGui::Button("Load .tgmat##dbg"))
@@ -2128,7 +2628,7 @@ void GameWorld::DrawDebugUI()
 						ImGui::SliderFloat("Metalness##pillar", &s.pillarMat.metalness, 0.f, 1.f, "%.3f");
 						ImGui::SliderFloat("AO##pillar", &s.pillarMat.ao, 0.f, 1.f, "%.3f");
 						ImGui::ColorEdit3("Emissive colour##pillar", s.pillarMat.emissiveColor);
-						ImGui::SliderFloat("Emissive strength##pillar", &s.pillarMat.emissiveStrength, 0.f, 16.f, "%.2f");
+						EmissiveLuminanceSlider("Emissive luminance##pillar", s.pillarMat.emissiveStrength);
 					}
 				}
 				if (tun && ImGui::CollapsingHeader("Glass refraction", ImGuiTreeNodeFlags_DefaultOpen))
@@ -2200,20 +2700,28 @@ void GameWorld::DrawDebugUI()
 						ImGui::TextColored(ImVec4(1, 0.7f, 0.3f, 1),
 						"threshold this low blooms lit surfaces, not just highlights");
 						ImGui::EndDisabled();
-						ImGui::SeparatorText("Exposure");
-						ImGui::Checkbox("Auto exposure", &tun->exposureAuto);
+						ImGui::SeparatorText("Camera exposure");
+						ImGui::Checkbox("Auto exposure (metered)", &tun->exposureAuto);
 						if (tun->exposureAuto)
 						{
-							ImGui::SliderFloat("Key", &tun->exposureKey, 0.02f, 0.6f, "%.3f");
-							ImGui::SliderFloat("Min", &tun->exposureMin, 0.01f, 2.f, "%.2f");
-							ImGui::SliderFloat("Max", &tun->exposureMax, 1.f, 32.f, "%.1f");
+							ImGui::DragFloatRange2("EV100 range", &tun->autoEvMin, &tun->autoEvMax, 0.1f, -6.f, 20.f, "min %.1f", "max %.1f");
 							ImGui::SliderFloat("Adapt speed", &tun->exposureSpeed, 0.25f, 10.f, "%.2f");
 						}
 						else
 						{
-							ImGui::SliderFloat("Exposure", &tun->manualExposure, 0.05f, 8.f, "%.2f");
+							ImGui::SliderFloat("Aperture", &tun->cameraAperture, 1.0f, 32.f, "f/%.1f", ImGuiSliderFlags_Logarithmic);
+							float shutterDenominator = 1.f / tun->cameraShutter;
+							if (ImGui::SliderFloat("Shutter", &shutterDenominator, 1.f, 8000.f, "1/%.0f s", ImGuiSliderFlags_Logarithmic))
+								tun->cameraShutter = 1.f / std::max(shutterDenominator, 1e-3f);
+							ImGui::SliderFloat("ISO", &tun->cameraIso, 50.f, 12800.f, "%.0f", ImGuiSliderFlags_Logarithmic);
+							ImGui::Text("EV100 %.2f", Photometry::Ev100FromCamera(tun->cameraAperture, tun->cameraShutter, tun->cameraIso));
+							ImGui::TextDisabled("Sunny 16: f/16, 1/125, ISO 100 (EV 15).");
 						}
-						ImGui::SliderFloat("EV comp", &tun->exposureComp, -4.f, 4.f, "%.2f");
+						ImGui::SliderFloat("EV comp", &tun->exposureComp, -5.f, 5.f, "%+.2f EV");
+						ImGui::Checkbox("Pre-exposure (DXR)", &tun->preExposure);
+						ImGui::SetItemTooltip("Keeps night and day scenes inside FP16's precise range.");
+						const char* tonemappers[] = { "AgX", "AgX Punchy", "ACES (fitted)", "None (clip)" };
+						ImGui::Combo("Tonemapper", &tun->tonemapper, tonemappers, 4);
 						ImGui::EndDisabled();
 					}
 				}
@@ -2272,6 +2780,16 @@ void GameWorld::DrawDebugUI()
 			ImGui::EndTabBar();
 		}
 		ImGui::EndTabItem();
+		}
+		{
+			const bool selectProfiler = s.benchFrames > 0 && EnvStr("BENCH_DEBUG_TAB", "") == std::string("Profiler");
+			if (ImGui::BeginTabItem("Profiler", nullptr, selectProfiler ? ImGuiTabItemFlags_SetSelected : 0))
+			{
+				ImGui::BeginChild("ProfilerScroll", ImVec2(0, 0), false);
+				s.DrawProfilerTab();
+				ImGui::EndChild();
+				ImGui::EndTabItem();
+			}
 		}
 		ImGui::EndTabBar();
 		}
@@ -2380,6 +2898,10 @@ void GameWorld::Render()
 	GraphicsEngine& ge = *GraphicsEngine::GetInstance();
 	GraphicsStateStack& gss = ge.GetGraphicsStateStack();
 
+	// Open the GPU frame before any GPU work (GI probes, TLAS) so it is timed.
+	s.gpu.BeginFrame();
+	if (s.deferred) s.deferred->SetProfiler(&s.gpu);
+
 	// Application updates its render size after the OS resize message has been
 	// processed.  Rebuild the perspective matrix before submitting this frame;
 	// otherwise the old aspect ratio is rasterized across the new backbuffer.
@@ -2406,25 +2928,37 @@ void GameWorld::Render()
 		// always lands back at the starting angle -- which for Sponza is inside a
 		// wall. Any other viewpoint needs an explicit frame.
 		const int shotFrame = s.shotFrame > 0 ? s.shotFrame : (s.benchFrames > 3 ? s.benchFrames - 2 : 120);
+		// BENCH_SHOT_COUNT > 1 captures consecutive frames as name_0, name_1, ...
+		// (for judging temporal stability within one run).
+		static const int shotCount = std::max(1, EnvInt("BENCH_SHOT_COUNT", 1));
 		if (s.frame >= shotFrame)
 		{
-			s.screenshotTaken = true;
-			const std::wstring wpath(s.screenshotPath.begin(), s.screenshotPath.end());
+			const int index = s.frame - shotFrame;
+			std::string path = s.screenshotPath;
+			if (shotCount > 1)
+			{
+				const size_t dot = path.find_last_of('.');
+				path = path.substr(0, dot) + "_" + std::to_string(index) + (dot == std::string::npos ? "" : path.substr(dot));
+			}
+			if (index + 1 >= shotCount) s.screenshotTaken = true;
+			const std::wstring wpath(path.begin(), path.end());
 			bool ok = dev->CaptureBackBufferPng(wpath.c_str());
-			INFO_PRINT("Sponza bench: screenshot (DX12) -> %s (%s)", s.screenshotPath.c_str(), ok ? "ok" : "failed");
+			INFO_PRINT("Sponza bench: screenshot (DX12) -> %s (%s)", path.c_str(), ok ? "ok" : "failed");
 		}
 	}
 
 	// Interactive tuning panel (free-fly runs only) — updates s.* live.
 	if (s.benchFrames == 0 || EnvInt("BENCH_DEBUG_UI", 0) != 0)
 	{
+		TGA_CPU_SCOPE("Debug UI");
 		DrawDebugUI();
 		s.DrawPerfOverlayImpl();
 	}
 
 	// Rebuild the sun / ambient from live state so slider tweaks take effect.
 	s.dirLight.transform = Matrix4x4f::CreateFromRollPitchYaw(Vector3f{ s.sunPitch, s.sunYaw, 0.f });
-	s.dirLight.color = Color{ s.sunColor[0] * s.sunIntensity, s.sunColor[1] * s.sunIntensity, s.sunColor[2] * s.sunIntensity };
+	const Vector3f sunColor = s.SunColor() * s.SunIntensity();
+	s.dirLight.color = Color{ sunColor.x, sunColor.y, sunColor.z };
 	s.dirLight.softness = s.sunSoftness;
 	s.ambient.color = Color{ s.ambientColor[0] * s.ambientScale, s.ambientColor[1] * s.ambientScale, s.ambientColor[2] * s.ambientScale };
 
@@ -2473,15 +3007,25 @@ void GameWorld::Render()
 			// so those are the only inputs that change the volume. Quantised so
 			// slider hover / float jitter can't retrigger a prime.
 			const float h = std::round(
-				s.sunPitch * 2.f + s.sunYaw * 1.3f + s.sunIntensity * 40.f
-				+ (s.sunColor[0] + s.sunColor[1] * 2.f + s.sunColor[2] * 3.f) * 20.f
+				s.sunPitch * 2.f + s.sunYaw * 1.3f + s.SunIntensity() * 40.f
+				+ (s.SunColor().x + s.SunColor().y * 2.f + s.SunColor().z * 3.f) * 20.f
 				+ (s.ambientColor[0] + s.ambientColor[1] + s.ambientColor[2]) * s.ambientScale * 50.f
 				+ (float)s.cubemapIdx * 100.f
 				+ (sealedRoom ? 777.f : 0.f));
-			if (h != s.giLightHash)
+			// The physical sky scale is only known once the environment map has
+			// been measured (a frame or two in), and the probes must be traced
+			// with it; hash it separately so a tiny night sky still registers.
+			const float skyH = std::round(std::log2(std::max(s.deferred->GetTunables().skyLuminanceNits, 1e-6f)) * 8.f
+				+ std::log2(std::max(s.deferred->GetEnvironmentAverageLuminance(), 1e-9f)) * 8.f
+				+ std::log2(std::max(s.sunIlluminanceLux, 1e-6f)) * 8.f);
+			const float lightHash = h + skyH * 7919.f;
+			if (lightHash != s.giLightHash)
 			{
-				s.giLightHash = h;
-				if (!s.giPriming)
+				s.giLightHash = lightHash;
+				// A change mid-prime (typically the sky measurement arriving)
+				// would otherwise leave half the volume traced with stale light.
+				if (s.giPriming) s.StartGiPrime();
+				else
 				{
 					if (s.giUseRT)
 					{
@@ -2782,7 +3326,10 @@ void GameWorld::Render()
 		if (s.showDebugBall && s.debugBallValid)
 			addInstance(s.debugBall, debugMaterial);
 
-		dxr->BuildRaytracingTlas(rayInstances.data(), (uint32_t)rayInstances.size());
+		{
+			TGA_PROFILE_SCOPE(&s.gpu, "TLAS build");
+			dxr->BuildRaytracingTlas(rayInstances.data(), (uint32_t)rayInstances.size());
+		}
 		if (s.deferred) s.deferred->SetRaySceneStationary(raySceneStationary && nextRayTransforms.size() == s.previousRayTransforms.size());
 		s.previousRayTransforms = std::move(nextRayTransforms);
 	}
@@ -2792,10 +3339,9 @@ void GameWorld::Render()
 	if (s.giRtCapturePending)
 	{
 		s.giRtCapturePending = false;
+		TGA_PROFILE_SCOPE(&s.gpu, "GI probe update");
 		s.CaptureGiProbesImpl(ge);
 	}
-
-	s.gpu.BeginFrame();
 
 	{
 		RenderGraph rg(ge.GetRenderResourcePool(), &s.gpu);
@@ -2888,6 +3434,7 @@ void GameWorld::Render()
 	}
 
 	s.gpu.EndFrame();
+	s.StepCostSweep();
 
 	if (s.frame > s.warmupFrames && (s.benchFrames == 0 || s.frame <= s.benchFrames))
 	{
@@ -2905,7 +3452,9 @@ void GameWorld::Render()
 	gss.Pop();
 	DX11::BackBuffer->SetAsActiveTarget();
 
-	if (!s.screenshotPath.empty() && !s.screenshotTaken)
+	// DX11 only; the DX12 capture happens earlier in Render().
+	const bool dx11Backend = !DX11::Rhi() || DX11::Rhi()->GetBackend() != rhi::Backend::DX12;
+	if (dx11Backend && !s.screenshotPath.empty() && !s.screenshotTaken)
 	{
 		// BENCH_SHOT_FRAME pins the capture to a chosen frame instead of the end
 		// of the run. The scripted camera is parameterised by fraction-of-run and

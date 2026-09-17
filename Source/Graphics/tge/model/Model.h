@@ -64,6 +64,7 @@ public:
 		
 	void Init(MeshData& aMeshData, const std::string& aPath);
 	void Init(std::vector<MeshData>& someMeshData, const std::string& aPath);
+	void Init(std::vector<MeshData>&& someMeshData, const std::string& aPath);   // takes ownership, no vertex copy
 
 	const StringId GetMaterialName(int meshIndex) const { return myMeshData[meshIndex].materialName; }
 	const StringId GetMeshName(int meshIndex) const { return myMeshData[meshIndex].name; }
@@ -81,6 +82,7 @@ public:
 	void SetDefaultTexture(int meshIndex, int textureIndex, TextureResource* texture) { myDefaultTextures[meshIndex][textureIndex] = texture; }
 	const TextureResource* const* GetDefaultTextures(size_t meshIndex) const { return myDefaultTextures[meshIndex]; }
 private:
+	void FinishInit(const std::string& aPath);   // ray views, BLASes, bounds
 
 	std::shared_ptr<const Skeleton> mySkeleton;
 	std::vector<MeshData> myMeshData;

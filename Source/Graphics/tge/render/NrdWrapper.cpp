@@ -8,7 +8,7 @@ namespace Tga::rhi::dx12
 {
 	namespace
 	{
-		constexpr nrd::Identifier kDiffuse = 0;
+		constexpr nrd::Identifier kDenoiser = 0;
 
 		nrd::Resource Wrap(ID3D12Resource* resource, bool storage)
 		{
@@ -27,7 +27,7 @@ namespace Tga::rhi::dx12
 		Destroy();
 	}
 
-	bool NrdWrapper::Initialize(Dx12Device* device, uint32_t width, uint32_t height)
+	bool NrdWrapper::Initialize(Dx12Device* device, uint32_t width, uint32_t height, Denoiser denoiser)
 	{
 		Destroy();
 
@@ -42,13 +42,15 @@ namespace Tga::rhi::dx12
 		deviceDesc.queueFamilies = &queueDesc;
 		deviceDesc.queueFamilyNum = 1;
 
-		const nrd::DenoiserDesc denoisers[] = { { kDiffuse, nrd::Denoiser::RELAX_DIFFUSE } };
+		m_Denoiser = denoiser;
+		const nrd::DenoiserDesc denoisers[] = { { kDenoiser,
+			denoiser == Denoiser::Reblur ? nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR : nrd::Denoiser::RELAX_DIFFUSE_SPECULAR } };
 		nrd::InstanceCreationDesc instanceDesc = {};
 		instanceDesc.denoisers = denoisers;
 		instanceDesc.denoisersNum = 1;
 
 		nrd::IntegrationCreationDesc integrationDesc = {};
-		std::snprintf(integrationDesc.name, sizeof(integrationDesc.name), "%s", "DxrDiffuse");
+		std::snprintf(integrationDesc.name, sizeof(integrationDesc.name), "%s", "DxrLighting");
 		integrationDesc.resourceWidth = static_cast<uint16_t>(width);
 		integrationDesc.resourceHeight = static_cast<uint16_t>(height);
 		// queuedFrameNum keeps its default of 3, matching Dx12Device::kFramesInFlight.
@@ -58,16 +60,56 @@ namespace Tga::rhi::dx12
 
 		if (m_Integration.RecreateD3D12(integrationDesc, instanceDesc, deviceDesc) != nrd::Result::SUCCESS)
 		{
-			ERROR_PRINT("NRD: failed to create the RELAX diffuse denoiser (%ux%u)", width, height);
+			ERROR_PRINT("NRD: failed to create the %s denoiser (%ux%u)",
+				denoiser == Denoiser::Reblur ? "REBLUR" : "RELAX", width, height);
 			m_Integration.Destroy();
 			return false;
 		}
 
-		nrd::RelaxSettings relax = {};
-		m_Integration.SetDenoiserSettings(kDiffuse, &relax);
 		m_FrameIndex = 0;
 		m_Initialized = true;
+		UploadSettings();
 		return true;
+	}
+
+	void NrdWrapper::Configure(const Settings& aSettings)
+	{
+		if (aSettings == m_Settings) return;
+		m_Settings = aSettings;
+		if (m_Initialized) UploadSettings();
+	}
+
+	void NrdWrapper::UploadSettings()
+	{
+		const Settings& s = m_Settings;
+		const nrd::CheckerboardMode checkerboard = s.checkerboard ? nrd::CheckerboardMode::BLACK : nrd::CheckerboardMode::OFF;
+		const uint32_t history = std::max<uint32_t>(s.historyFrames, 1);
+		const uint32_t fast = std::min(std::max<uint32_t>(s.fastHistoryFrames, 1), history);
+		if (m_Denoiser == Denoiser::Reblur)
+		{
+			nrd::ReblurSettings reblur = {};
+			reblur.checkerboardMode = checkerboard;
+			reblur.maxAccumulatedFrameNum = history;
+			reblur.maxFastAccumulatedFrameNum = fast;
+			reblur.historyFixFrameNum = std::min<uint32_t>(reblur.historyFixFrameNum, fast > 1 ? fast - 1 : 0);
+			reblur.hitDistanceParameters.A = s.hitDistanceA;
+			if (!s.antilag)
+			{
+				reblur.antilagSettings.luminanceSigmaScale = 100.0f;
+				reblur.antilagSettings.luminanceSensitivity = 100.0f;
+			}
+			m_Integration.SetDenoiserSettings(kDenoiser, &reblur);
+		}
+		else
+		{
+			nrd::RelaxSettings relax = {};
+			relax.checkerboardMode = checkerboard;
+			relax.diffuseMaxAccumulatedFrameNum = relax.specularMaxAccumulatedFrameNum = history;
+			relax.diffuseMaxFastAccumulatedFrameNum = relax.specularMaxFastAccumulatedFrameNum = fast;
+			relax.historyFixFrameNum = std::min<uint32_t>(relax.historyFixFrameNum, fast > 1 ? fast - 1 : 0);
+			if (!s.antilag) relax.antilagSettings.resetAmount = 0.0f;
+			m_Integration.SetDenoiserSettings(kDenoiser, &relax);
+		}
 	}
 
 	void NrdWrapper::Destroy()
@@ -89,20 +131,26 @@ namespace Tga::rhi::dx12
 		snapshot.SetResource(nrd::ResourceType::IN_VIEWZ, Wrap(in.viewZ, false));
 		snapshot.SetResource(nrd::ResourceType::IN_MV, Wrap(in.motion, false));
 		snapshot.SetResource(nrd::ResourceType::IN_DIFF_RADIANCE_HITDIST, Wrap(in.diffuse, false));
-		snapshot.SetResource(nrd::ResourceType::OUT_DIFF_RADIANCE_HITDIST, Wrap(in.output, true));
+		snapshot.SetResource(nrd::ResourceType::IN_SPEC_RADIANCE_HITDIST, Wrap(in.specular, false));
+		snapshot.SetResource(nrd::ResourceType::OUT_DIFF_RADIANCE_HITDIST, Wrap(in.diffuseOut, true));
+		snapshot.SetResource(nrd::ResourceType::OUT_SPEC_RADIANCE_HITDIST, Wrap(in.specularOut, true));
+		const bool validation = settings.enableValidation && in.validation;
+		if (validation)
+			snapshot.SetResource(nrd::ResourceType::OUT_VALIDATION, Wrap(in.validation, true));
 
 		// NRD requires frameIndex to advance by exactly one per Denoise, which
 		// the engine's jitter index does not guarantee (it wraps and resets).
 		m_Integration.NewFrame();
 		nrd::CommonSettings frame = settings;
 		frame.frameIndex = m_FrameIndex++;
+		frame.enableValidation = validation;
 		if (m_Integration.SetCommonSettings(frame) != nrd::Result::SUCCESS)
 			return;
 
 		nri::CommandBufferD3D12Desc cmdDesc = {};
 		cmdDesc.d3d12CommandList = ctx.NativeList();
 
-		const nrd::Identifier denoisers[] = { kDiffuse };
+		const nrd::Identifier denoisers[] = { kDenoiser };
 		m_Integration.DenoiseD3D12(denoisers, 1, cmdDesc, snapshot);
 
 		ctx.RestoreAfterExternalCommands();

@@ -1,7 +1,7 @@
-// Final composite: HDR * exposure + bloom, then ACES tonemap -> backbuffer.
+// Final composite: HDR * exposure + bloom, then tonemap (AgX by default) -> backbuffer.
 //   t0 = HDR scene target
 //   t1 = bloom result (half-res, linear-sampled)
-//   t2 = 1x1 adapted exposure
+//   t2 = 1x1 adapted (metered) EV100
 #include "PostFxCommon.hlsli"
 
 Texture2D Hdr      : register(t0);
@@ -26,15 +26,13 @@ float3 main(FsIn i) : SV_TARGET
 	hdr   = clamp(hdr,   0.0f, 60000.0f);
 	bloom = clamp(bloom, 0.0f, 60000.0f);
 
-	float exposure;
-	if (gExposureAuto > 0.5f)
-		exposure = Exposure.SampleLevel(LinearClamp, float2(0.5f, 0.5f), 0).r;
-	else
-		exposure = gExposureKeyOrManual;
+	const float ev100 = gExposureAuto > 0.5f
+		? Exposure.SampleLevel(LinearClamp, float2(0.5f, 0.5f), 0).r
+		: gManualEv100;
+	const float exposure = ExposureFromEv100(ev100) / HdrPreExposure();
 
-	exposure *= exp2(gExposureComp);
-
-	float3 color = hdr * exposure + bloom * gBloomIntensity;
-	color = AcesTonemap(color);
+	// Bloom is gathered from the unexposed HDR, so expose it the same way.
+	float3 color = (hdr + bloom * gBloomIntensity) * exposure;
+	color = Tonemap(color);
 	return color;
 }

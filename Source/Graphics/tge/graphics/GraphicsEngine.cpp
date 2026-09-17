@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <tge/debugging/CpuProfiler.h>
 
 #include <tge/graphics/GraphicsEngine.h>
 #include <tge/application.h>
@@ -76,6 +77,7 @@ GraphicsEngine::~GraphicsEngine(void)
 
 bool GraphicsEngine::Init()
 {
+	TGA_CPU_SCOPE("GraphicsEngine::Init");
 	INFO_PRINT("%s", "Starting graphics engine");
 
 	DX11::BackBuffer->SetAsActiveTarget();

@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <tge/debugging/CpuProfiler.h>
 #include "tge/rhi/dx12/Dx12Device.h"
 #include "tge/rhi/dx12/Dx12CommandContext.h"
 #include "tge/rhi/Format.h"
@@ -131,11 +132,10 @@ namespace Tga::rhi::dx12
 		myResolution = { d.width, d.height };
 
 		CreateDeviceAndQueue(d.enableDebugLayer, d.enableGpuValidation);
-		CreateHeaps();
-		CreateNullDescriptors();
-		CreateFrameResources();
-		CreateRootSignatures();
-		if (myHwnd) CreateSwapchain(myHwnd, d.width, d.height);
+		{ TGA_CPU_SCOPE("Descriptor heaps"); CreateHeaps(); CreateNullDescriptors(); }
+		{ TGA_CPU_SCOPE("Frame resources"); CreateFrameResources(); }
+		{ TGA_CPU_SCOPE("Root signatures"); CreateRootSignatures(); }
+		if (myHwnd) { TGA_CPU_SCOPE("Swap chain"); CreateSwapchain(myHwnd, d.width, d.height); }
 
 		myContext = std::make_unique<Dx12CommandContext>(*this);
 
@@ -224,6 +224,7 @@ namespace Tga::rhi::dx12
 		// These switches are intentionally inactive outside Debug builds.
 		(void)enableDebugLayer;
 		(void)enableGpuValidation;
+		TGA_CPU_SCOPE("Factory + adapter + D3D12CreateDevice");
 		HRESULT hr = CreateDXGIFactory2(dxgiFlags, IID_PPV_ARGS(myFactory.GetAddressOf()));
 		assert(SUCCEEDED(hr)); (void)hr;
 
@@ -236,6 +237,7 @@ namespace Tga::rhi::dx12
 			if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(myDevice.GetAddressOf()))))
 			{
 				INFO_PRINT("Dx12Device: using adapter %ls", desc.Description);
+				adapter.As(&myAdapter);
 				break;
 			}
 		}
@@ -724,6 +726,7 @@ namespace Tga::rhi::dx12
 			// work fully executed (and any problem with it caught) on its
 			// own, and lets every frame after this go through the exact same
 			// Reset() path uniformly.
+			SubmitUploadList();
 			myCmdList->Close();
 			ID3D12CommandList* initLists[] = { myCmdList.Get() };
 			myQueue->ExecuteCommandLists(1, initLists);
@@ -789,6 +792,7 @@ namespace Tga::rhi::dx12
 			myCmdList->ResolveQueryData(myTimestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, myTimestampFrameMin, count, myTimestampReadback.Get(), myTimestampFrameMin * sizeof(uint64_t));
 		}
 
+		SubmitUploadList();   // this frame may use resources uploaded in a batch
 		myCmdList->Close();
 		ID3D12CommandList* lists[] = { myCmdList.Get() };
 		myQueue->ExecuteCommandLists(1, lists);
@@ -876,6 +880,14 @@ namespace Tga::rhi::dx12
 	// ------------------------------------------------------------------ resources
 	BufferHandle Dx12Device::CreateBuffer(const BufferDesc& d, const void* initialData)
 	{
+		if (!initialData) return CreateBufferImpl(d, nullptr);
+		const std::function<void(void*)> copy = [&](void* mapped) { memcpy(mapped, initialData, d.byteSize); };
+		return CreateBufferImpl(d, &copy);
+	}
+
+	BufferHandle Dx12Device::CreateBufferImpl(const BufferDesc& d, const std::function<void(void*)>* fill)
+	{
+		const bool initialData = fill != nullptr;
 		D3D12_RESOURCE_DESC rd = {};
 		rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
 		rd.Width = d.byteSize ? d.byteSize : 1;
@@ -912,14 +924,14 @@ namespace Tga::rhi::dx12
 		if (FAILED(hr)) { ERROR_PRINT("Dx12Device::CreateBuffer: CreateCommittedResource failed 0x%08X", (unsigned)hr); return {}; }
 
 		if (initialData && d.memory == MemoryType::Default)
-			UploadBufferData(res.Get(), initialData, d.byteSize);
+			UploadBufferFill(res.Get(), d.byteSize, *fill);
 		else if (initialData && d.memory == MemoryType::Upload)
 		{
 			void* mapped = nullptr;
 			D3D12_RANGE noRead{ 0, 0 };
 			if (SUCCEEDED(res->Map(0, &noRead, &mapped)))
 			{
-				memcpy(mapped, initialData, d.byteSize);
+				(*fill)(mapped);
 				res->Unmap(0, nullptr);
 			}
 		}
@@ -935,6 +947,161 @@ namespace Tga::rhi::dx12
 				: initState;
 		BufferRec rec; rec.res = res; rec.desc = d; rec.state = finalState;
 		return myBuffers.Alloc(std::move(rec));
+	}
+
+	void Dx12Device::CreateRaytracingBlases(const RaytracingBlasDesc* descs, uint32_t count, RaytracingBlasHandle* out)
+	{
+		for (uint32_t i = 0; i < count; ++i) out[i] = {};
+		if (!myRaytracingTier11 || !myDevice5 || count == 0) return;
+
+		auto alignAs = [](uint64_t size) { return (size + D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT - 1) &
+			~uint64_t(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT - 1); };
+		auto createBuffer = [&](uint64_t size, D3D12_HEAP_TYPE heapType, D3D12_RESOURCE_STATES state, D3D12_RESOURCE_FLAGS flags, ComPtr<ID3D12Resource>& res) -> bool
+		{
+			D3D12_HEAP_PROPERTIES heap = { heapType };
+			D3D12_RESOURCE_DESC rd = {};
+			rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+			rd.Width = size; rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+			rd.SampleDesc.Count = 1; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR; rd.Flags = flags;
+			return SUCCEEDED(myDevice->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &rd, state, nullptr,
+				IID_PPV_ARGS(res.GetAddressOf())));
+		};
+
+		struct Pending
+		{
+			uint32_t index = 0;
+			ComPtr<ID3D12Resource> uncompacted, scratch;
+			uint64_t uncompactedSize = 0;
+		};
+		std::vector<Pending> pending;
+		pending.reserve(count);
+
+		ComPtr<ID3D12Resource> postbuild, readback;
+		const uint64_t postbuildBytes = uint64_t(count) * sizeof(uint64_t);
+		if (!createBuffer(postbuildBytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+				D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, postbuild) ||
+			!createBuffer(postbuildBytes, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST,
+				D3D12_RESOURCE_FLAG_NONE, readback))
+		{
+			for (uint32_t i = 0; i < count; ++i) out[i] = CreateRaytracingBlas(descs[i]);
+			return;
+		}
+
+		// Pass 1: every build (and its compacted-size query) on the upload list,
+		// behind whatever vertex/index uploads the batch already holds.
+		ID3D12GraphicsCommandList* list = OpenUploadList();
+		ComPtr<ID3D12GraphicsCommandList4> list4;
+		if (FAILED(myUploadCmdList.As(&list4))) return;
+		uint64_t scratchBytes = 0;
+		for (uint32_t i = 0; i < count; ++i)
+		{
+			const RaytracingBlasDesc& desc = descs[i];
+			if (!desc.vertexBuffer.IsValid() || !desc.indexBuffer.IsValid() || desc.vertexCount == 0 ||
+				desc.indexCount < 3 || desc.vertexStride == 0 || desc.indexFormat != Format::R32_UInt) continue;
+			BufferRec* vb = myBuffers.Get(desc.vertexBuffer);
+			BufferRec* ib = myBuffers.Get(desc.indexBuffer);
+			if (!vb || !ib || !vb->res || !ib->res) continue;
+
+			D3D12_RAYTRACING_GEOMETRY_DESC geometry = {};
+			geometry.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+			geometry.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+			geometry.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
+			geometry.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+			geometry.Triangles.IndexCount = desc.indexCount;
+			geometry.Triangles.VertexCount = desc.vertexCount;
+			geometry.Triangles.IndexBuffer = ib->res->GetGPUVirtualAddress();
+			geometry.Triangles.VertexBuffer.StartAddress = vb->res->GetGPUVirtualAddress();
+			geometry.Triangles.VertexBuffer.StrideInBytes = desc.vertexStride;
+
+			D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
+			inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+			inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+			inputs.NumDescs = 1;
+			inputs.pGeometryDescs = &geometry;
+			inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE |
+				D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_COMPACTION;
+
+			D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO prebuild = {};
+			myDevice5->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &prebuild);
+			if (prebuild.ResultDataMaxSizeInBytes == 0 || prebuild.ScratchDataSizeInBytes == 0) continue;
+
+			Pending p;
+			p.index = i;
+			p.uncompactedSize = alignAs(prebuild.ResultDataMaxSizeInBytes);
+			if (!createBuffer(p.uncompactedSize, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+					D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, p.uncompacted) ||
+				!createBuffer(alignAs(prebuild.ScratchDataSizeInBytes), D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+					D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, p.scratch))
+			{
+				ERROR_PRINT("DXR BLAS '%s': resource allocation failed", desc.debugName ? desc.debugName : "unnamed");
+				continue;
+			}
+			scratchBytes += prebuild.ScratchDataSizeInBytes;
+
+			D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC postInfo = {};
+			postInfo.InfoType = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE;
+			postInfo.DestBuffer = postbuild->GetGPUVirtualAddress() + uint64_t(i) * sizeof(uint64_t);
+			D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build = {};
+			build.Inputs = inputs;
+			build.DestAccelerationStructureData = p.uncompacted->GetGPUVirtualAddress();
+			build.ScratchAccelerationStructureData = p.scratch->GetGPUVirtualAddress();
+			list4->BuildRaytracingAccelerationStructure(&build, 1, &postInfo);
+			D3D12_RESOURCE_BARRIER uav = {};
+			uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+			uav.UAV.pResource = p.uncompacted.Get();
+			list->ResourceBarrier(1, &uav);
+			pending.push_back(std::move(p));
+		}
+		if (pending.empty()) return;
+
+		D3D12_RESOURCE_BARRIER toCopy = {};
+		toCopy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		toCopy.Transition.pResource = postbuild.Get();
+		toCopy.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+		toCopy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+		toCopy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		list->ResourceBarrier(1, &toCopy);
+		list->CopyBufferRegion(readback.Get(), 0, postbuild.Get(), 0, postbuildBytes);
+		SubmitUploadList();
+
+		std::vector<uint64_t> compactedSizes(count, 0);
+		void* mapped = nullptr;
+		D3D12_RANGE readRange{ 0, postbuildBytes };
+		if (SUCCEEDED(readback->Map(0, &readRange, &mapped)) && mapped)
+		{
+			memcpy(compactedSizes.data(), mapped, postbuildBytes);
+			readback->Unmap(0, nullptr);
+		}
+
+		// Pass 2: compact everything in one submission.
+		std::vector<ComPtr<ID3D12Resource>> results(pending.size());
+		uint64_t totalUncompacted = 0, totalFinal = 0;
+		for (size_t k = 0; k < pending.size(); ++k)
+		{
+			Pending& p = pending[k];
+			results[k] = p.uncompacted;
+			const uint64_t compactedSize = compactedSizes[p.index];
+			if (compactedSize != 0 && compactedSize < p.uncompactedSize)
+			{
+				ComPtr<ID3D12Resource> compacted;
+				if (createBuffer(alignAs(compactedSize), D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+					D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, compacted))
+				{
+					OpenUploadList();
+					list4->CopyRaytracingAccelerationStructure(compacted->GetGPUVirtualAddress(),
+						p.uncompacted->GetGPUVirtualAddress(), D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT);
+					results[k] = std::move(compacted);
+				}
+			}
+			const uint64_t finalSize = (compactedSize && compactedSize < p.uncompactedSize) ? compactedSize : p.uncompactedSize;
+			totalUncompacted += p.uncompactedSize;
+			totalFinal += finalSize;
+			out[p.index] = myBlas.Alloc(BlasRec{ results[k], finalSize, p.uncompactedSize });
+		}
+		SubmitUploadList();
+		// myBlas holds its own references; the uncompacted/scratch buffers die here.
+		INFO_PRINT("DXR BLAS batch: %zu meshes, %llu KiB -> %llu KiB (scratch %llu KiB)", pending.size(),
+			(unsigned long long)(totalUncompacted / 1024), (unsigned long long)(totalFinal / 1024), (unsigned long long)(scratchBytes / 1024));
 	}
 
 	RaytracingBlasHandle Dx12Device::CreateRaytracingBlas(const RaytracingBlasDesc& desc)
@@ -1010,6 +1177,7 @@ namespace Tga::rhi::dx12
 
 		ComPtr<ID3D12GraphicsCommandList4> list4;
 		if (FAILED(myUploadCmdList.As(&list4))) return {};
+		SubmitUploadList();   // vertex/index data of a pending batch must land first
 		myUploadAllocator->Reset();
 		myUploadCmdList->Reset(myUploadAllocator.Get(), nullptr);
 
@@ -1333,6 +1501,11 @@ namespace Tga::rhi::dx12
 
 	void Dx12Device::UploadBufferData(ID3D12Resource* dst, const void* data, size_t size)
 	{
+		UploadBufferFill(dst, size, [&](void* mapped) { memcpy(mapped, data, size); });
+	}
+
+	void Dx12Device::UploadBufferFill(ID3D12Resource* dst, size_t size, const std::function<void(void*)>& fill)
+	{
 		D3D12_HEAP_PROPERTIES uploadHeap = { D3D12_HEAP_TYPE_UPLOAD };
 		D3D12_RESOURCE_DESC ud = {};
 		ud.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -1346,24 +1519,67 @@ namespace Tga::rhi::dx12
 		void* mapped = nullptr;
 		D3D12_RANGE noRead{ 0, 0 };
 		upload->Map(0, &noRead, &mapped);
-		memcpy(mapped, data, size);
+		fill(mapped);
 		upload->Unmap(0, nullptr);
 
-		myUploadAllocator->Reset();
-		myUploadCmdList->Reset(myUploadAllocator.Get(), nullptr);
-		myUploadCmdList->CopyBufferRegion(dst, 0, upload.Get(), 0, size);
+		ID3D12GraphicsCommandList* list = OpenUploadList();
+		list->CopyBufferRegion(dst, 0, upload.Get(), 0, size);
 		D3D12_RESOURCE_BARRIER b = {};
 		b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 		b.Transition.pResource = dst;
 		b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
 		b.Transition.StateAfter = D3D12_RESOURCE_STATE_GENERIC_READ;
 		b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-		myUploadCmdList->ResourceBarrier(1, &b);
-		myUploadCmdList->Close();
+		list->ResourceBarrier(1, &b);
+		FinishUpload(std::move(upload), size);
+	}
 
+	ID3D12GraphicsCommandList* Dx12Device::OpenUploadList()
+	{
+		if (!myUploadListOpen)
+		{
+			myUploadAllocator->Reset();
+			myUploadCmdList->Reset(myUploadAllocator.Get(), nullptr);
+			myUploadListOpen = true;
+		}
+		return myUploadCmdList.Get();
+	}
+
+	void Dx12Device::SubmitUploadList()
+	{
+		if (!myUploadListOpen) return;
+		myUploadCmdList->Close();
 		ID3D12CommandList* lists[] = { myUploadCmdList.Get() };
 		myQueue->ExecuteCommandLists(1, lists);
-		WaitForGpuIdle();   // simple + correct; batching/async is a later optimization
+		WaitForGpuIdle();
+		myUploadListOpen = false;
+		myUploadStaging.clear();
+		myUploadStagingBytes = 0;
+	}
+
+	void Dx12Device::FinishUpload(ComPtr<ID3D12Resource> staging, uint64_t bytes)
+	{
+		if (myUploadBatchDepth <= 0) { SubmitUploadList(); return; }
+		myUploadStaging.push_back(std::move(staging));
+		myUploadStagingBytes += bytes;
+		// Bound the staging memory a large scene can pin at once.
+		constexpr uint64_t kMaxBatchStagingBytes = 512ull << 20;
+		if (myUploadStagingBytes >= kMaxBatchStagingBytes) SubmitUploadList();
+	}
+
+	bool Dx12Device::QueryVideoMemory(uint64_t& outUsage, uint64_t& outBudget)
+	{
+		DXGI_QUERY_VIDEO_MEMORY_INFO info = {};
+		if (!myAdapter || FAILED(myAdapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info))) return false;
+		outUsage = info.CurrentUsage;
+		outBudget = info.Budget;
+		return true;
+	}
+
+	void Dx12Device::EndUploadBatch()
+	{
+		if (myUploadBatchDepth > 0 && --myUploadBatchDepth == 0)
+			SubmitUploadList();
 	}
 
 	void Dx12Device::UploadTextureData(ID3D12Resource* dst, const TextureDesc& d, const SubresourceData* initial, uint32_t count)
@@ -1401,8 +1617,7 @@ namespace Tga::rhi::dx12
 		}
 		upload->Unmap(0, nullptr);
 
-		myUploadAllocator->Reset();
-		myUploadCmdList->Reset(myUploadAllocator.Get(), nullptr);
+		ID3D12GraphicsCommandList* list = OpenUploadList();
 		// CreateTexture creates render/depth targets directly in their natural
 		// states so they are immediately usable when no initial data is supplied.
 		// If such a resource *does* carry initial data, transition it explicitly
@@ -1420,7 +1635,7 @@ namespace Tga::rhi::dx12
 			toCopyDest.Transition.StateBefore = creationState;
 			toCopyDest.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
 			toCopyDest.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			myUploadCmdList->ResourceBarrier(1, &toCopyDest);
+			list->ResourceBarrier(1, &toCopyDest);
 		}
 		for (uint32_t i = 0; i < count; ++i)
 		{
@@ -1428,7 +1643,7 @@ namespace Tga::rhi::dx12
 			dstLoc.SubresourceIndex = i;
 			D3D12_TEXTURE_COPY_LOCATION srcLoc = { upload.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {} };
 			srcLoc.PlacedFootprint = footprints[i];
-			myUploadCmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+			list->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
 		}
 		D3D12_RESOURCE_BARRIER b = {};
 		b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -1436,12 +1651,8 @@ namespace Tga::rhi::dx12
 		b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
 		b.Transition.StateAfter = rt ? D3D12_RESOURCE_STATE_RENDER_TARGET : ds ? D3D12_RESOURCE_STATE_DEPTH_WRITE : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 		b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-		myUploadCmdList->ResourceBarrier(1, &b);
-		myUploadCmdList->Close();
-
-		ID3D12CommandList* lists[] = { myUploadCmdList.Get() };
-		myQueue->ExecuteCommandLists(1, lists);
-		WaitForGpuIdle();
+		list->ResourceBarrier(1, &b);
+		FinishUpload(std::move(upload), totalBytes);
 	}
 
 	// ------------------------------------------------------------------ views
@@ -2044,6 +2255,7 @@ namespace Tga::rhi::dx12
 			D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(readback.GetAddressOf()));
 		if (FAILED(rbhr)) { ERROR_PRINT("Dx12Device::CaptureBackBufferPng: readback CreateCommittedResource failed 0x%08X", (unsigned)rbhr); return false; }
 
+		SubmitUploadList();
 		myUploadAllocator->Reset();
 		myUploadCmdList->Reset(myUploadAllocator.Get(), nullptr);
 
@@ -2126,6 +2338,20 @@ namespace Tga::rhi::dx12
 
 	bool Dx12Device::ReadBackUintPixel4(TextureHandle texture, uint32_t x, uint32_t y, uint32_t outValues[4])
 	{
+		TextureRec* t = myTextures.Get(texture);
+		if (!t || !t->res || t->res->GetDesc().Format != DXGI_FORMAT_R32G32B32A32_UINT) return false;
+		return ReadBackPixel16(texture, x, y, outValues);
+	}
+
+	bool Dx12Device::ReadBackFloatPixel4(TextureHandle texture, uint32_t x, uint32_t y, float outValues[4])
+	{
+		TextureRec* t = myTextures.Get(texture);
+		if (!t || !t->res || t->res->GetDesc().Format != DXGI_FORMAT_R32G32B32A32_FLOAT) return false;
+		return ReadBackPixel16(texture, x, y, outValues);
+	}
+
+	bool Dx12Device::ReadBackPixel16(TextureHandle texture, uint32_t x, uint32_t y, void* outValues)
+	{
 		// Moved here from Viewport.cpp's MouseOver() (2026-09-12), which called
 		// straight into raw D3D11 (GetShaderResourceView()->GetResource(...),
 		// a null pointer on DX12 -- this was the actual, 100%-reproducible
@@ -2162,6 +2388,7 @@ namespace Tga::rhi::dx12
 			if (FAILED(hr)) return false;
 		}
 
+		SubmitUploadList();
 		myUploadAllocator->Reset();
 		myUploadCmdList->Reset(myUploadAllocator.Get(), nullptr);
 
@@ -2204,7 +2431,7 @@ namespace Tga::rhi::dx12
 		D3D12_RANGE readRange = { 0, sizeof(uint32_t) * 4 };
 		void* mapped = nullptr;
 		if (FAILED(myPixelReadbackBuffer->Map(0, &readRange, &mapped))) return false;
-		memcpy(outValues, mapped, sizeof(uint32_t) * 4);
+		memcpy(outValues, mapped, 16);
 		D3D12_RANGE writtenRange = { 0, 0 };
 		myPixelReadbackBuffer->Unmap(0, &writtenRange);
 		return true;

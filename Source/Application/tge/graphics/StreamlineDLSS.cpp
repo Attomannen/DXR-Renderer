@@ -29,6 +29,13 @@ namespace Tga
 	{
 		if (myInitialized) return;
 		myInitialized = true;
+		// slInit + slSetD3DDevice cost ~4 s of startup (plugin signature checks,
+		// NGX bring-up). TGE_STREAMLINE=0 skips them when DLSS isn't needed.
+		if (const char* env = std::getenv("TGE_STREAMLINE"); env && env[0] == '0')
+		{
+			INFO_PRINT("Streamline: disabled by TGE_STREAMLINE=0; using native temporal resolve");
+			return;
+		}
 
 		wchar_t modulePath[MAX_PATH] = {};
 		if (!GetModuleFileNameW(nullptr, modulePath, MAX_PATH)) return;
@@ -153,6 +160,14 @@ namespace Tga
 		options.outputHeight = aOutputHeight;
 		options.colorBuffersHDR = sl::Boolean::eTrue;
 		options.alphaUpscalingEnabled = sl::Boolean::eTrue;
+		if (myPreset != 0)
+		{
+			// J, K, L, M: the model presets this Streamline version still offers.
+			static constexpr sl::DLSSPreset kPresets[] = { sl::DLSSPreset::eDefault, sl::DLSSPreset::ePresetJ,
+				sl::DLSSPreset::ePresetK, sl::DLSSPreset::ePresetL, sl::DLSSPreset::ePresetM };
+			const sl::DLSSPreset preset = kPresets[std::clamp(myPreset, 0, 4)];
+			options.dlaaPreset = options.qualityPreset = options.balancedPreset = options.performancePreset = options.ultraPerformancePreset = preset;
+		}
 		if (!IsOk(mySetOptions(viewport, options))) return false;
 
 		sl::Constants constants{};
@@ -160,7 +175,17 @@ namespace Tga
 		std::memcpy(&constants.clipToCameraView, aClipToView, sizeof(constants.clipToCameraView));
 		std::memcpy(&constants.clipToPrevClip, aClipToPreviousClip, sizeof(constants.clipToPrevClip));
 		std::memcpy(&constants.prevClipToClip, aPreviousClipToClip, sizeof(constants.prevClipToClip));
-		constants.jitterOffset = { aJitterX, aJitterY };
+		// The engine's jitter is the sample's offset from the pixel centre
+		// (uv = pixel + 0.5 + jitter); DLSS wants the opposite sign. Measured on a
+		// frozen camera: +jitter shook the image, -jitter is stable.
+		// The engine's jitter is the sample's offset from the pixel centre
+		// (uv = pixel + 0.5 + jitter); DLSS wants the opposite sign. Measured on a
+		// frozen camera: +jitter shook the image, -jitter at full scale is the
+		// most stable of the sign/scale variants tried.
+		// The engine's jitter is the sample's offset from the pixel centre
+		// (uv = pixel + 0.5 + jitter); DLSS wants the opposite sign. On a frozen,
+		// noise-free camera this is the steadiest of every sign/scale tried.
+		constants.jitterOffset = { -aJitterX, -aJitterY };
 		constants.mvecScale = { 1.0f / float(aRenderWidth), 1.0f / float(aRenderHeight) };
 		constants.cameraPos = { aCameraTransform[12], aCameraTransform[13], aCameraTransform[14] };
 		constants.cameraRight = { aCameraTransform[0], aCameraTransform[1], aCameraTransform[2] };
@@ -172,7 +197,7 @@ namespace Tga
 		constants.depthInverted = sl::Boolean::eFalse;
 		constants.cameraMotionIncluded = sl::Boolean::eTrue;
 		constants.motionVectors3D = sl::Boolean::eFalse;
-		constants.motionVectorsDilated = sl::Boolean::eTrue;
+		constants.motionVectorsDilated = sl::Boolean::eFalse;   // render-resolution, per-pixel
 		constants.reset = aReset ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 		if (!IsOk(mySetConstants(constants, *token, viewport))) return false;
 
@@ -216,14 +241,15 @@ namespace Tga
 		std::memcpy(&c.clipToCameraView, aClipToView, sizeof(c.clipToCameraView));
 		std::memcpy(&c.clipToPrevClip, aClipToPreviousClip, sizeof(c.clipToPrevClip));
 		std::memcpy(&c.prevClipToClip, aPreviousClipToClip, sizeof(c.prevClipToClip));
-		c.jitterOffset = {aJitterX, aJitterY}; c.mvecScale = {1.f / float(aWidth), 1.f / float(aHeight)};
+		// Jitter sign: see EvaluateDLSS.
+		c.jitterOffset = { -aJitterX, -aJitterY }; c.mvecScale = {1.f / float(aWidth), 1.f / float(aHeight)};
 		c.cameraPos = {aCameraTransform[12], aCameraTransform[13], aCameraTransform[14]};
 		c.cameraRight = {aCameraTransform[0], aCameraTransform[1], aCameraTransform[2]};
 		c.cameraUp = {aCameraTransform[4], aCameraTransform[5], aCameraTransform[6]};
 		c.cameraFwd = {aCameraTransform[8], aCameraTransform[9], aCameraTransform[10]};
 		c.cameraNear = aNearPlane; c.cameraFar = aFarPlane; c.cameraAspectRatio = float(aWidth) / float(aHeight);
 		c.depthInverted = sl::Boolean::eFalse; c.cameraMotionIncluded = sl::Boolean::eTrue;
-		c.motionVectors3D = sl::Boolean::eFalse; c.motionVectorsDilated = sl::Boolean::eTrue;
+		c.motionVectors3D = sl::Boolean::eFalse; c.motionVectorsDilated = sl::Boolean::eFalse;
 		c.reset = aReset ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 		if (!IsOk(mySetConstants(c, *token, viewport))) return false;
 		sl::Resource color(sl::ResourceType::eTex2d, aColor, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);

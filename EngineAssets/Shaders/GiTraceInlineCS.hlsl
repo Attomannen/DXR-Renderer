@@ -4,7 +4,7 @@
 // from the probe position over the full sphere (Fibonacci lattice -- equal
 // solid angle per sample, same 4*pi/N weighting the cubemap texel loop
 // used), shades each hit with the SAME analytic direct-lighting model
-// DxrSmokeTestCS.hlsl uses (DxrCommon.hlsli's DecodeHit + ShadeDirect: real
+// DxrLightingCS.hlsl uses (DxrCommon.hlsli's DecodeHit + ShadeDirect: real
 // textures, real shadow rays, real point/spot lights), and projects the
 // result into L2 SH -- writing into the identical GiSH buffer/layout
 // GiProjectSHCS.hlsl targets, so DeferredLightingPS.hlsl's EvalGiSH needs no

@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <tge/debugging/CpuProfiler.h>
 #include <tge/model/Model.h>
 #include <tge/log/Log.h>
 #include <tge/graphics/DX11.h>
@@ -22,19 +23,37 @@ namespace
 		mesh.rayGeometry.vertexRawSrv = device->CreateSrv(mesh.vertexBuffer, raw);
 		mesh.rayGeometry.indexRawSrv = device->CreateSrv(mesh.indexBuffer, raw);
 		mesh.rayGeometry.materialIndex = RayTracingMaterialTable::GetOrAssignMaterialIndex(mesh.materialName);
+	}
 
-		if (!device->SupportsRaytracingTier11() || mesh.numberOfVertices == 0 || mesh.numberOfIndices < 3)
-			return;
+	// All of a model's BLASes in one batched build.
+	void BuildBlases(Model::MeshData* meshes, size_t meshCount)
+	{
+		rhi::IDevice* device = DX11::Rhi();
+		if (!device || !device->SupportsRaytracingTier11()) return;
+		TGA_CPU_SCOPE("BLAS build");
 
-		rhi::RaytracingBlasDesc blas = {};
-		blas.vertexBuffer = mesh.vertexBuffer;
-		blas.indexBuffer = mesh.indexBuffer;
-		blas.vertexCount = mesh.numberOfVertices;
-		blas.vertexStride = mesh.rayGeometry.vertexStride;
-		blas.indexCount = mesh.numberOfIndices;
-		blas.indexFormat = rhi::Format::R32_UInt;
-		blas.debugName = mesh.name.IsEmpty() ? "ModelMesh" : mesh.name.GetString();
-		mesh.rayGeometry.blas = device->CreateRaytracingBlas(blas);
+		std::vector<rhi::RaytracingBlasDesc> descs;
+		std::vector<Model::MeshData*> owners;
+		for (size_t m = 0; m < meshCount; ++m)
+		{
+			Model::MeshData& mesh = meshes[m];
+			if (!mesh.vertexBuffer.IsValid() || !mesh.indexBuffer.IsValid() ||
+				mesh.numberOfVertices == 0 || mesh.numberOfIndices < 3) continue;
+			rhi::RaytracingBlasDesc blas = {};
+			blas.vertexBuffer = mesh.vertexBuffer;
+			blas.indexBuffer = mesh.indexBuffer;
+			blas.vertexCount = mesh.numberOfVertices;
+			blas.vertexStride = mesh.rayGeometry.vertexStride;
+			blas.indexCount = mesh.numberOfIndices;
+			blas.indexFormat = rhi::Format::R32_UInt;
+			blas.debugName = mesh.name.IsEmpty() ? "ModelMesh" : mesh.name.GetString();
+			descs.push_back(blas);
+			owners.push_back(&mesh);
+		}
+		std::vector<rhi::RaytracingBlasHandle> handles(descs.size());
+		device->CreateRaytracingBlases(descs.data(), (uint32_t)descs.size(), handles.data());
+		for (size_t i = 0; i < owners.size(); ++i)
+			owners[i]->rayGeometry.blas = handles[i];
 	}
 
 	void ComputeUnionBounds(const std::vector<Model::MeshData>& meshes, BoxSphereBounds& out)
@@ -59,6 +78,7 @@ void Model::Init(MeshData& aMeshData, const std::string& aPath)
 {
 	myMeshData.push_back(aMeshData);
 	CreateRayGeometryViews(myMeshData.back());
+	BuildBlases(&myMeshData.back(), 1);
 	myPath = aPath;
 	ComputeUnionBounds(myMeshData, myBounds);
 }
@@ -74,8 +94,35 @@ void Model::Init(std::vector<MeshData>& someMeshData, const std::string& aPath)
 	}
 
 	myMeshData = someMeshData;
+	FinishInit(aPath);
+}
+
+void Model::Init(std::vector<MeshData>&& someMeshData, const std::string& aPath)
+{
+	if (someMeshData.size() > MAX_MESHES_PER_MODEL)
+	{
+		ERROR_PRINT("Model '%s' has %zu sub-meshes; clamping to MAX_MESHES_PER_MODEL (%d)",
+			aPath.c_str(), someMeshData.size(), MAX_MESHES_PER_MODEL);
+		someMeshData.resize(MAX_MESHES_PER_MODEL);
+	}
+	myMeshData = std::move(someMeshData);
+	FinishInit(aPath);
+}
+
+void Model::FinishInit(const std::string& aPath)
+{
 	for (MeshData& mesh : myMeshData)
 		CreateRayGeometryViews(mesh);
+	BuildBlases(myMeshData.data(), myMeshData.size());
 	myPath = aPath;
 	ComputeUnionBounds(myMeshData, myBounds);
+
+	// Rendering, ray tracing and bounds only need the GPU buffers from here
+	// on; a large scene's CPU copy is otherwise gigabytes of dead RAM.
+	for (MeshData& mesh : myMeshData)
+	{
+		if (!mesh.vertexBuffer.IsValid() || !mesh.indexBuffer.IsValid()) continue;
+		std::vector<Vertex>().swap(mesh.vertices);
+		std::vector<unsigned int>().swap(mesh.indices);
+	}
 }

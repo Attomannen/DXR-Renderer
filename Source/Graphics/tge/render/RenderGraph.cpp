@@ -40,13 +40,8 @@ void RenderGraph::Execute()
 		const char* name = InternName(pass.name);
 
 		GpuMarkerScope marker(name);
-		if (myProfiler)
-			myProfiler->Push(name);
-
+		ProfileScope scope(myProfiler, name);   // CPU always, GPU when attached
 		pass.execute(*this);
-
-		if (myProfiler)
-			myProfiler->Pop();
 	}
 
 	myPasses.clear();

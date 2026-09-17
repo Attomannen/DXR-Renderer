@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <tge/debugging/CpuProfiler.h>
 
 #include <tge/Application.h>
 #include <tge/debugging/MemoryTracker.h>
@@ -128,7 +129,11 @@ bool Application::InternalStart()
 	myDx11 = std::make_unique<DX11>();
 	// Streamline's interposer has to be initialized before the DXGI/D3D12
 	// bootstrap.  It is optional: missing DLLs simply retain native TAA.
-	StreamlineDLSS::Get().Initialize();
+	{
+		TGA_CPU_SCOPE("Streamline init");
+		StreamlineDLSS::Get().Initialize();
+	}
+	TGA_CPU_SCOPE("Device + ImGui init");
 	if (!myDx11->Init(myWindow.get()))
 	{
 		ERROR_PRINT("%s", "D3D failed to be created!");
@@ -136,10 +141,17 @@ bool Application::InternalStart()
 		return false;
 	}
 	if (rhi::IDevice* rhiDevice = DX11::Rhi(); rhiDevice && rhiDevice->GetBackend() == rhi::Backend::DX12)
+	{
+		TGA_CPU_SCOPE("Streamline attach device");
 		StreamlineDLSS::Get().AttachD3D12Device(rhiDevice->GetNativeDevice());
-	CalculateRatios();
+	}
+
+	CalculateRatios();
 #ifndef _RETAIL
-	ImGuiInterface::Init();
+	{
+		TGA_CPU_SCOPE("ImGui init");
+		ImGuiInterface::Init();
+	}
 #endif // !_RETAIL
 
 	myStartOfTime = std::chrono::steady_clock::now();
@@ -290,25 +302,41 @@ bool Application::BeginFrame()
 
 #endif
 
+	CpuProfiler::Get().BeginFrame();
+
 	MSG msg = { 0 };
 
-	while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
 	{
-		TranslateMessage(&msg);
-		DispatchMessage(&msg);
-		if (msg.message == WM_QUIT)
+		TGA_CPU_SCOPE("Message pump");
+		while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
 		{
-			INFO_PRINT("%s", "Exiting...");
-			myShouldExit = true;
-			return false;
+			TranslateMessage(&msg);
+			DispatchMessage(&msg);
+			if (msg.message == WM_QUIT)
+			{
+				INFO_PRINT("%s", "Exiting...");
+				myShouldExit = true;
+				return false;
+			}
 		}
 	}
 #ifndef _RETAIL
-	ImGuiInterface::PreFrame();
+	{
+		TGA_CPU_SCOPE("ImGui new frame");
+		ImGuiInterface::PreFrame();
+	}
 #endif // !_RETAIL
-    myFileWatcher->FlushChanges();
+	{
+		TGA_CPU_SCOPE("File watcher");
+		myFileWatcher->FlushChanges();
+	}
 
-	myDx11->BeginFrame(myWindowConfiguration.clearColor);
+	// Includes waiting on the swap chain's frame-latency object, i.e. time the
+	// CPU spends blocked on the GPU.
+	{
+		TGA_CPU_SCOPE("Device begin frame (GPU wait)");
+		myDx11->BeginFrame(myWindowConfiguration.clearColor);
+	}
 	DX11::ResetDrawCallCounter();
 
 	return true;
@@ -320,7 +348,10 @@ void Application::EndFrame( void )
 #ifndef _RETAIL
 	DX11::BackBufferNoSrgbConversion->SetAsActiveTarget();
 
-	ImGuiInterface::Render();
+	{
+		TGA_CPU_SCOPE("ImGui render");
+		ImGuiInterface::Render();
+	}
 
 	DX11::BackBuffer->SetAsActiveTarget();
 
@@ -332,7 +363,11 @@ void Application::EndFrame( void )
 		myTotalTime += static_cast<float>(myTimer.GetElapsedSeconds());
 	});
 
-	myDx11->EndFrame(myWindowConfiguration.enableVSync);
+	{
+		TGA_CPU_SCOPE("Submit + present");
+		myDx11->EndFrame(myWindowConfiguration.enableVSync);
+	}
+	CpuProfiler::Get().EndFrame();
 
 	// Keep resizing at the established post-present boundary. DX12 owns the
 	// command-list lifetime between BeginFrame/EndFrame; resizing before its

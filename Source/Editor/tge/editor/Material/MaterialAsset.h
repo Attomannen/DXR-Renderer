@@ -1,4 +1,5 @@
 #pragma once
+#include <tge/math/Photometry.h>
 
 #include <array>
 #include <string>
@@ -59,6 +60,8 @@ namespace Tga
 			metalness        = j.value("metalness", metalness);
 			ao               = j.value("ao", ao);
 			emissiveStrength = j.value("emissiveStrength", emissiveStrength);
+			if (j.contains("emissiveLuminance"))
+				emissiveStrength = Tga::Photometry::NitsToUnits(j["emissiveLuminance"].get<float>());
 			normalStrength   = j.value("normalStrength", normalStrength);
 			previewMesh      = j.value("previewMesh", previewMesh);
 			if (j.contains("maps") && j["maps"].is_object())
@@ -86,6 +89,7 @@ namespace Tga
 			j["ao"]               = ao;
 			j["emissiveColor"]    = { emissiveColor[0], emissiveColor[1], emissiveColor[2] };
 			j["emissiveStrength"] = emissiveStrength;
+			j["emissiveLuminance"] = emissiveStrength * Tga::Photometry::kNitsPerUnit;   // cd/m², preferred on load
 			j["normalStrength"]   = normalStrength;
 			j["previewMesh"]      = previewMesh;
 			j["maps"] = {

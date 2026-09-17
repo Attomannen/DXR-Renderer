@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <tge/debugging/CpuProfiler.h>
 #include "ModelFactory.h"
 
 #include <fstream>
@@ -8,6 +9,8 @@
 #include <cmath>
 #include <chrono>
 #include <unordered_map>
+#include <thread>
+#include <new>
 #include <nlohmann/json.hpp>
 #include <tge/application.h>
 #include <tge/settings/settings.h>
@@ -672,6 +675,7 @@ bool ModelFactory::InitUnitCylinder()
 
 bool ModelFactory::InitPrimitives()
 {
+	TGA_CPU_SCOPE("Primitive meshes");
 	if (!InitUnitCube())
 		return false;
 
@@ -1126,13 +1130,28 @@ namespace
 	//  unaffected.
 	// ---------------------------------------------------------------------
 	constexpr uint32_t kMeshCacheMagic   = 0x434D4754u; // 'TGMC'
-	constexpr uint32_t kMeshCacheVersion = 3u;           // v3: sub-meshes merged by material at import
+	constexpr uint32_t kMeshCacheVersion = 4u;           // v4: layout 2 (compact + colour0 + uv1)
 
 	// Most static meshes only use position / normal / tangent / binormal / uv0.
 	// Those are stored as 15 floats/vertex instead of the full ~208-byte Vertex.
 	// A mesh that actually uses vertex colours, extra UV sets or skin weights is
 	// flagged and stored in full, so correctness never depends on the guess.
 	constexpr uint32_t kCompactFloats = 15u;
+
+	// Layout 2: the compact set plus the first vertex colour and second UV set,
+	// which many DCC exports (Bistro included) carry on every vertex. 21 floats
+	// instead of the full 180-byte Vertex.
+	constexpr uint32_t kCompactColorFloats = 21u;
+
+	bool VertexIsCompactColorSafe(const Tga::Vertex& v)
+	{
+		auto nz2 = [](const Tga::Vector2f& a) { return a.x != 0.f || a.y != 0.f; };
+		auto nz4 = [](const Tga::Vector4f& a) { return a.x != 0.f || a.y != 0.f || a.z != 0.f || a.w != 0.f; };
+		if (nz4(v.vertexColors[1]) || nz4(v.vertexColors[2]) || nz4(v.vertexColors[3])) return false;
+		if (nz2(v.uvs[2]) || nz2(v.uvs[3])) return false;
+		if (nz4(v.bones) || nz4(v.weights)) return false;
+		return true;
+	}
 
 	bool VertexIsCompactSafe(const Tga::Vertex& v)
 	{
@@ -1169,61 +1188,156 @@ namespace
 		return true;
 	}
 
+	// Read-only view of a whole file; the OS pages it in as it is touched.
+	struct MappedFile
+	{
+		HANDLE file = INVALID_HANDLE_VALUE, mapping = nullptr;
+		const uint8_t* data = nullptr;
+		uint64_t size = 0;
+		explicit MappedFile(const std::string& path)
+		{
+			file = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+			if (file == INVALID_HANDLE_VALUE) return;
+			LARGE_INTEGER li{};
+			if (!GetFileSizeEx(file, &li) || li.QuadPart == 0) return;
+			size = (uint64_t)li.QuadPart;
+			mapping = CreateFileMappingA(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
+			if (mapping) data = static_cast<const uint8_t*>(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0));
+		}
+		~MappedFile()
+		{
+			if (data) UnmapViewOfFile(data);
+			if (mapping) CloseHandle(mapping);
+			if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+		}
+	};
+
+	struct CacheCursor
+	{
+		const uint8_t* at;
+		const uint8_t* end;
+		bool ok = true;
+		const uint8_t* Take(uint64_t n)
+		{
+			if (!ok || uint64_t(end - at) < n) { ok = false; return nullptr; }
+			const uint8_t* p = at; at += n; return p;
+		}
+		template <class T> T Read() { T v{}; if (const uint8_t* p = Take(sizeof(T))) memcpy(&v, p, sizeof(T)); return v; }
+		std::string ReadStr() { const uint32_t n = Read<uint32_t>(); const uint8_t* p = Take(n); return p ? std::string((const char*)p, n) : std::string(); }
+	};
+
+	// Expands compact vertices into full Vertex records, split across threads
+	// for large meshes (this is pure memory throughput).
+	void DecodeVertices(uint8_t layout, const uint8_t* src, uint32_t count, Tga::Vertex* dst)
+	{
+		const uint32_t floats = layout == 2 ? kCompactColorFloats : kCompactFloats;
+		auto decode = [=](uint32_t first, uint32_t last)
+		{
+			for (uint32_t v = first; v < last; ++v)
+			{
+				float f[kCompactColorFloats];
+				memcpy(f, src + (size_t)v * floats * sizeof(float), floats * sizeof(float));
+				Tga::Vertex* o = new (dst + v) Tga::Vertex();
+				o->position = { f[0], f[1], f[2], 1.0f };
+				o->normal   = { f[4], f[5], f[6] };
+				o->tangent  = { f[7], f[8], f[9] };
+				o->binormal = { f[10], f[11], f[12] };
+				o->uvs[0]   = { f[13], f[14] };
+				if (layout == 2)
+				{
+					o->vertexColors[0] = { f[15], f[16], f[17], f[18] };
+					o->uvs[1] = { f[19], f[20] };
+				}
+			}
+		};
+		constexpr uint32_t kChunk = 1u << 18;
+		if (count <= kChunk) { decode(0, count); return; }
+		const uint32_t threads = std::clamp(std::thread::hardware_concurrency(), 1u, 16u);
+		const uint32_t per = (count + threads - 1) / threads;
+		std::vector<std::thread> pool;
+		for (uint32_t t = 1; t < threads; ++t)
+		{
+			const uint32_t first = t * per;
+			if (first >= count) break;
+			pool.emplace_back(decode, first, std::min(count, first + per));
+		}
+		decode(0, std::min(count, per));
+		for (std::thread& t : pool) t.join();
+	}
+
 	bool TryLoadMeshCache(const std::string& cachePath, const char* fbxPath,
 	                      Tga::Model* outModel, const std::string& modelPathForInit)
 	{
+		TGA_CPU_SCOPE("Mesh cache read");
 		int64_t fbxTime = 0; uint64_t fbxSize = 0;
 		if (!CacheFileStamp(fbxPath, fbxTime, fbxSize)) return false;
 
-		std::ifstream in(cachePath, std::ios::binary);
-		if (!in) return false;
+		MappedFile file(cachePath);
+		if (!file.data) return false;
+		CacheCursor in{ file.data, file.data + file.size };
 
-		uint32_t magic = 0, version = 0; CacheR(in, magic); CacheR(in, version);
-		if (magic != kMeshCacheMagic || version != kMeshCacheVersion) return false;
-		int64_t cachedTime = 0; uint64_t cachedSize = 0; CacheR(in, cachedTime); CacheR(in, cachedSize);
-		if (cachedTime != fbxTime || cachedSize != fbxSize) return false;
+		if (in.Read<uint32_t>() != kMeshCacheMagic || in.Read<uint32_t>() != kMeshCacheVersion) return false;
+		const int64_t cachedTime = in.Read<int64_t>();
+		const uint64_t cachedSize = in.Read<uint64_t>();
+		if (!in.ok || cachedTime != fbxTime || cachedSize != fbxSize) return false;
 
-		uint32_t meshCount = 0; CacheR(in, meshCount);
+		const uint32_t meshCount = in.Read<uint32_t>();
 		if (meshCount == 0 || meshCount > MAX_MESHES_PER_MODEL) return false;
 
+		Tga::rhi::IDevice* dev = Tga::DX11::Rhi();
 		std::vector<Tga::Model::MeshData> meshes(meshCount);
-		std::vector<float> scratch;
 		for (uint32_t m = 0; m < meshCount; ++m)
 		{
 			Tga::Model::MeshData& md = meshes[m];
-			md.name         = Tga::StringRegistry::RegisterOrGetString(CacheRStr(in));
-			md.materialName  = Tga::StringRegistry::RegisterOrGetString(CacheRStr(in));
-			CacheR(in, md.bounds);
+			md.name         = Tga::StringRegistry::RegisterOrGetString(in.ReadStr());
+			md.materialName = Tga::StringRegistry::RegisterOrGetString(in.ReadStr());
+			md.bounds = in.Read<Tga::BoxSphereBounds>();
 
-			uint8_t layout = 0; CacheR(in, layout);   // 0 compact, 1 full
-			uint32_t vc = 0; CacheR(in, vc); md.vertices.assign(vc, Tga::Vertex{});
-			if (layout == 1)
-			{
-				if (vc) in.read(reinterpret_cast<char*>(md.vertices.data()), (std::streamsize)vc * sizeof(Tga::Vertex));
-			}
-			else
-			{
-				scratch.resize((size_t)vc * kCompactFloats);
-				if (vc) in.read(reinterpret_cast<char*>(scratch.data()), (std::streamsize)scratch.size() * sizeof(float));
-				for (uint32_t v = 0; v < vc; ++v)
-				{
-					const float* f = &scratch[(size_t)v * kCompactFloats];
-					Tga::Vertex& o = md.vertices[v];
-					o.position = { f[0], f[1], f[2], 1.0f };
-					o.normal   = { f[4], f[5], f[6] };
-					o.tangent  = { f[7], f[8], f[9] };
-					o.binormal = { f[10], f[11], f[12] };
-					o.uvs[0]   = { f[13], f[14] };
-				}
-			}
+			const uint8_t layout = in.Read<uint8_t>();   // 0 compact, 1 full, 2 compact + colour/uv1
+			const uint32_t vc = in.Read<uint32_t>();
+			const uint64_t vertexBytes = layout == 1 ? (uint64_t)vc * sizeof(Tga::Vertex)
+				: (uint64_t)vc * (layout == 2 ? kCompactColorFloats : kCompactFloats) * sizeof(float);
+			const uint8_t* vertexData = in.Take(vertexBytes);
+			const uint32_t ic = in.Read<uint32_t>();
+			const uint8_t* indexData = in.Take((uint64_t)ic * sizeof(unsigned int));
+			if (!in.ok || layout > 2) return false;
 
-			uint32_t ic = 0; CacheR(in, ic); md.indices.resize(ic);
-			if (ic) in.read(reinterpret_cast<char*>(md.indices.data()), (std::streamsize)ic * sizeof(unsigned int));
-			if (!in) return false;
-			CacheCreateBuffers(md);   // a failed mesh keeps null buffers and is skipped at draw time
+			md.stride = sizeof(Tga::Vertex);
+			md.offset = 0;
+			if (vc == 0 || ic == 0) continue;   // a mesh without geometry keeps null buffers and is skipped at draw time
+
+			TGA_CPU_SCOPE("Mesh GPU buffers");
+			Tga::rhi::BufferDesc vbd{};
+			vbd.byteSize = (UINT)((uint64_t)vc * sizeof(Tga::Vertex));
+			vbd.stride = sizeof(Tga::Vertex);
+			vbd.usage = Tga::rhi::BufferUsage::Vertex | Tga::rhi::BufferUsage::ByteAddress;
+			vbd.memory = Tga::rhi::MemoryType::Default;
+			vbd.debugName = "Mesh_VB";
+			const Tga::rhi::BufferHandle vb = layout == 1
+				? dev->CreateBuffer(vbd, vertexData)
+				: dev->CreateBufferWith(vbd, [&](void* mapped) { DecodeVertices(layout, vertexData, vc, static_cast<Tga::Vertex*>(mapped)); });
+
+			Tga::rhi::BufferDesc ibd{};
+			ibd.byteSize = (UINT)((uint64_t)ic * sizeof(unsigned int));
+			ibd.stride = sizeof(unsigned int);
+			ibd.usage = Tga::rhi::BufferUsage::Index | Tga::rhi::BufferUsage::ByteAddress;
+			ibd.memory = Tga::rhi::MemoryType::Default;
+			ibd.debugName = "Mesh_IB";
+			const Tga::rhi::BufferHandle ib = vb.IsValid() ? dev->CreateBuffer(ibd, indexData) : Tga::rhi::BufferHandle{};
+			if (!vb.IsValid() || !ib.IsValid())
+			{
+				ERROR_PRINT("mesh '%s': GPU buffer creation failed", md.name.GetString());
+				if (vb.IsValid()) dev->Destroy(vb);
+				continue;
+			}
+			md.vertexBuffer = vb;
+			md.indexBuffer = ib;
+			md.numberOfVertices = vc;
+			md.numberOfIndices = ic;
 		}
 
-		outModel->Init(meshes, modelPathForInit);
+		TGA_CPU_SCOPE("Model init");
+		outModel->Init(std::move(meshes), modelPathForInit);
 		return true;
 	}
 
@@ -1249,18 +1363,29 @@ namespace
 			CacheWStr(out, std::string(md.materialName.GetStringView()));
 			CacheW(out, md.bounds);
 
-			bool compact = true;
-			for (const Tga::Vertex& v : md.vertices) { if (!VertexIsCompactSafe(v)) { compact = false; break; } }
-			const uint8_t layout = compact ? 0u : 1u; CacheW(out, layout);
+			bool compact = true, compactColor = true;
+			for (const Tga::Vertex& v : md.vertices)
+			{
+				compact = compact && VertexIsCompactSafe(v);
+				compactColor = compactColor && VertexIsCompactColorSafe(v);
+				if (!compactColor) break;
+			}
+			const uint8_t layout = compact ? 0u : compactColor ? 2u : 1u; CacheW(out, layout);
 
 			const uint32_t vc = (uint32_t)md.vertices.size(); CacheW(out, vc);
-			if (compact)
+			if (layout != 1)
 			{
-				scratch.resize((size_t)vc * kCompactFloats);
+				const uint32_t floats = layout == 2 ? kCompactColorFloats : kCompactFloats;
+				scratch.assign((size_t)vc * floats, 0.0f);
 				for (uint32_t v = 0; v < vc; ++v)
 				{
 					const Tga::Vertex& s = md.vertices[v];
-					float* f = &scratch[(size_t)v * kCompactFloats];
+					float* f = &scratch[(size_t)v * floats];
+					if (layout == 2)
+					{
+						f[15] = s.vertexColors[0].x; f[16] = s.vertexColors[0].y; f[17] = s.vertexColors[0].z; f[18] = s.vertexColors[0].w;
+						f[19] = s.uvs[1].x; f[20] = s.uvs[1].y;
+					}
 					f[0] = s.position.x; f[1] = s.position.y; f[2] = s.position.z; f[3] = s.position.w;
 					f[4] = s.normal.x;   f[5] = s.normal.y;   f[6] = s.normal.z;
 					f[7] = s.tangent.x;  f[8] = s.tangent.y;  f[9] = s.tangent.z;
@@ -1381,6 +1506,7 @@ static void GenerateTangents(std::vector<Vertex>& verts, const std::vector<uint3
 
 std::shared_ptr<Model> ModelFactory::LoadModel(StringId someFilePath)
 {
+	TGA_CPU_SCOPE("Model load");
 	if (someFilePath.IsEmpty())
 		return nullptr;
 	FilePathStream resolved_path;
@@ -1410,7 +1536,11 @@ std::shared_ptr<Model> ModelFactory::LoadModel(StringId someFilePath)
 
 
 	ufbx_error error;
-	ufbx_scene* scene = ufbx_load_file(resolved_path.GetData(), &opts, &error);
+	ufbx_scene* scene = nullptr;
+	{
+		TGA_CPU_SCOPE("FBX parse (ufbx)");
+		scene = ufbx_load_file(resolved_path.GetData(), &opts, &error);
+	}
 
 	if (!scene)
 	{

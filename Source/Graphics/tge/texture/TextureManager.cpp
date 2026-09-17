@@ -1,6 +1,7 @@
 ﻿#include "stdafx.h"
 
 #include <tge/texture/TextureManager.h>
+#include <tge/debugging/CpuProfiler.h>
 #include <DDSTextureLoader/DDSTextureLoader11.h>
 #include <WICTextureLoader/WICTextureLoader11.h>
 #include <DirectXTex/DirectXTex.h>
@@ -19,6 +20,9 @@
 #include <tge/settings/settings.h>
 #include <tge/util/StringCast.h>
 #include <tge/util/FixedStream.h>
+#include <atomic>
+#include <mutex>
+#include <thread>
 #include <tge/stringRegistry/StringRegistry.h>
 
 //  Define min max macros required by GDI+ headers.
@@ -389,9 +393,58 @@ Texture* TextureManager::TryGetTexture(const char* aTexturePath, TextureSrgbMode
 // backends -- Dx12Device::CreateTexture's upload path (GetCopyableFootprints)
 // is already fully general over mip count and block-compressed formats, so
 // nothing needed to change there.
+struct TextureManager::PrefetchedImage
+{
+	DirectX::TexMetadata metadata = {};
+	DirectX::ScratchImage image;
+};
+
+void TextureManager::PrefetchTextures(const std::vector<std::string>& aTexturePaths)
+{
+	TGA_CPU_SCOPE("Texture prefetch (parallel read)");
+	std::vector<std::wstring> paths;
+	paths.reserve(aTexturePaths.size());
+	for (const std::string& path : aTexturePaths)
+	{
+		FilePathStream resolved;
+		if (path.empty() || !Settings::ResolveAssetPath(path.c_str(), resolved)) continue;
+		std::wstring w = string_cast<std::wstring>(std::string(resolved.GetStringView()));
+		if (myPrefetched.count(w)) continue;
+		myPrefetched.emplace(w, nullptr);
+		paths.push_back(std::move(w));
+	}
+	if (paths.empty()) return;
+
+	std::vector<std::unique_ptr<PrefetchedImage>> images(paths.size());
+	std::atomic<size_t> next{ 0 };
+	auto worker = [&]()
+	{
+		for (size_t i = next++; i < paths.size(); i = next++)
+		{
+			auto img = std::make_unique<PrefetchedImage>();
+			if (SUCCEEDED(DirectX::LoadFromDDSFile(paths[i].c_str(), DirectX::DDS_FLAGS_NONE, &img->metadata, img->image)))
+				images[i] = std::move(img);
+		}
+	};
+	const unsigned threadCount = std::clamp(std::thread::hardware_concurrency(), 2u, 16u);
+	std::vector<std::thread> threads;
+	for (unsigned t = 1; t < threadCount; ++t) threads.emplace_back(worker);
+	worker();
+	for (std::thread& t : threads) t.join();
+
+	for (size_t i = 0; i < paths.size(); ++i)
+		myPrefetched[paths[i]] = std::move(images[i]);
+}
+
+void TextureManager::ClearPrefetchedTextures()
+{
+	myPrefetched.clear();
+}
+
 Texture* TextureManager::LoadTextureDx12(rhi::IDevice& aDevice, const char* aResolvedPathUtf8, const std::wstring& aResolvedPathW,
                                           const char* aUnresolvedPath, TextureSrgbMode aSrgbMode, Texture* aExistingTexture)
 {
+	TGA_CPU_SCOPE("Texture load (DX12)");
 	if (!DX11::IsOnSameThreadAsEngine())
 	{
 		INFO_PRINT("Trying to load a non-dds or a wierd format of dds on another thread than the engine. This is not supported, choose a correct dds format");
@@ -400,7 +453,19 @@ Texture* TextureManager::LoadTextureDx12(rhi::IDevice& aDevice, const char* aRes
 
 	DirectX::TexMetadata metadata = {};
 	DirectX::ScratchImage image;
-	HRESULT hr = DirectX::LoadFromDDSFile(aResolvedPathW.c_str(), DirectX::DDS_FLAGS_NONE, &metadata, image);
+	HRESULT hr = E_FAIL;
+	if (auto it = myPrefetched.find(aResolvedPathW); it != myPrefetched.end() && it->second)
+	{
+		metadata = it->second->metadata;
+		image = std::move(it->second->image);
+		myPrefetched.erase(it);
+		hr = S_OK;
+	}
+	else
+	{
+		TGA_CPU_SCOPE("DDS read");
+		hr = DirectX::LoadFromDDSFile(aResolvedPathW.c_str(), DirectX::DDS_FLAGS_NONE, &metadata, image);
+	}
 	const bool wasDds = SUCCEEDED(hr);
 
 	if (FAILED(hr))
