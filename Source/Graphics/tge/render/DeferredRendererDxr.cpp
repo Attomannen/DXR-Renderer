@@ -436,7 +436,12 @@ void DeferredRenderer::DenoiseDxrDiffuse(rhi::ICommandContext& ctx)
 	rhi::IDevice* dev = DX11::Rhi();
 	auto* dx12Ctx = static_cast<rhi::dx12::Dx12CommandContext*>(&ctx);
 	const auto denoiser = myTunables.nrdDenoiser == 0 ? rhi::dx12::NrdWrapper::Denoiser::Reblur : rhi::dx12::NrdWrapper::Denoiser::Relax;
-	if (myNrd && myNrd->GetDenoiser() != denoiser)
+	// Rebuild on a resolution change as well as a denoiser change: NRD's pool is
+	// sized once at creation, while CommonSettings::resourceSize is sent every
+	// frame, so a stale instance is asked to address resources larger than the
+	// ones it allocated.
+	if (myNrd && (myNrd->GetDenoiser() != denoiser
+		|| myNrd->Width() != myDxrRenderResolution.x || myNrd->Height() != myDxrRenderResolution.y))
 		myNrd.reset();
 	if (!myNrd)
 	{

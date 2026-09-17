@@ -7,7 +7,9 @@
 // NRDIntegration compiles its checks out of Release builds, which turns every
 // misconfiguration into a crash somewhere later inside NRI. Report them instead.
 #ifndef NRD_INTEGRATION_ASSERT
-#	define NRD_INTEGRATION_ASSERT(expr, msg) do { if (!(expr)) std::printf("NRD: %s\n", msg); } while (0)
+// Flushed, because the failure this reports is followed immediately by a fault
+// deep inside NRI -- a buffered message never reaches the log.
+#	define NRD_INTEGRATION_ASSERT(expr, msg) do { if (!(expr)) { std::printf("NRD: %s\n", msg); std::fflush(stdout); } } while (0)
 #endif
 
 #include "NRD.h"
@@ -68,6 +70,11 @@ namespace Tga::rhi::dx12
 		void Destroy();
 		bool IsValid() const { return m_Initialized; }
 		Denoiser GetDenoiser() const { return m_Denoiser; }
+		// NRD sizes its whole resource pool at creation. CommonSettings then
+		// reports resourceSize every frame, and NRD trusts it -- so if the render
+		// resolution changes the instance has to be rebuilt, not reused.
+		uint32_t Width() const { return m_Width; }
+		uint32_t Height() const { return m_Height; }
 
 		void Configure(const Settings& aSettings);
 		// The frameIndex the next Denoise call will use (sets the checkerboard phase).
@@ -83,6 +90,7 @@ namespace Tga::rhi::dx12
 		Denoiser m_Denoiser = Denoiser::Reblur;
 		Settings m_Settings;
 		uint32_t m_FrameIndex = 0;
+		uint32_t m_Width = 0, m_Height = 0;
 		bool m_Initialized = false;
 	};
 }

@@ -31,6 +31,16 @@ namespace Tga::rhi::dx12
 	{
 		Destroy();
 
+		// A zero extent allocates nothing, and the first dispatch then builds
+		// views over resources that do not exist -- which faults deep inside
+		// NRI rather than reporting anything.
+		if (width == 0 || height == 0)
+		{
+			ERROR_PRINT("NRD: refusing to initialise at %ux%u", width, height);
+			return false;
+		}
+		m_Width = width; m_Height = height;
+
 		m_Queue = static_cast<ID3D12CommandQueue*>(device->GetNativeCommandQueue());
 		nri::QueueFamilyD3D12Desc queueDesc = {};
 		queueDesc.d3d12Queues = &m_Queue;
