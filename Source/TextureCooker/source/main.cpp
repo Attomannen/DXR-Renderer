@@ -1363,6 +1363,7 @@ struct Args
 	bool srcNormalsGl = true;
 	bool noNvtt = false;
 	bool unrealPacking = true;   // --packing unreal|tga
+	bool scanAlpha = false;      // --scan-alpha : only refresh baseColorHasAlpha
 	std::string nvttPath;
 	std::string nvttQuality;
 	int jobs = 0;   // 0 -> hardware_concurrency
@@ -1393,6 +1394,7 @@ static bool ParseArgs(int argc, char** argv, Args& a)
 		else if (k == "--manifest") a.manifest = next();
 		else if (k == "--src-normals") a.srcNormalsGl = (ToLower(next()) != "dx");
 		else if (k == "--flip-green") a.flipGreen = true;
+		else if (k == "--scan-alpha") a.scanAlpha = true;
 		else if (k == "--packing")
 		{
 			const std::string packing = ToLower(next());
@@ -1425,6 +1427,8 @@ static bool ParseArgs(int argc, char** argv, Args& a)
 		else if (k == "-h" || k == "--help") return false;
 		else { std::cerr << "unknown arg: " << k << "\n"; return false; }
 	}
+	// --scan-alpha rewrites materials in place, so it needs only one directory.
+	if (a.scanAlpha) return !a.in.empty() || !a.out.empty();
 	return !a.in.empty() && !a.out.empty();
 }
 
@@ -1439,11 +1443,65 @@ int main(int argc, char** argv)
 			"              [--game-root <dir>] [--manifest <cook.json>]\n"
 			"              [--src-normals gl|dx] [--flip-green] [--cpu] [--jobs N]\n"
 			"              [--only c,n,m,fx] [--packing unreal|tga] [--force] [--recursive] [--quiet]\n"
+			"              [--scan-alpha] refresh baseColorHasAlpha / surfaceType in existing .tgmat\n"
 			"              bare .hdr inputs -> <stem>.dds (R16G16B16A16_FLOAT)\n";
 		return 2;
 	}
 	gLog.quiet = a.quiet;
 	gUnrealPacking = a.unrealPacking;
+
+	// --scan-alpha: no cooking. Reads each .tgmat's base colour map and records
+	// whether it carries cutout alpha, so ray tracing can skip the alpha test on
+	// materials that provably have none. Lets already-cooked content pick that
+	// up without re-cooking it from the source textures.
+	if (a.scanAlpha)
+	{
+		const fs::path root = a.out.empty() ? a.in : a.out;
+		if (root.empty()) { std::cout << "--scan-alpha needs --in (or --out)\n"; return 2; }
+		int scanned = 0, cutout = 0, changed = 0;
+		std::error_code ec;
+		auto scanOne = [&](const fs::path& file)
+		{
+			std::ifstream in(file);
+			if (!in) return;
+			json j;
+			try { in >> j; } catch (...) { gLog.warn("cannot parse " + file.filename().string()); return; }
+			in.close();
+			std::string baseColor = j.contains("maps") ? j["maps"].value("albedo", std::string()) : std::string();
+			if (baseColor.empty()) return;
+			std::replace(baseColor.begin(), baseColor.end(), '\\', '/');
+			fs::path mapPath = file.parent_path() / fs::path(baseColor).filename();
+			if (!fs::exists(mapPath, ec) && !a.gameRoot.empty()) mapPath = a.gameRoot / baseColor;
+			if (!fs::exists(mapPath, ec)) { gLog.warn("base colour map not found for " + file.filename().string()); return; }
+
+			++scanned;
+			const bool hasAlpha = BaseColorHasCutout(mapPath);
+			if (hasAlpha) ++cutout;
+			const std::string surface = j.value("surfaceType", std::string("Opaque"));
+			const bool sameFlag = j.contains("baseColorHasAlpha") && j["baseColorHasAlpha"].get<bool>() == hasAlpha;
+			const bool sameSurface = surface == "Transparent" || (surface == "Masked") == hasAlpha;
+			if (sameFlag && sameSurface) return;
+			j["baseColorHasAlpha"] = hasAlpha;
+			// Only Opaque <-> Masked; an authored Transparent material stays glass.
+			if (surface != "Transparent") j["surfaceType"] = hasAlpha ? "Masked" : "Opaque";
+			std::ofstream(file) << j.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
+			++changed;
+			gLog.info("  " + file.filename().string() + (hasAlpha ? " -> Masked (cutout alpha)" : " -> Opaque"));
+		};
+		if (a.recursive)
+		{
+			for (const auto& entry : fs::recursive_directory_iterator(root, ec))
+				if (!ec && entry.is_regular_file() && ToLower(entry.path().extension().string()) == ".tgmat") scanOne(entry.path());
+		}
+		else
+		{
+			for (const auto& entry : fs::directory_iterator(root, ec))
+				if (!ec && entry.is_regular_file() && ToLower(entry.path().extension().string()) == ".tgmat") scanOne(entry.path());
+		}
+		std::cout << "scanned " << scanned << " material(s), " << cutout << " with cutout alpha, "
+			<< changed << " updated\n";
+		return 0;
+	}
 	if (a.gameRoot.empty()) a.gameRoot = a.out;
 
 	Manifest manifest;
