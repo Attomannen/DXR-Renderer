@@ -325,15 +325,8 @@ bool ModelFactory::InitUnitCube()
 	//const Vector3f boxExtents = 0.5f * (maxExtents - minExtents);
 	//const float myBoxSphereRadius = FMath::Max(boxExtents.X, FMath::Max(boxExtents.Y, boxExtents.Z));
 
-	rhi::BufferDesc vertexBufferDesc{};
-	vertexBufferDesc.byteSize = static_cast<UINT>(meshData.vertices.size()) * static_cast<UINT>(sizeof(Vertex));
-	vertexBufferDesc.stride = sizeof(Vertex);
-	vertexBufferDesc.usage = rhi::BufferUsage::Vertex | rhi::BufferUsage::ByteAddress;
-	vertexBufferDesc.memory = rhi::MemoryType::Default;
-	vertexBufferDesc.debugName = "Cube_VB";
-
-	rhi::BufferHandle vertexBuffer = DX11::Rhi()->CreateBuffer(vertexBufferDesc, &meshData.vertices[0]);
-	if (!vertexBuffer.IsValid())
+	if (!Model::CreateVertexBuffer(meshData, meshData.vertices.data(), (uint32_t)meshData.vertices.size(),
+		Model::VertexFormat::Compact, "Cube_VB"))
 	{
 		return false;
 	}
@@ -355,9 +348,6 @@ bool ModelFactory::InitUnitCube()
 
 	meshData.numberOfVertices = static_cast<UINT>(meshData.vertices.size());
 	meshData.numberOfIndices = static_cast<UINT>(meshData.indices.size());
-	meshData.stride = sizeof(Vertex);
-	meshData.offset = 0;
-	meshData.vertexBuffer = vertexBuffer;
 	meshData.indexBuffer = indexBuffer;
 	meshData.bounds = CalculateBoxSphereBounds(meshData.vertices);
 	model->Init(meshData, "Cube");
@@ -416,15 +406,8 @@ bool ModelFactory::InitUnitPlane()
 	//const Vector3f boxExtents = 0.5f * (maxExtents - minExtents);
 	//const float myBoxSphereRadius = FMath::Max(boxExtents.X, FMath::Max(boxExtents.Y, boxExtents.Z));
 
-	rhi::BufferDesc vertexBufferDesc{};
-	vertexBufferDesc.byteSize = static_cast<UINT>(meshData.vertices.size()) * static_cast<UINT>(sizeof(Vertex));
-	vertexBufferDesc.stride = sizeof(Vertex);
-	vertexBufferDesc.usage = rhi::BufferUsage::Vertex | rhi::BufferUsage::ByteAddress;
-	vertexBufferDesc.memory = rhi::MemoryType::Default;
-	vertexBufferDesc.debugName = "Plane_VB";
-
-	rhi::BufferHandle vertexBuffer = DX11::Rhi()->CreateBuffer(vertexBufferDesc, &meshData.vertices[0]);
-	if (!vertexBuffer.IsValid())
+	if (!Model::CreateVertexBuffer(meshData, meshData.vertices.data(), (uint32_t)meshData.vertices.size(),
+		Model::VertexFormat::Compact, "Plane_VB"))
 	{
 		return false;
 	}
@@ -446,9 +429,6 @@ bool ModelFactory::InitUnitPlane()
 
 	meshData.numberOfVertices = static_cast<UINT>(meshData.vertices.size());
 	meshData.numberOfIndices = static_cast<UINT>(meshData.indices.size());
-	meshData.stride = sizeof(Vertex);
-	meshData.offset = 0;
-	meshData.vertexBuffer = vertexBuffer;
 	meshData.indexBuffer = indexBuffer;
 	meshData.bounds = CalculateBoxSphereBounds(meshData.vertices);
 	model->Init(meshData, "Plane");
@@ -464,14 +444,8 @@ bool ModelFactory::InitUnitPlane()
 static bool FinalizePrimitive(Model::MeshData& meshData, const char* aName, StringId aId,
 	std::unordered_map<StringId, std::shared_ptr<Model>>& aRegistry)
 {
-	rhi::BufferDesc vbDesc{};
-	vbDesc.byteSize = static_cast<UINT>(meshData.vertices.size()) * static_cast<UINT>(sizeof(Vertex));
-	vbDesc.stride = sizeof(Vertex);
-	vbDesc.usage = rhi::BufferUsage::Vertex | rhi::BufferUsage::ByteAddress;
-	vbDesc.memory = rhi::MemoryType::Default;
-	vbDesc.debugName = "Primitive_VB";
-	rhi::BufferHandle vertexBuffer = DX11::Rhi()->CreateBuffer(vbDesc, meshData.vertices.data());
-	if (!vertexBuffer.IsValid())
+	if (!Model::CreateVertexBuffer(meshData, meshData.vertices.data(), (uint32_t)meshData.vertices.size(),
+		Model::VertexFormat::Compact, "Primitive_VB"))
 		return false;
 
 	rhi::BufferDesc ibDesc{};
@@ -486,9 +460,6 @@ static bool FinalizePrimitive(Model::MeshData& meshData, const char* aName, Stri
 
 	meshData.numberOfVertices = static_cast<UINT>(meshData.vertices.size());
 	meshData.numberOfIndices = static_cast<UINT>(meshData.indices.size());
-	meshData.stride = sizeof(Vertex);
-	meshData.offset = 0;
-	meshData.vertexBuffer = vertexBuffer;
 	meshData.indexBuffer = indexBuffer;
 	// meshData.bounds is filled by the caller (member fn can reach CalculateBoxSphereBounds).
 
@@ -993,15 +964,12 @@ namespace
 		return b;
 	}
 
-	bool CacheCreateBuffers(Tga::Model::MeshData& md)
+	bool CacheCreateBuffers(Tga::Model::MeshData& md, Tga::Model::VertexFormat format)
 	{
 		md.vertexBuffer = {};
 		md.indexBuffer  = {};
 		md.numberOfVertices = 0;
 		md.numberOfIndices  = 0;
-		md.stride = sizeof(Tga::Vertex);
-		md.offset = 0;
-
 		if (md.vertices.empty() || md.indices.empty())
 		{
 			ERROR_PRINT("mesh '%s': empty geometry (%zu verts, %zu indices) - skipped",
@@ -1009,22 +977,13 @@ namespace
 			return false;
 		}
 
-		const uint64_t vbytes = (uint64_t)md.vertices.size() * sizeof(Tga::Vertex);
-		if (vbytes > 0xFFFFFFFFull)
+		Tga::rhi::IDevice* dev = Tga::DX11::Rhi();
+		if (!Tga::Model::CreateVertexBuffer(md, md.vertices.data(), (uint32_t)md.vertices.size(), format, "Mesh_VB"))
 		{
-			ERROR_PRINT("mesh '%s': vertex buffer %llu bytes exceeds 4 GB - skipped", md.name.GetString(), vbytes);
+			ERROR_PRINT("mesh '%s': vertex buffer create failed (%zu verts)", md.name.GetString(), md.vertices.size());
 			return false;
 		}
-
-		Tga::rhi::BufferDesc vbd{};
-		vbd.byteSize = (UINT)vbytes;
-		vbd.stride = sizeof(Tga::Vertex);
-		vbd.usage = Tga::rhi::BufferUsage::Vertex | Tga::rhi::BufferUsage::ByteAddress;
-		vbd.memory = Tga::rhi::MemoryType::Default;
-		vbd.debugName = "Mesh_VB";
-		Tga::rhi::IDevice* dev = Tga::DX11::Rhi();
-		Tga::rhi::BufferHandle vb = dev->CreateBuffer(vbd, md.vertices.data());
-		if (!vb.IsValid()) { ERROR_PRINT("mesh '%s': vertex buffer create failed", md.name.GetString()); return false; }
+		const Tga::rhi::BufferHandle vb = md.vertexBuffer;
 
 		Tga::rhi::BufferDesc ibd{};
 		ibd.byteSize = (UINT)(md.indices.size() * sizeof(unsigned int));
@@ -1033,11 +992,10 @@ namespace
 		ibd.memory = Tga::rhi::MemoryType::Default;
 		ibd.debugName = "Mesh_IB";
 		Tga::rhi::BufferHandle ib = dev->CreateBuffer(ibd, md.indices.data());
-		if (!ib.IsValid()) { ERROR_PRINT("mesh '%s': index buffer create failed", md.name.GetString()); dev->Destroy(vb); return false; }
+		if (!ib.IsValid()) { ERROR_PRINT("mesh '%s': index buffer create failed", md.name.GetString()); dev->Destroy(vb); md.vertexBuffer = {}; return false; }
 
 		md.numberOfVertices = (UINT)md.vertices.size();
 		md.numberOfIndices  = (UINT)md.indices.size();
-		md.vertexBuffer = vb;
 		md.indexBuffer  = ib;
 		return true;
 	}
@@ -1049,7 +1007,7 @@ namespace
 	// concatenating vertex/index data across submeshes doesn't touch skinning at
 	// all -- a merged mesh's vertices still point at the same global joint
 	// indices they always did.
-	void MergeMeshesByMaterial(std::vector<Tga::Model::MeshData>& meshes)
+	void MergeMeshesByMaterial(std::vector<Tga::Model::MeshData>& meshes, Tga::Model::VertexFormat format)
 	{
 		if (meshes.empty()) return;
 		if (!kMergeByMaterial || meshes.size() < 2)
@@ -1063,7 +1021,7 @@ namespace
 			for (Tga::Model::MeshData& md : meshes)
 			{
 				md.bounds = BoundsOf(md.vertices);
-				if (CacheCreateBuffers(md)) { ++okMeshes; totalTris += md.indices.size() / 3; }
+				if (CacheCreateBuffers(md, format)) { ++okMeshes; totalTris += md.indices.size() / 3; }
 			}
 			INFO_PRINT("mesh merge: %zu sub-mesh(es), nothing to merge -> %zu with geometry, %zu tris",
 				meshes.size(), okMeshes, totalTris);
@@ -1111,7 +1069,7 @@ namespace
 		for (Tga::Model::MeshData& md : out)
 		{
 			md.bounds = BoundsOf(md.vertices);
-			if (CacheCreateBuffers(md)) { ++okMeshes; totalTris += md.indices.size() / 3; }
+			if (CacheCreateBuffers(md, format)) { ++okMeshes; totalTris += md.indices.size() / 3; }
 		}
 
 		INFO_PRINT("mesh merge: %zu sub-meshes (%zu empty) -> %zu materials, %zu with geometry, %zu tris",
@@ -1130,7 +1088,7 @@ namespace
 	//  unaffected.
 	// ---------------------------------------------------------------------
 	constexpr uint32_t kMeshCacheMagic   = 0x434D4754u; // 'TGMC'
-	constexpr uint32_t kMeshCacheVersion = 4u;           // v4: layout 2 (compact + colour0 + uv1)
+	constexpr uint32_t kMeshCacheVersion = 4u;           // v4: layout 2 (compact + colour0 + uv1); GPU packing happens at load
 
 	// Most static meshes only use position / normal / tangent / binormal / uv0.
 	// Those are stored as 15 floats/vertex instead of the full ~208-byte Vertex.
@@ -1226,18 +1184,26 @@ namespace
 		std::string ReadStr() { const uint32_t n = Read<uint32_t>(); const uint8_t* p = Take(n); return p ? std::string((const char*)p, n) : std::string(); }
 	};
 
-	// Expands compact vertices into full Vertex records, split across threads
+	// Expands cached vertices into GPU MeshVertex records, split across threads
 	// for large meshes (this is pure memory throughput).
-	void DecodeVertices(uint8_t layout, const uint8_t* src, uint32_t count, Tga::Vertex* dst)
+	void DecodeVertices(uint8_t layout, const uint8_t* src, uint32_t count, Tga::MeshVertex* dst)
 	{
 		const uint32_t floats = layout == 2 ? kCompactColorFloats : kCompactFloats;
 		auto decode = [=](uint32_t first, uint32_t last)
 		{
 			for (uint32_t v = first; v < last; ++v)
 			{
+				if (layout == 1)
+				{
+					Tga::Vertex full;
+					memcpy(&full, src + (size_t)v * sizeof(Tga::Vertex), sizeof(Tga::Vertex));
+					dst[v] = Tga::PackMeshVertex(full);
+					continue;
+				}
 				float f[kCompactColorFloats];
 				memcpy(f, src + (size_t)v * floats * sizeof(float), floats * sizeof(float));
-				Tga::Vertex* o = new (dst + v) Tga::Vertex();
+				Tga::Vertex full;
+				Tga::Vertex* o = &full;
 				o->position = { f[0], f[1], f[2], 1.0f };
 				o->normal   = { f[4], f[5], f[6] };
 				o->tangent  = { f[7], f[8], f[9] };
@@ -1248,6 +1214,7 @@ namespace
 					o->vertexColors[0] = { f[15], f[16], f[17], f[18] };
 					o->uvs[1] = { f[19], f[20] };
 				}
+				dst[v] = Tga::PackMeshVertex(full);
 			}
 		};
 		constexpr uint32_t kChunk = 1u << 18;
@@ -1302,20 +1269,14 @@ namespace
 			const uint8_t* indexData = in.Take((uint64_t)ic * sizeof(unsigned int));
 			if (!in.ok || layout > 2) return false;
 
-			md.stride = sizeof(Tga::Vertex);
-			md.offset = 0;
+			Tga::Model::SetVertexFormat(md, Tga::Model::VertexFormat::Compact);
 			if (vc == 0 || ic == 0) continue;   // a mesh without geometry keeps null buffers and is skipped at draw time
 
 			TGA_CPU_SCOPE("Mesh GPU buffers");
-			Tga::rhi::BufferDesc vbd{};
-			vbd.byteSize = (UINT)((uint64_t)vc * sizeof(Tga::Vertex));
-			vbd.stride = sizeof(Tga::Vertex);
-			vbd.usage = Tga::rhi::BufferUsage::Vertex | Tga::rhi::BufferUsage::ByteAddress;
-			vbd.memory = Tga::rhi::MemoryType::Default;
-			vbd.debugName = "Mesh_VB";
-			const Tga::rhi::BufferHandle vb = layout == 1
-				? dev->CreateBuffer(vbd, vertexData)
-				: dev->CreateBufferWith(vbd, [&](void* mapped) { DecodeVertices(layout, vertexData, vc, static_cast<Tga::Vertex*>(mapped)); });
+			// The cache only holds static meshes, which always upload compact.
+			Tga::Model::CreateVertexBuffer(md, vc,
+				[&](Tga::MeshVertex* mapped) { DecodeVertices(layout, vertexData, vc, mapped); }, "Mesh_VB");
+			const Tga::rhi::BufferHandle vb = md.vertexBuffer;
 
 			Tga::rhi::BufferDesc ibd{};
 			ibd.byteSize = (UINT)((uint64_t)ic * sizeof(unsigned int));
@@ -1328,6 +1289,7 @@ namespace
 			{
 				ERROR_PRINT("mesh '%s': GPU buffer creation failed", md.name.GetString());
 				if (vb.IsValid()) dev->Destroy(vb);
+				md.vertexBuffer = {};
 				continue;
 			}
 			md.vertexBuffer = vb;
@@ -1777,44 +1739,18 @@ std::shared_ptr<Model> ModelFactory::LoadModel(StringId someFilePath)
 			meshData.materialName = ""_tgaid;
 		}
 
-		rhi::BufferDesc vbDesc{};
-		vbDesc.byteSize = UINT(meshData.vertices.size() * sizeof(Vertex));
-		vbDesc.stride = sizeof(Vertex);
-		vbDesc.usage = rhi::BufferUsage::Vertex | rhi::BufferUsage::ByteAddress;
-		vbDesc.memory = rhi::MemoryType::Default;
-		vbDesc.debugName = "Mesh_VB";
-
-		rhi::BufferHandle vb = DX11::Rhi()->CreateBuffer(vbDesc, meshData.vertices.data());
-		if (!vb.IsValid()) return nullptr;
-
-		rhi::BufferDesc ibDesc{};
-		ibDesc.byteSize = UINT(meshData.indices.size() * sizeof(uint32_t));
-		ibDesc.stride = sizeof(uint32_t);
-		ibDesc.usage = rhi::BufferUsage::Index | rhi::BufferUsage::ByteAddress;
-		ibDesc.memory = rhi::MemoryType::Default;
-		ibDesc.debugName = "Mesh_IB";
-
-		rhi::BufferHandle ib = DX11::Rhi()->CreateBuffer(ibDesc, meshData.indices.data());
-		if (!ib.IsValid()) return nullptr;
-
-		meshData.vertexBuffer = vb;
-		meshData.indexBuffer = ib;
-		meshData.numberOfVertices = (UINT)meshData.vertices.size();
-		meshData.numberOfIndices = (UINT)meshData.indices.size();
-		meshData.stride = sizeof(Vertex);
-		meshData.offset = 0;
-
+		// GPU buffers are created once, after same-material sub-meshes are merged.
 		mdlMeshData.push_back(std::move(meshData));
 		}
 	}
 
-	// The loop above emits one MeshData per (ufbx mesh, material-slot) pair,
-	// each with its own GPU buffers already created -- for a scene like Bistro
+	// The loop above emits one MeshData per (ufbx mesh, material-slot) pair
+	// -- for a scene like Bistro
 	// (many separate mesh objects sharing a handful of materials, e.g. dozens
 	// of individual streetlight/prop instances all using "Stringlights") that
 	// is ~1600 draws for ~130 actual materials. Collapse same-material entries
 	// into one draw per material, same as the SDK import path already does.
-	MergeMeshesByMaterial(mdlMeshData);
+	MergeMeshesByMaterial(mdlMeshData, mdlSkeleton.joints.empty() ? Model::VertexFormat::Compact : Model::VertexFormat::Full);
 
 	auto model = std::make_shared<Model>();
 	model->Init(mdlMeshData, resolvedStr);
@@ -2132,7 +2068,7 @@ void ModelFactory::PumpAsyncImports()
 			result.meshes[i].name = StringRegistry::RegisterOrGetString(result.names[i].first);
 			result.meshes[i].materialName = StringRegistry::RegisterOrGetString(result.names[i].second);
 		}
-		MergeMeshesByMaterial(result.meshes); // GPU creation happens here, on the render thread.
+		MergeMeshesByMaterial(result.meshes, result.skinned ? Model::VertexFormat::Full : Model::VertexFormat::Compact); // GPU creation happens here, on the render thread.
 		auto model = std::make_shared<Model>();
 		model->Init(result.meshes, job->resolvedPath);
 		WriteMeshCache(job->cachePath, job->resolvedPath.c_str(), result.meshes);
@@ -2314,7 +2250,7 @@ std::shared_ptr<Model> ModelFactory::LoadModel(StringId someFilePath)
 		// is bone-index-agnostic (see MergeMeshesByMaterial's comment), so this
 		// is safe for skinned meshes too.
 		const bool isStaticMesh = mdlSkeleton.joints.empty();
-		MergeMeshesByMaterial(mdlMeshData);
+		MergeMeshesByMaterial(mdlMeshData, isStaticMesh ? Model::VertexFormat::Compact : Model::VertexFormat::Full);
 
 		model->Init(mdlMeshData, std::string(resolved_path.GetStringView()));
 		if (!isStaticMesh)

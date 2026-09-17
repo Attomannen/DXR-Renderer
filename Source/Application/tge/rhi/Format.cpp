@@ -26,6 +26,7 @@ namespace Tga::rhi
 		case Format::R32_UInt:             return DXGI_FORMAT_R32_UINT;
 		case Format::R32G32_UInt:          return DXGI_FORMAT_R32G32_UINT;
 		case Format::R32G32B32A32_UInt:    return DXGI_FORMAT_R32G32B32A32_UINT;
+		case Format::R16G16B16A16_SNorm:   return DXGI_FORMAT_R16G16B16A16_SNORM;
 		case Format::R32_Typeless:         return DXGI_FORMAT_R32_TYPELESS;
 		case Format::R8G8B8A8_Typeless:    return DXGI_FORMAT_R8G8B8A8_TYPELESS;
 		case Format::D16_UNorm:            return DXGI_FORMAT_D16_UNORM;
@@ -67,6 +68,7 @@ namespace Tga::rhi
 		case DXGI_FORMAT_R32_UINT:              return Format::R32_UInt;
 		case DXGI_FORMAT_R32G32_UINT:           return Format::R32G32_UInt;
 		case DXGI_FORMAT_R32G32B32A32_UINT:     return Format::R32G32B32A32_UInt;
+		case DXGI_FORMAT_R16G16B16A16_SNORM:    return Format::R16G16B16A16_SNorm;
 		case DXGI_FORMAT_R32_TYPELESS:          return Format::R32_Typeless;
 		case DXGI_FORMAT_R8G8B8A8_TYPELESS:     return Format::R8G8B8A8_Typeless;
 		case DXGI_FORMAT_D16_UNORM:             return Format::D16_UNorm;
@@ -142,7 +144,7 @@ namespace Tga::rhi
 		case Format::R32_Typeless: case Format::R8G8B8A8_Typeless:
 		case Format::D24_UNorm_S8_UInt: case Format::D32_Float:
 			return 32;
-		case Format::R16G16B16A16_Float: case Format::R32G32_Float: case Format::R32G32_UInt:
+		case Format::R16G16B16A16_Float: case Format::R16G16B16A16_SNorm: case Format::R32G32_Float: case Format::R32G32_UInt:
 			return 64;
 		case Format::R32G32B32A32_Float: case Format::R32G32B32A32_UInt:
 			return 128;

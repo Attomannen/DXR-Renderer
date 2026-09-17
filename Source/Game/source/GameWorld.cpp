@@ -665,6 +665,7 @@ void GameWorld::Render()
 				d.uv0Offset = mesh.rayGeometry.uv0Offset;
 				d.tangentOffset = mesh.rayGeometry.tangentOffset;
 				d.binormalOffset = mesh.rayGeometry.binormalOffset;
+				d.vertexFormat = (uint32_t)mesh.rayGeometry.vertexFormat;
 				for (uint32_t row = 0; row < 3; ++row)
 					for (uint32_t col = 0; col < 4; ++col)
 					{

@@ -1248,7 +1248,7 @@ namespace Tga::rhi::dx12
 		{
 			uint32_t vertexSrv, indexSrv, materialIndex, vertexStride;
 			uint32_t positionOffset, normalOffset, uv0Offset, tangentOffset;
-			uint32_t binormalOffset, _pad0, _pad1, _pad2;
+			uint32_t binormalOffset, vertexFormat, _pad1, _pad2;
 			float previousTransform[12];
 			uint32_t motionHistoryValid, _motionPad[3];
 		};
@@ -1267,7 +1267,7 @@ namespace Tga::rhi::dx12
 		for (uint32_t i = 0; i < count; ++i) {
 			lookup[i] = { instances[i].vertexSrv, instances[i].indexSrv, instances[i].materialIndex, instances[i].vertexStride,
 				instances[i].positionOffset, instances[i].normalOffset, instances[i].uv0Offset, instances[i].tangentOffset,
-				instances[i].binormalOffset, 0, 0, 0 };
+				instances[i].binormalOffset, instances[i].vertexFormat, 0, 0 };
 			memcpy(lookup[i].previousTransform, instances[i].previousTransform, sizeof(lookup[i].previousTransform));
 			lookup[i].motionHistoryValid = instances[i].motionHistoryValid;
 		}

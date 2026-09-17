@@ -3,6 +3,7 @@
 #include <vector>
 #include <unordered_map>
 #include <cstddef>
+#include <functional>
 
 #include <tge/graphics/Vertex.h>
 #include <tge/Animation/Skeleton.h>
@@ -23,6 +24,13 @@ class Model
 public:
 
 	friend class ModelFactory;
+
+	// How a mesh's GPU vertex buffer is laid out.
+	enum class VertexFormat : uint32_t
+	{
+		Full = 0,      // Vertex, 180 bytes: skinned meshes
+		Compact = 1,   // MeshVertex, 40 bytes: everything else
+	};
 
 	struct MeshData
 	{
@@ -46,6 +54,9 @@ public:
 			// unlike deriving a tangent from position/UV deltas (flat per-triangle).
 			uint32_t tangentOffset = offsetof(Vertex, tangent);
 			uint32_t binormalOffset = offsetof(Vertex, binormal);
+			// Compact: normalOffset/tangentOffset point at the packed octahedral
+			// pair and binormalOffset at the bitangent sign.
+			VertexFormat vertexFormat = VertexFormat::Full;
 		};
 
 		StringId name;
@@ -62,6 +73,15 @@ public:
 		std::vector<unsigned int> indices;
 	};
 		
+	// Uploads someVertices as aMesh.vertexBuffer and sets the stride and ray
+	// offsets to match. Static meshes are packed to MeshVertex.
+	static bool CreateVertexBuffer(MeshData& aMesh, const Vertex* someVertices, uint32_t aCount,
+		VertexFormat aFormat, const char* aDebugName);
+	// Compact upload that fills the mapped buffer in place (mesh cache).
+	static bool CreateVertexBuffer(MeshData& aMesh, uint32_t aCount,
+		const std::function<void(MeshVertex*)>& aFill, const char* aDebugName);
+	static void SetVertexFormat(MeshData& aMesh, VertexFormat aFormat);
+
 	void Init(MeshData& aMeshData, const std::string& aPath);
 	void Init(std::vector<MeshData>& someMeshData, const std::string& aPath);
 	void Init(std::vector<MeshData>&& someMeshData, const std::string& aPath);   // takes ownership, no vertex copy

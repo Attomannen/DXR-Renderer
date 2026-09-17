@@ -64,10 +64,19 @@ Reference numbers (RTX 5070 Laptop, 1600×900, native TAA + NRD):
   low-hysteresis lighting-refresh sweep. The unused dynamic-emitter
   prioritisation path was removed.
 
-### 1.5 Compact vertex format
-- **Problem:** 180 bytes per vertex; Bistro needs ~1.5 GB of vertex buffers.
-- **Goal:** position, oct-encoded normal + tangent sign, UV0 (+ optional UV1 / colour).
-- **Touches:** raster shaders, `RayGeometryData` offsets, mesh cache version.
+### 1.5 Compact vertex format *(done)*
+- Static meshes upload `MeshVertex` (40 bytes, was 180): position + bitangent
+  sign, octahedral normal and tangent (snorm16), UV0, UV1, colour 0 (unorm8).
+  Vertex buffers shrink about 4.5x.
+- Skinned meshes keep the full `Vertex`; `Model::VertexFormat` records which one a
+  mesh uses, `ModelShader` picks the matching input layout from its vertex shader
+  and skips mismatched meshes.
+- One upload path (`Model::CreateVertexBuffer`) for primitives, FBX import,
+  the async importer and the mesh cache, which now packs straight into mapped
+  upload memory. The FBX loop no longer uploads every sub-mesh before merging.
+- DXR decodes the packed frame from the geometry record's `vertexFormat`.
+- Known, unrelated: the raster renderer (`BENCH_DXR_RENDERER=0`) renders black;
+  it was already broken before this change.
 
 ### 1.6 Split the ray-tracing dispatch
 - **Goal:** separate primary / G-buffer, shadow, AO and reflection passes.

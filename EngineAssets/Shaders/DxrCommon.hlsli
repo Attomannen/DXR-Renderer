@@ -77,11 +77,27 @@ struct RayGeometryLookup
 	uint uv0Offset;
 	uint tangentOffset;
 	uint binormalOffset;
-	uint _pad0, _pad1, _pad2;
+	uint vertexFormat;           // 0 full Vertex, 1 compact MeshVertex
+	uint _pad1, _pad2;
 	float4 previousTransform0, previousTransform1, previousTransform2;
 	uint motionHistoryValid;
 	uint3 _motionPad;
 };
+
+// snorm16 stored in the low 16 bits of v.
+float SnormFromU16(uint v)
+{
+	const int s = int(v << 16) >> 16;
+	return max(float(s) / 32767.0f, -1.0f);
+}
+
+float3 MeshOctDecode(float2 e)
+{
+	float3 n = float3(e.x, e.y, 1.0f - abs(e.x) - abs(e.y));
+	const float t = saturate(-n.z);
+	n.xy -= (step(0.0f, n.xy) * 2.0f - 1.0f) * t;   // no vector ternary: DXC HLSL 2021 rejects it
+	return normalize(n);
+}
 StructuredBuffer<RayGeometryLookup> gRayGeometry : register(t1, space2);
 
 // Per-mesh raw vertex/index descriptor table BuildRaytracingTlas's caller
@@ -663,10 +679,26 @@ HitSurface DecodeHit(RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES> q, float cone
 	{
 		const uint vBase = tri[i] * g.vertexStride;
 		p[i] = asfloat(gRawGeometry[vertexSlot].Load3(vBase + g.positionOffset));
-		n[i] = asfloat(gRawGeometry[vertexSlot].Load3(vBase + g.normalOffset));
 		uv0[i] = asfloat(gRawGeometry[vertexSlot].Load2(vBase + g.uv0Offset));
-		t[i] = asfloat(gRawGeometry[vertexSlot].Load3(vBase + g.tangentOffset));
-		b[i] = asfloat(gRawGeometry[vertexSlot].Load3(vBase + g.binormalOffset));
+		if (g.vertexFormat == 1u)
+		{
+			// MeshVertex: four snorm16 (octahedral normal, tangent) and a float
+			// bitangent sign. See Tga::MeshVertex.
+			const uint packed = gRawGeometry[vertexSlot].Load(vBase + g.normalOffset);
+			const uint packed2 = gRawGeometry[vertexSlot].Load(vBase + g.normalOffset + 4u);
+			const float2 octN = float2(SnormFromU16(packed & 0xFFFFu), SnormFromU16(packed >> 16));
+			const float2 octT = float2(SnormFromU16(packed2 & 0xFFFFu), SnormFromU16(packed2 >> 16));
+			n[i] = MeshOctDecode(octN);
+			t[i] = MeshOctDecode(octT);
+			const float sign = asfloat(gRawGeometry[vertexSlot].Load(vBase + g.binormalOffset)) < 0.0f ? -1.0f : 1.0f;
+			b[i] = cross(n[i], t[i]) * sign;
+		}
+		else
+		{
+			n[i] = asfloat(gRawGeometry[vertexSlot].Load3(vBase + g.normalOffset));
+			t[i] = asfloat(gRawGeometry[vertexSlot].Load3(vBase + g.tangentOffset));
+			b[i] = asfloat(gRawGeometry[vertexSlot].Load3(vBase + g.binormalOffset));
+		}
 	}
 
 	// DXR barycentrics: (u,v) are the weights of vertex 1 and 2; vertex 0's

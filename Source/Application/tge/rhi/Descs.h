@@ -47,6 +47,7 @@ namespace Tga::rhi
 		BC6H_UF16,
 		BC7_UNorm,
 		BC7_UNorm_sRGB,
+		R16G16B16A16_SNorm,   // packed vertex normals
 	};
 
 	// ---- resource state (Stage-2 barriers; no-op on DX11) ----------------
@@ -132,6 +133,7 @@ namespace Tga::rhi
 		uint32_t vertexSrv = 0, indexSrv = 0, materialIndex = 0;
 		uint32_t vertexStride = 0, positionOffset = 0, normalOffset = 0, uv0Offset = 0;
 		uint32_t tangentOffset = 0, binormalOffset = 0;
+		uint32_t vertexFormat = 0;   // 0 full Vertex, 1 compact MeshVertex (Model::VertexFormat)
 		float transform[12] = {}; // row-major 3x4, matches D3D12 instance layout
 		float previousTransform[12] = {};
 		uint32_t motionHistoryValid = 0; // previous rendered rigid transform exists

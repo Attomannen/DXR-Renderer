@@ -1,7 +1,8 @@
 #include "common.hlsli"
 
-ModelVertexToPixel main(ModelVertexInput input)
+ModelVertexToPixel main(MeshVertexInput packed)
 {
+	ModelVertexInput input = ExpandMeshVertex(packed);
     ModelVertexToPixel output;
 	
     float2 resolution = Resolution.xy;

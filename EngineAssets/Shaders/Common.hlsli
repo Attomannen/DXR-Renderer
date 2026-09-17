@@ -113,6 +113,38 @@ struct ModelVertexInput
 	float4 weights      :   WEIGHTS;
 };
 
+// Compact vertex of static meshes (Tga::MeshVertex, 40 bytes).
+struct MeshVertexInput
+{
+	float4 position      : POSITION;   // xyz, w = bitangent sign
+	float4 normalTangent : NORMAL;     // snorm: octahedral normal (xy), tangent (zw)
+	float2 texCoord0     : TEXCOORD0;
+	float2 texCoord1     : TEXCOORD1;
+	float4 vertexColor0  : COLOR0;
+};
+
+float3 OctDecode(float2 e)
+{
+	float3 n = float3(e.x, e.y, 1.0f - abs(e.x) - abs(e.y));
+	const float t = saturate(-n.z);
+	n.xy -= (step(0.0f, n.xy) * 2.0f - 1.0f) * t;   // no vector ternary: DXC HLSL 2021 rejects it
+	return normalize(n);
+}
+
+// Rebuilds the full model vertex so the static shaders keep one code path.
+ModelVertexInput ExpandMeshVertex(MeshVertexInput packed)
+{
+	ModelVertexInput v = (ModelVertexInput)0;
+	v.position = float4(packed.position.xyz, 1.0f);
+	v.normal = OctDecode(packed.normalTangent.xy);
+	v.tangent = OctDecode(packed.normalTangent.zw);
+	v.binormal = cross(v.normal, v.tangent) * (packed.position.w < 0.0f ? -1.0f : 1.0f);
+	v.texCoord0 = packed.texCoord0;
+	v.texCoord1 = packed.texCoord1;
+	v.vertexColor0 = packed.vertexColor0;
+	return v;
+}
+
 struct ModelVertexToPixel
 {
 	float4 position			:	SV_POSITION;

@@ -30,5 +30,12 @@ namespace Tga
 		void RenderMesh(const TextureResource* const* someTextures, const Model::MeshData& aModelData) const;
 
 		bool CreateInputLayout(const std::string& aVS) override;
+
+		// Skinned vertex shaders read the full Vertex; everything else reads the
+		// compact MeshVertex (see Model::VertexFormat).
+		Model::VertexFormat GetVertexFormat() const { return myVertexFormat; }
+
+	private:
+		Model::VertexFormat myVertexFormat = Model::VertexFormat::Compact;
 	};
 } // namespace Tga

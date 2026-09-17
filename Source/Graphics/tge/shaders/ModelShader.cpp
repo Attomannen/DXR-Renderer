@@ -11,6 +11,9 @@
 #include <tge/texture/TextureManager.h>
 #include <tge/log/Log.h>
 
+#include <algorithm>
+#include <cctype>
+
 using namespace Tga;
 
 Tga::ModelShader::ModelShader()
@@ -36,6 +39,9 @@ bool  Tga::ModelShader::Init(const char* aVertexShaderFile, const char* aPixelSh
 {
 	// Per-object (b4) and bone-palette (b5) constants are per-frame dynamic
 	// allocations now — nothing to create here.
+	std::string vs = aVertexShaderFile ? aVertexShaderFile : "";
+	std::transform(vs.begin(), vs.end(), vs.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
+	myVertexFormat = vs.find("animated") != std::string::npos ? Model::VertexFormat::Full : Model::VertexFormat::Compact;
 	return Shader::CreateShaders(aVertexShaderFile, aPixelShaderFile, nullptr);
 }
 
@@ -72,6 +78,18 @@ void Tga::ModelShader::RenderMesh(const TextureResource* const* someTextures, co
 	{
 		return;
 	}
+	if (aModelData.rayGeometry.vertexFormat != myVertexFormat)
+	{
+		// A skinned mesh through a static shader (or the reverse) would read
+		// the vertex buffer with the wrong layout.
+		static bool warned = false;
+		if (!warned)
+		{
+			warned = true;
+			ERROR_PRINT("ModelShader: mesh '%s' vertex format does not match the shader; skipped", aModelData.name.GetString());
+		}
+		return;
+	}
 
 	rhi::SrvHandle resourceViews[4];
 	int i = 0;
@@ -102,6 +120,19 @@ bool Tga::ModelShader::CreateInputLayout(const std::string& aVS)
 	using F = rhi::Format;
 	constexpr uint32_t A = ~0u; // append
 	auto V = [](const char* s, uint32_t i, F f) -> rhi::InputElement { return { s, i, f, 0, A, false, 0 }; };
+
+	if (myVertexFormat == Model::VertexFormat::Compact)
+	{
+		// MeshVertex, see Vertex.h.
+		SetInputLayout({
+			V("POSITION", 0, F::R32G32B32A32_Float),   // xyz + bitangent sign
+			V("NORMAL",   0, F::R16G16B16A16_SNorm),   // octahedral normal + tangent
+			V("TEXCOORD", 0, F::R32G32_Float),
+			V("TEXCOORD", 1, F::R32G32_Float),
+			V("COLOR",    0, F::R8G8B8A8_UNorm),
+		}, aVS);
+		return true;
+	}
 
 	SetInputLayout({
 		V("POSITION", 0, F::R32G32B32A32_Float),

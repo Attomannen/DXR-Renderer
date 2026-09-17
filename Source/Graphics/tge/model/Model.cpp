@@ -74,6 +74,76 @@ namespace
 	}
 }
 
+void Model::SetVertexFormat(MeshData& aMesh, VertexFormat aFormat)
+{
+	MeshData::RayGeometryData& ray = aMesh.rayGeometry;
+	ray.vertexFormat = aFormat;
+	if (aFormat == VertexFormat::Compact)
+	{
+		aMesh.stride = sizeof(MeshVertex);
+		ray.vertexStride = sizeof(MeshVertex);
+		ray.positionOffset = offsetof(MeshVertex, position);
+		ray.normalOffset = offsetof(MeshVertex, normalTangent);
+		ray.tangentOffset = offsetof(MeshVertex, normalTangent);
+		ray.binormalOffset = offsetof(MeshVertex, bitangentSign);
+		ray.uv0Offset = offsetof(MeshVertex, uv0);
+	}
+	else
+	{
+		aMesh.stride = sizeof(Vertex);
+		ray.vertexStride = sizeof(Vertex);
+		ray.positionOffset = offsetof(Vertex, position);
+		ray.normalOffset = offsetof(Vertex, normal);
+		ray.tangentOffset = offsetof(Vertex, tangent);
+		ray.binormalOffset = offsetof(Vertex, binormal);
+		ray.uv0Offset = offsetof(Vertex, uvs);
+	}
+	aMesh.offset = 0;
+}
+
+bool Model::CreateVertexBuffer(MeshData& aMesh, const Vertex* someVertices, uint32_t aCount,
+	VertexFormat aFormat, const char* aDebugName)
+{
+	if (aFormat == VertexFormat::Compact)
+	{
+		return CreateVertexBuffer(aMesh, aCount, [&](MeshVertex* out)
+		{
+			for (uint32_t i = 0; i < aCount; ++i)
+				out[i] = PackMeshVertex(someVertices[i]);
+		}, aDebugName);
+	}
+
+	rhi::IDevice* device = DX11::Rhi();
+	const uint64_t bytes = (uint64_t)aCount * sizeof(Vertex);
+	if (!device || aCount == 0 || bytes > 0xFFFFFFFFull) return false;
+	rhi::BufferDesc desc{};
+	desc.byteSize = (uint32_t)bytes;
+	desc.stride = sizeof(Vertex);
+	desc.usage = rhi::BufferUsage::Vertex | rhi::BufferUsage::ByteAddress;
+	desc.memory = rhi::MemoryType::Default;
+	desc.debugName = aDebugName;
+	aMesh.vertexBuffer = device->CreateBuffer(desc, someVertices);
+	SetVertexFormat(aMesh, VertexFormat::Full);
+	return aMesh.vertexBuffer.IsValid();
+}
+
+bool Model::CreateVertexBuffer(MeshData& aMesh, uint32_t aCount,
+	const std::function<void(MeshVertex*)>& aFill, const char* aDebugName)
+{
+	rhi::IDevice* device = DX11::Rhi();
+	const uint64_t bytes = (uint64_t)aCount * sizeof(MeshVertex);
+	if (!device || aCount == 0 || bytes > 0xFFFFFFFFull) return false;
+	rhi::BufferDesc desc{};
+	desc.byteSize = (uint32_t)bytes;
+	desc.stride = sizeof(MeshVertex);
+	desc.usage = rhi::BufferUsage::Vertex | rhi::BufferUsage::ByteAddress;
+	desc.memory = rhi::MemoryType::Default;
+	desc.debugName = aDebugName;
+	aMesh.vertexBuffer = device->CreateBufferWith(desc, [&](void* mapped) { aFill(static_cast<MeshVertex*>(mapped)); });
+	SetVertexFormat(aMesh, VertexFormat::Compact);
+	return aMesh.vertexBuffer.IsValid();
+}
+
 void Model::Init(MeshData& aMeshData, const std::string& aPath)
 {
 	myMeshData.push_back(aMeshData);
