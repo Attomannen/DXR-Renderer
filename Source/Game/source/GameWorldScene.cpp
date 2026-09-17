@@ -351,5 +351,8 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 	}
 	camera.GetTransform().SetPosition(camPos);
 	camera.GetTransform().SetRotation(camRot);
+	// Scene bounds have just changed, so the GI probe volume that is derived
+	// from them is stale until this runs.
+	RecomputeGiVolume();
 	return true;
 }

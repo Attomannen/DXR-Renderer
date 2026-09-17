@@ -343,6 +343,7 @@ struct GameWorld::Impl
 	// bounds, the light rig, and the start camera. Safe to call at runtime to
 	// switch scenes (free-fly). aEnv = honour BENCH_* overrides (Init only).
 	bool LoadSceneContent(const std::string& sceneName, bool aEnv);
+	void RecomputeGiVolume();
 
 	void WriteReport();
 

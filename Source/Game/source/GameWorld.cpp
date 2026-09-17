@@ -138,63 +138,6 @@ void GameWorld::Init()
 		s.giEnabled = false;
 	}
 
-	// --- emissive-GI volume grid: auto from scene bounds, or bench_gi_<scene>.json ---
-	{
-		// Volume covers the scene AABB, but the probes themselves must sit half a
-		// cell inside it. A probe on a floor/wall immediately captures that same
-		// surface (especially in the 16x16 raster cubemap fallback), producing a
-		// perfectly regular lattice of bright dots at the probe spacing.
-		// Boundary receivers still sample the interior ring via the clamped lookup.
-		// (Override with bench_gi_<scene>.json.)
-		const Vector3f ext = s.sceneExtents;
-		const Vector3f mn = s.sceneCenter - ext;
-		// Keep the automatic volume dense enough that nearby colored surfaces can
-		// contribute locally to the receiver.  The old 10x6x10 ceiling left the
-		// Sponza scene with ~2 km probe spacing, which made red/green bounce read
-		// as a faint scene-wide wash instead of believable shadow color bleed.
-		// 16x8x16 is 2048 probes, safely below kMaxGiProbes (4096), and explicit
-		// bench_gi_<scene>.json files still override this layout when needed.
-		auto axis = [](float span) { return std::clamp((int)std::round(span / 360.f) + 1, 2, 16); };
-		s.giCx = axis(2.f * ext.x);
-		s.giCy = std::clamp(axis(2.f * ext.y), 2, 8);
-		s.giCz = axis(2.f * ext.z);
-		s.giSpacing = { (2.f * ext.x) / std::max(1, s.giCx),
-		                (2.f * ext.y) / std::max(1, s.giCy),
-		                (2.f * ext.z) / std::max(1, s.giCz) };
-		s.giOrigin = mn + s.giSpacing * 0.5f;
-		const std::string gf = s.currentScene.empty() ? std::string("bench_gi.json")
-		                                              : ("bench_gi_" + s.currentScene + ".json");
-		std::ifstream in(gf);
-		if (in)
-		{
-			try
-			{
-				nlohmann::json j; in >> j;
-				auto a3 = [](const nlohmann::json& v, Vector3f d) {
-					return (v.is_array() && v.size() >= 3)
-						? Vector3f{ v[0].get<float>(), v[1].get<float>(), v[2].get<float>() } : d;
-				};
-				if (j.contains("origin"))  s.giOrigin  = a3(j["origin"], s.giOrigin);
-				if (j.contains("spacing")) s.giSpacing = a3(j["spacing"], s.giSpacing);
-				if (j.contains("counts") && j["counts"].is_array() && j["counts"].size() >= 3)
-				{
-					s.giCx = std::clamp(j["counts"][0].get<int>(), 2, 32);
-					s.giCy = std::clamp(j["counts"][1].get<int>(), 2, 32);
-					s.giCz = std::clamp(j["counts"][2].get<int>(), 2, 32);
-				}
-				INFO_PRINT("emissive GI: from %s", gf.c_str());
-			}
-			catch (...) { ERROR_PRINT("emissive GI: bad %s", gf.c_str()); }
-		}
-		if ((int64_t)s.giCx * s.giCy * s.giCz > DeferredRenderer::kMaxGiProbes)
-		{
-			ERROR_PRINT("emissive GI: %d probes > cap %d; shrinking", s.giCx * s.giCy * s.giCz, DeferredRenderer::kMaxGiProbes);
-			s.giCx = std::min(s.giCx, 12); s.giCy = std::min(s.giCy, 8); s.giCz = std::min(s.giCz, 12);
-		}
-		INFO_PRINT("emissive GI: %dx%dx%d = %d probes, spacing(%.0f,%.0f,%.0f)",
-			s.giCx, s.giCy, s.giCz, s.giCx * s.giCy * s.giCz, s.giSpacing.x, s.giSpacing.y, s.giSpacing.z);
-	}
-
 	BenchConfig::ApplyWorldOverrides(s);
 	if (s.useDeferred)
 	{

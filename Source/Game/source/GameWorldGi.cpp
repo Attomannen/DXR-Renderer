@@ -229,3 +229,68 @@ void GameWorld::Impl::CaptureGiProbesImpl(GraphicsEngine& ge)
 	gss.UpdateGpuStates(true);
 	DX11::BackBuffer->SetAsActiveTarget(DX11::DepthBuffer);
 }
+
+// The GI volume is derived from the scene's bounds, so it has to be rebuilt
+// whenever those change. It used to be computed once during Init, which meant
+// switching scenes from the debug UI kept the previous scene's probe volume --
+// visibly the wrong AABB, and probes in the wrong places.
+void GameWorld::Impl::RecomputeGiVolume()
+{
+	// Volume covers the scene AABB, but the probes themselves must sit half a
+	// cell inside it. A probe on a floor/wall immediately captures that same
+	// surface (especially in the 16x16 raster cubemap fallback), producing a
+	// perfectly regular lattice of bright dots at the probe spacing.
+	// Boundary receivers still sample the interior ring via the clamped lookup.
+	// (Override with bench_gi_<scene>.json.)
+	const Vector3f ext = sceneExtents;
+	const Vector3f mn = sceneCenter - ext;
+	// Keep the automatic volume dense enough that nearby colored surfaces can
+	// contribute locally to the receiver.  The old 10x6x10 ceiling left the
+	// Sponza scene with ~2 km probe spacing, which made red/green bounce read
+	// as a faint scene-wide wash instead of believable shadow color bleed.
+	// 16x8x16 is 2048 probes, safely below kMaxGiProbes (4096), and explicit
+	// bench_gi_<scene>.json files still override this layout when needed.
+	auto axis = [](float span) { return std::clamp((int)std::round(span / 360.f) + 1, 2, 16); };
+	giCx = axis(2.f * ext.x);
+	giCy = std::clamp(axis(2.f * ext.y), 2, 8);
+	giCz = axis(2.f * ext.z);
+	giSpacing = { (2.f * ext.x) / std::max(1, giCx),
+	                (2.f * ext.y) / std::max(1, giCy),
+	                (2.f * ext.z) / std::max(1, giCz) };
+	giOrigin = mn + giSpacing * 0.5f;
+	// Same as the camera file: a scene name is a path, so it cannot be dropped
+	// into a file name verbatim or the override is never found.
+	std::string giKey = currentScene;
+	for (char& c : giKey) if (c == '/' || c == '\\') c = '_';
+	const std::string gf = giKey.empty() ? std::string("bench_gi.json")
+	                                     : ("bench_gi_" + giKey + ".json");
+	std::ifstream in(gf);
+	if (in)
+	{
+		try
+		{
+			nlohmann::json j; in >> j;
+			auto a3 = [](const nlohmann::json& v, Vector3f d) {
+				return (v.is_array() && v.size() >= 3)
+					? Vector3f{ v[0].get<float>(), v[1].get<float>(), v[2].get<float>() } : d;
+			};
+			if (j.contains("origin"))  giOrigin  = a3(j["origin"], giOrigin);
+			if (j.contains("spacing")) giSpacing = a3(j["spacing"], giSpacing);
+			if (j.contains("counts") && j["counts"].is_array() && j["counts"].size() >= 3)
+			{
+				giCx = std::clamp(j["counts"][0].get<int>(), 2, 32);
+				giCy = std::clamp(j["counts"][1].get<int>(), 2, 32);
+				giCz = std::clamp(j["counts"][2].get<int>(), 2, 32);
+			}
+			INFO_PRINT("emissive GI: from %s", gf.c_str());
+		}
+		catch (...) { ERROR_PRINT("emissive GI: bad %s", gf.c_str()); }
+	}
+	if ((int64_t)giCx * giCy * giCz > DeferredRenderer::kMaxGiProbes)
+	{
+		ERROR_PRINT("emissive GI: %d probes > cap %d; shrinking", giCx * giCy * giCz, DeferredRenderer::kMaxGiProbes);
+		giCx = std::min(giCx, 12); giCy = std::min(giCy, 8); giCz = std::min(giCz, 12);
+	}
+	INFO_PRINT("emissive GI: %dx%dx%d = %d probes, spacing(%.0f,%.0f,%.0f)",
+		giCx, giCy, giCz, giCx * giCy * giCz, giSpacing.x, giSpacing.y, giSpacing.z);
+}
