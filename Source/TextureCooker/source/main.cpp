@@ -121,6 +121,14 @@ struct Log
 	void err(const std::string& m)  const { std::lock_guard lk(mtx); std::cerr << "  [error] " << m << "\n"; std::cerr.flush(); }
 };
 static Log gLog;
+// How to read a "_Specular" map. Two incompatible conventions share the name:
+//   SpecGloss  RGB = specular reflectance colour, A = glossiness   (legacy)
+//   Orm        R   = occlusion, G = roughness, B = metalness       (ORCA/Bistro)
+// Auto picks Orm when the alpha channel carries no glossiness signal, because a
+// spec/gloss map without glossiness is not a spec/gloss map.
+enum class SpecularMode { Auto, Orm, SpecGloss };
+static SpecularMode gSpecularMode = SpecularMode::Auto;
+
 static std::mutex gGpuMtx;   // ID3D11 immediate context (DirectXTex GPU Compress) is not thread-safe
 
 // ------------------------------------------------------------------ channel roles
@@ -356,6 +364,16 @@ static bool Classify(const fs::path& file, std::string& outKey, Role& outRole)
 		const size_t pos = lowerStem.rfind(marker);
 		if (pos != std::string::npos && pos + strlen(marker) < stem.size())
 		{
+			// ...unless what follows the marker is itself a role suffix, in which
+			// case the marker is part of the material's own name and the real
+			// role is at the end. "Paris_StringLights_01_White_Color_BaseColor"
+			// is the material "..._White_Color" with a BaseColor map, not the
+			// material "..._White" with a colour variation called "BaseColor".
+			const std::string tail = "_" + stem.substr(pos + strlen(marker));
+			bool tailIsRole = false;
+			for (const SuffixRule& rule : kSuffixRules)
+				if (tail.size() == strlen(rule.suffix) && IEndsWith(tail, rule.suffix)) { tailIsRole = true; break; }
+			if (tailIsRole) break;
 			outKey = TrimSeparators(stem.substr(0, pos)) + "_" + stem.substr(pos + strlen(marker));
 			outRole = Role::Color;
 			return true;
@@ -693,9 +711,12 @@ struct NvttSlot
 	~NvttSlot() { sem.release(); }
 };
 // Capped rather than sized to hardware_concurrency: many concurrent CUDA BC7
-// encodes on one GPU (e.g. during a large Bistro-sized import) risk driver
-// instability/VRAM pressure that pure CPU-thread counts don't.
-static Semaphore gNvttSlots(4);
+// encodes on one GPU risk driver instability/VRAM pressure that pure CPU-thread
+// counts don't. Measured on a 16-core machine over 60 Bistro textures: a cap of
+// 4 took 9.8 s and a cap of 8 took 8.9 s, so half the cores is a small win and
+// the encoder is not the bottleneck anyway (the same set costs ~8 s with NVTT
+// off entirely). Do not raise this expecting a large speedup.
+static Semaphore gNvttSlots(std::clamp((int)std::thread::hardware_concurrency() / 2, 1, 8));
 
 // ------------------------------------------------------------------ NVTT backend
 // Optional: when NVIDIA Texture Tools is installed, delegate the BC step to
@@ -1160,14 +1181,43 @@ static CookResult CookOne(MaterialGroup& g, OutKind kind, const std::string& out
 					}
 			const bool degenerate = (int)chMax[0] - (int)chMin[0] < 4 && (int)chMax[1] - (int)chMin[1] < 4
 				&& (int)chMax[2] - (int)chMin[2] < 4 && (int)chMax[3] - (int)chMin[3] < 4;
-			if (degenerate)
+			// Which convention is this map? A spec/gloss map keeps glossiness in
+			// alpha, so an alpha channel with no variation at all means this is
+			// not a spec/gloss map -- it is the ORCA/Bistro layout, where G is
+			// roughness and B is metalness. Reading that as spec/gloss produced
+			// metalness = max(RGB) and roughness = 1 - alpha, i.e. "shiny metal"
+			// for every surface in the scene.
+			const bool flatAlpha = (int)chMax[3] - (int)chMin[3] < 4;
+			const bool rgbVaries = (int)chMax[0] - (int)chMin[0] >= 4 || (int)chMax[1] - (int)chMin[1] >= 4
+				|| (int)chMax[2] - (int)chMin[2] >= 4;
+			const bool asOrm = gSpecularMode == SpecularMode::Orm
+				|| (gSpecularMode == SpecularMode::Auto && flatAlpha);
+			// A uniform map is still usable as ORM (one roughness/metalness for
+			// the whole material); only a spec/gloss read needs real variation.
+			const bool degenerateSpecGloss = degenerate && !asOrm;
+			if (degenerateSpecGloss)
 				gLog.warn("specular map carries no real data (flat rgba=" + std::to_string((int)chMin[0])
 					+ "," + std::to_string((int)chMin[1]) + "," + std::to_string((int)chMin[2]) + "," + std::to_string((int)chMin[3])
 					+ "), falling back to default roughness/metalness instead of deriving them from it: " + outName);
+			// ORCA's maps leave occlusion at 0, which would read as "fully
+			// occluded" everywhere; treat a black R channel as "no AO authored".
+			const bool ormHasAo = asOrm && !((int)chMax[0] < 4);
+			if (asOrm && !gLog.quiet)
+				gLog.info("  specular read as ORM (G=roughness, B=metalness"
+					+ std::string(ormHasAo ? ", R=occlusion" : ", no occlusion") + "): " + outName);
+			(void)rgbVaries;
 
 			BuildRGBA8(w, h, packed, [&](size_t x, size_t y, uint8_t* o) {
+				if (asOrm)
+				{
+					o[0] = ormHasAo ? sp.at(x, y, 0) : 255;
+					o[1] = sp.at(x, y, 1);               // roughness
+					o[2] = sp.at(x, y, 2);               // metalness
+					o[3] = 255;
+					return;
+				}
 				o[0] = 255;                              // no AO data in this workflow
-				if (degenerate) { o[1] = 128; o[2] = 0; o[3] = 255; return; }
+				if (degenerateSpecGloss) { o[1] = 128; o[2] = 0; o[3] = 255; return; }
 				const float specR = sp.at(x, y, 0) / 255.0f, specG = sp.at(x, y, 1) / 255.0f, specB = sp.at(x, y, 2) / 255.0f;
 				const float maxSpec = std::max({ specR, specG, specB });
 				const float metalness = std::clamp((maxSpec - kDielectric) / (1.0f - kDielectric), 0.0f, 1.0f);
@@ -1419,6 +1469,13 @@ static bool ParseArgs(int argc, char** argv, Args& a)
 		else if (k == "--cpu") a.cpu = true;
 		else if (k == "--nvtt") a.nvttPath = next();
 		else if (k == "--no-nvtt") a.noNvtt = true;
+		else if (k == "--specular")
+		{
+			const std::string v = ToLower(next());
+			if (v == "orm") gSpecularMode = SpecularMode::Orm;
+			else if (v == "specgloss" || v == "spec-gloss") gSpecularMode = SpecularMode::SpecGloss;
+			else gSpecularMode = SpecularMode::Auto;
+		}
 		else if (k == "--nvtt-quality") a.nvttQuality = next();   // fast|production|highest
 		else if (k == "--force") a.force = true;
 		else if (k == "--recursive") a.recursive = true;
@@ -2009,6 +2066,83 @@ int main(int argc, char** argv)
 		fs::create_directories(a.tgo.parent_path());
 		std::ofstream(a.tgo) << j.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
 		gLog.info("  wrote " + a.tgo.string());
+	}
+
+	// ---- repoint existing .tgmat map paths --------------------------------
+	// Materials are only authored by the --fbx/--tgo path, so a plain texture
+	// recook used to leave every existing .tgmat pointing at the names from the
+	// PREVIOUS run. Switching --packing therefore broke a whole scene: the
+	// cooker wrote _BC/_ORM, deleted the old _C/_M as stale, and nothing
+	// updated the materials in between -- every map resolved to nothing.
+	// Only slots that are empty or point at a missing file are touched, so an
+	// authored override that still resolves is left exactly as it is.
+	if (!a.out.empty())
+	{
+		std::error_code ec;
+		const std::string sufC = std::string(KindSuffix(OutKind::C)) + ".dds";
+		const std::string sufN = std::string(KindSuffix(OutKind::N)) + ".dds";
+		const std::string sufM = std::string(KindSuffix(OutKind::M)) + ".dds";
+		const std::string sufE = std::string(KindSuffix(OutKind::FX)) + ".dds";
+		// Both namings, current packing first: a recook can find what the
+		// previous packing left behind and move the reference forward.
+		const std::vector<std::pair<const char*, std::vector<std::string>>> slots = {
+			{ "albedo",   { sufC, "_BC.dds", "_C.dds" } },
+			{ "normal",   { sufN, "_N.dds" } },
+			{ "orm",      { sufM, "_ORM.dds", "_M.dds" } },
+			{ "emissive", { sufE, "_E.dds", "_FX.dds" } },
+		};
+		int repointed = 0;
+		for (fs::directory_iterator it(a.out, ec), end; !ec && it != end; it.increment(ec))
+		{
+			if (!it->is_regular_file() || ToLower(it->path().extension().string()) != ".tgmat") continue;
+			json j;
+			{
+				std::ifstream in(it->path());
+				if (!in) continue;
+				try { in >> j; } catch (...) { continue; }
+			}
+			if (!j.contains("maps") || !j["maps"].is_object()) continue;
+			// A material file may carry a variant suffix its textures do not,
+			// e.g. Foliage_Hedges.DoubleSided.tgmat -> Foliage_Hedges_BC.dds.
+			std::vector<std::string> stems;
+			for (std::string stem = it->path().stem().string();;)
+			{
+				stems.push_back(stem);
+				const size_t dot = stem.rfind('.');
+				if (dot == std::string::npos) break;
+				stem = stem.substr(0, dot);
+			}
+			bool dirty = false;
+			for (const auto& [key, suffixes] : slots)
+			{
+				const std::string current = j["maps"].value(key, std::string());
+				if (!current.empty())
+				{
+					// Still resolves against the game root? Leave it alone.
+					std::string rel = current;
+					for (char& c : rel) if (c == '\\') c = '/';
+					if (fs::exists(a.gameRoot / rel, ec)) continue;
+				}
+				std::string found;
+				for (const std::string& stem : stems)
+				{
+					for (const std::string& suffix : suffixes)
+					{
+						const fs::path f = a.out / (stem + suffix);
+						if (fs::exists(f, ec)) { found = RelBackslash(f, a.gameRoot); break; }
+					}
+					if (!found.empty()) break;
+				}
+				// Never clear a slot just because nothing was found: an empty
+				// path and a stale one are both wrong, but clearing loses the
+				// only clue about what the material wanted.
+				if (!found.empty() && found != current) { j["maps"][key] = found; dirty = true; }
+			}
+			if (!dirty) continue;
+			std::ofstream(it->path()) << j.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
+			++repointed;
+		}
+		if (repointed) gLog.info("  repointed map paths in " + std::to_string(repointed) + " existing .tgmat file(s)");
 	}
 
 	// ---- clean up stale outputs -------------------------------------------
