@@ -1,4 +1,6 @@
 #include "stdafx.h"
+#include "tge/model/MeshSimplify.h"
+#include <atomic>
 #include <tge/debugging/CpuProfiler.h>
 #include "ModelFactory.h"
 
@@ -1122,6 +1124,21 @@ namespace
 
 	// Expands cached vertices into GPU MeshVertex records, split across threads
 	// for large meshes (this is pure memory throughput).
+	// TGE_LOD_RATIO=<0..1> decimates every cached mesh on load, to measure what a
+	// level actually costs and what it looks like before any automatic selection
+	// exists. 1 (the default) loads the authored geometry unchanged.
+	std::atomic<uint64_t> gLodSourceTris{ 0 }, gLodOutputTris{ 0 };
+
+	float DebugLodRatio()
+	{
+		static const float ratio = [] {
+			const char* v = std::getenv("TGE_LOD_RATIO");
+			const float r = v ? (float)atof(v) : 1.0f;
+			return r > 0.0f && r < 1.0f ? r : 1.0f;
+		}();
+		return ratio;
+	}
+
 	void DecodeVertices(uint8_t layout, const uint8_t* src, uint32_t count, Tga::MeshVertex* dst)
 	{
 		const uint32_t floats = layout == 2 ? kCompactColorFloats : kCompactFloats;
@@ -1208,6 +1225,44 @@ namespace
 			Tga::Model::SetVertexFormat(md, Tga::Model::VertexFormat::Compact);
 			if (vc == 0 || ic == 0) continue;   // a mesh without geometry keeps null buffers and is skipped at draw time
 
+			// Decimate before the upload so the GPU only ever sees the level in
+			// use; the vertex buffer is untouched, a level is purely a shorter
+			// index list over the same vertices.
+			std::vector<uint32_t> lodIndices;
+			const uint8_t* uploadIndices = indexData;
+			uint32_t uploadIndexCount = ic;
+			if (DebugLodRatio() < 1.0f)
+			{
+				Tga::MeshSimplifySource src;
+				const uint32_t floats = layout == 2 ? kCompactColorFloats : kCompactFloats;
+				src.vertexCount = vc;
+				if (layout == 1)
+				{
+					src.positions = vertexData + offsetof(Tga::Vertex, position);
+					src.positionStride = sizeof(Tga::Vertex);
+					src.uv0 = vertexData + offsetof(Tga::Vertex, uvs);
+					src.uvStride = sizeof(Tga::Vertex);
+				}
+				else
+				{
+					// Compact block: position at float 0, uv0 at float 13.
+					src.positions = vertexData;
+					src.positionStride = floats * (uint32_t)sizeof(float);
+					src.uv0 = vertexData + 13 * sizeof(float);
+					src.uvStride = floats * (uint32_t)sizeof(float);
+				}
+				const Tga::MeshSimplifyResult lod = Tga::SimplifyMesh(src,
+					reinterpret_cast<const uint32_t*>(indexData), ic, DebugLodRatio());
+				if (!lod.indices.empty())
+				{
+					lodIndices = lod.indices;
+					uploadIndices = reinterpret_cast<const uint8_t*>(lodIndices.data());
+					uploadIndexCount = (uint32_t)lodIndices.size();
+					gLodSourceTris += ic / 3;
+					gLodOutputTris += uploadIndexCount / 3;
+				}
+			}
+
 			TGA_CPU_SCOPE("Mesh GPU buffers");
 			// The cache only holds static meshes, which always upload compact.
 			Tga::Model::CreateVertexBuffer(md, vc,
@@ -1215,12 +1270,12 @@ namespace
 			const Tga::rhi::BufferHandle vb = md.vertexBuffer;
 
 			Tga::rhi::BufferDesc ibd{};
-			ibd.byteSize = (UINT)((uint64_t)ic * sizeof(unsigned int));
+			ibd.byteSize = (UINT)((uint64_t)uploadIndexCount * sizeof(unsigned int));
 			ibd.stride = sizeof(unsigned int);
 			ibd.usage = Tga::rhi::BufferUsage::Index | Tga::rhi::BufferUsage::ByteAddress;
 			ibd.memory = Tga::rhi::MemoryType::Default;
 			ibd.debugName = "Mesh_IB";
-			const Tga::rhi::BufferHandle ib = vb.IsValid() ? dev->CreateBuffer(ibd, indexData) : Tga::rhi::BufferHandle{};
+			const Tga::rhi::BufferHandle ib = vb.IsValid() ? dev->CreateBuffer(ibd, uploadIndices) : Tga::rhi::BufferHandle{};
 			if (!vb.IsValid() || !ib.IsValid())
 			{
 				ERROR_PRINT("mesh '%s': GPU buffer creation failed", md.name.GetString());
@@ -1231,8 +1286,13 @@ namespace
 			md.vertexBuffer = vb;
 			md.indexBuffer = ib;
 			md.numberOfVertices = vc;
-			md.numberOfIndices = ic;
+			md.numberOfIndices = uploadIndexCount;
 		}
+		if (DebugLodRatio() < 1.0f && gLodSourceTris > 0)
+			INFO_PRINT("LOD: ratio %.2f  %llu -> %llu triangles (%.1f%% kept)", DebugLodRatio(),
+				(unsigned long long)gLodSourceTris.load(), (unsigned long long)gLodOutputTris.load(),
+				100.0 * (double)gLodOutputTris.load() / (double)gLodSourceTris.load());
+
 
 		TGA_CPU_SCOPE("Model init");
 		outModel->Init(std::move(meshes), modelPathForInit);

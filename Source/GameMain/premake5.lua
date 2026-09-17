@@ -34,9 +34,9 @@ project (projectname)
 	-- D3D12SDKVersion/D3D12SDKPath pointing here, so the redistributable has to
 	-- sit next to the executable.
 	postbuildcommands {
-		'{MKDIR} "%{dirs.bin}AgilitySDK"',
-		'{COPYFILE} "%{dirs.root}NRD/NRD/NRD-4.17.3/_Bin/Release/AgilitySDK/D3D12Core.dll" "%{dirs.bin}AgilitySDK/"',
-		'{COPYFILE} "%{dirs.root}NRD/NRD/NRD-4.17.3/_Bin/Release/AgilitySDK/d3d12SDKLayers.dll" "%{dirs.bin}AgilitySDK/"',
+		'{MKDIR} "%{dirs.bin}/AgilitySDK"',
+		'{COPYFILE} "%{dirs.root}/NRD/NRD/NRD-4.17.3/_Bin/Release/AgilitySDK/D3D12Core.dll" "%{dirs.bin}/AgilitySDK/"',
+		'{COPYFILE} "%{dirs.root}/NRD/NRD/NRD-4.17.3/_Bin/Release/AgilitySDK/d3d12SDKLayers.dll" "%{dirs.bin}/AgilitySDK/"',
 	}
 
 	libdirs { 
