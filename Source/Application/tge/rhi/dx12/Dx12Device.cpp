@@ -764,6 +764,7 @@ namespace Tga::rhi::dx12
 
 		myAllocators[myFrameIndex]->Reset();
 		myCmdList->Reset(myAllocators[myFrameIndex].Get(), nullptr);
+		myListOpen = true;
 
 		// Bind THIS frame's shader-visible scratch heaps (not the permanent,
 		// non-shader-visible CreateSrv/CreateSampler storage heaps) -- see
@@ -794,6 +795,7 @@ namespace Tga::rhi::dx12
 
 		SubmitUploadList();   // this frame may use resources uploaded in a batch
 		myCmdList->Close();
+		myListOpen = false;
 		ID3D12CommandList* lists[] = { myCmdList.Get() };
 		myQueue->ExecuteCommandLists(1, lists);
 

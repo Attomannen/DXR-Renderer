@@ -93,6 +93,7 @@ namespace Tga::rhi::dx11
 		ICommandContext& BeginFrame() override;
 		ICommandContext& GetContext() override;
 		void             EndFrame(bool vsync) override;
+		bool             IsRecording() const override { return true; }   // immediate context
 
 		TimestampQueryHandle CreateTimestampQuery() override;
 		void  DestroyTimestampQuery(TimestampQueryHandle) override;

@@ -29,6 +29,16 @@ project (projectname)
 		"source/**.cpp",
 	}
 
+	-- NRD's NRI needs Agility SDK 619; the system D3D12 runtime is older and the
+	-- first denoiser dispatch faults inside NRI without it. main.cpp exports
+	-- D3D12SDKVersion/D3D12SDKPath pointing here, so the redistributable has to
+	-- sit next to the executable.
+	postbuildcommands {
+		'{MKDIR} "%{dirs.bin}AgilitySDK"',
+		'{COPYFILE} "%{dirs.root}NRD/NRD/NRD-4.17.3/_Bin/Release/AgilitySDK/D3D12Core.dll" "%{dirs.bin}AgilitySDK/"',
+		'{COPYFILE} "%{dirs.root}NRD/NRD/NRD-4.17.3/_Bin/Release/AgilitySDK/d3d12SDKLayers.dll" "%{dirs.bin}AgilitySDK/"',
+	}
+
 	libdirs { 
 		dirs.lib, 
 		dirs.dependencies, 

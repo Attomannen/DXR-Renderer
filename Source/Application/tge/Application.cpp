@@ -190,7 +190,13 @@ void Tga::Application::UpdateWindowSizeChanges()
 	#ifndef _RETAIL
 	ImGuiInterface::OnResizeEnd();
 	#endif
-	DX11::BackBuffer->SetAsActiveTarget();
+	// Only if a command list is actually open. This runs after EndFrame has
+	// closed and submitted DX12's list, so binding here recorded viewport and
+	// render-target commands into a closed list. Older D3D12 runtimes ignored
+	// that; the Agility runtime NRD requires faults on it inside the driver.
+	// The next BeginFrame binds its own targets anyway.
+	if (DX11::Rhi() && DX11::Rhi()->IsRecording())
+		DX11::BackBuffer->SetAsActiveTarget();
 
 	myWindowConfiguration.renderSize = DX11::GetResolution();
 

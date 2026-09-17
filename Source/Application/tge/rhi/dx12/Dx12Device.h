@@ -149,6 +149,7 @@ namespace Tga::rhi::dx12
 
 		ICommandContext& BeginFrame() override;
 		void             EndFrame(bool vsync) override;
+		bool             IsRecording() const override { return myListOpen; }
 		ICommandContext& GetContext() override;
 
 		TimestampQueryHandle CreateTimestampQuery() override;
@@ -411,6 +412,7 @@ namespace Tga::rhi::dx12
 		// list again (Reset requires Closed state, and there's nothing to
 		// discard: whatever init recorded should carry through to frame 1).
 		bool myFirstFrame = true;
+		bool myListOpen = false;   // see IDevice::IsRecording
 
 		// One-off upload command list, reused synchronously by UploadBufferData/
 		// UploadTextureData (separate from the main per-frame list/allocator).

@@ -111,6 +111,12 @@ namespace Tga::rhi
 		// the first BeginFrame during engine init).
 		virtual ICommandContext& GetContext() = 0;
 
+		// Is a command list open for recording right now? DX12 closes and submits
+		// its list in EndFrame, so anything recorded after that (the post-present
+		// resize path used to) goes into a closed list -- tolerated by older
+		// runtimes, an access violation on newer ones. DX11 has no such window.
+		virtual bool IsRecording() const = 0;
+
 		// ---- timestamp queries (for GpuProfiler) ----
 		virtual TimestampQueryHandle CreateTimestampQuery() = 0;
 		virtual void  DestroyTimestampQuery(TimestampQueryHandle) = 0;
