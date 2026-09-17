@@ -164,7 +164,7 @@ void ApplyRendererOverrides(DeferredRenderer::Tunables& tun)
 	// shade on its hit), so they need their own A/B knob like the
 	// other big passes above.
 	tun.dxrReflections = EnvInt("BENCH_DXR_REFLECTIONS", 1) != 0;
-	tun.dxrReflectionSamples = std::clamp(EnvInt("BENCH_DXR_REFLECTION_SAMPLES", 4), 1, 4);
+	tun.dxrReflectionSamples = std::clamp(EnvInt("BENCH_DXR_REFLECTION_SAMPLES", tun.dxrReflectionSamples), 1, 8);
 	if (const char* rc = std::getenv("BENCH_DXR_REFLECTION_CUTOFF")) tun.dxrReflectionRoughnessCutoff = std::clamp((float)atof(rc), 0.f, 1.f);
 	tun.exposureAuto = EnvInt("BENCH_AUTOEXPOSURE", tun.exposureAuto ? 1 : 0) != 0;
 	tun.tonemapper = std::clamp(EnvInt("BENCH_TONEMAP", tun.tonemapper), 0, 3);

@@ -298,7 +298,7 @@ namespace Tga
 			// Safety floor only. Proper diffuse/specular environment lighting is the
 			// primary fill source in full DXR mode; a large flat term destroys form.
 			float dxrAmbientIntensity = 0.02f;
-			float dxrReflectionRoughnessCutoff = 0.55f;
+			float dxrReflectionRoughnessCutoff = 0.35f;
 			bool  dxrDirectLighting = true;
 			bool  dxrEnvironmentLighting = true;
 			bool  dxrIndirectGi = true;
@@ -318,7 +318,8 @@ namespace Tga
 			// the first dial to turn when the frame is too slow.
 			int dxrAoSamples = 2;
 			bool dxrTextureFiltering = true;
-			int dxrReflectionSamples = 4; // stochastic GGX rays/pixel; bounded for predictable cost
+			int dxrReflectionSamples = 4; // stochastic GGX rays/pixel; the shader scales this
+			                             // down with roughness, so raising it is close to free
 			bool specularAaEnabled = true;
 			float specularAaStrength = 0.25f;
 			bool taaEnabled = true;

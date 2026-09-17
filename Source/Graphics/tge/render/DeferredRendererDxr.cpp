@@ -356,7 +356,7 @@ void DeferredRenderer::RenderDxrLighting()
 		c.gNrdReblur = myTunables.nrdDenoiser == 0 ? 1.f : 0.f;
 		c.gNrdHitDistA = kNrdHitDistanceA;
 		c.gTextureFiltering = myTunables.dxrTextureFiltering ? 1u : 0u;
-		c.gReflectionSamples = uint32_t(std::clamp(myTunables.dxrReflectionSamples, 1, 4));
+		c.gReflectionSamples = uint32_t(std::clamp(myTunables.dxrReflectionSamples, 1, 8));
 		c.gAoSamples = uint32_t(std::clamp(myTunables.dxrAoSamples, 1, 8));
 		const Matrix4x4f worldToClip = myWorldToView * myViewToProj;
 		memcpy(c.gWorldToClip.m, worldToClip.GetDataPtr(), sizeof(c.gWorldToClip.m));

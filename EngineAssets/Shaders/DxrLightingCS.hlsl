@@ -422,7 +422,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
 		//    same factor.
 		// Previously every pixel under the cutoff paid the full budget, which
 		// measured as most of a 56 ms reflection pass on the Bistro scene.
-		const uint maxReflectionSamples = clamp(gReflectionSamples, 1u, 4u);
+		const uint maxReflectionSamples = clamp(gReflectionSamples, 1u, 8u);
 		const float lobe = saturate(hs.roughness / max(gReflectionRoughnessCutoff * 0.70f, 1e-3f));
 		const uint reflectionSamples = clamp((uint)ceil(float(maxReflectionSamples) * lobe * rayWeight), 1u, maxReflectionSamples);
 		[loop] for (uint sample = 0u; sample < reflectionSamples; ++sample)
