@@ -513,9 +513,11 @@ namespace Tga
 		// Motion, device depth, validity, then signed normal + roughness.
 		// The last guide is both a stronger native temporal reject test and the
 		// material-aware input required by NRD/DLAA/Streamline integrations.
-		std::array<rhi::TextureHandle, 6> myTemporalTex;
-		std::array<rhi::SrvHandle, 6> myTemporalSrv;
-		std::array<rhi::UavHandle, 6> myTemporalUav;
+		// [6] is the resolve-time motion vector: surface motion blended toward
+		// the reflected virtual image's motion on specular-dominated pixels.
+		std::array<rhi::TextureHandle, 7> myTemporalTex;
+		std::array<rhi::SrvHandle, 7> myTemporalSrv;
+		std::array<rhi::UavHandle, 7> myTemporalUav;
 		Matrix4x4f myPreviousWorldToClip;
 		Matrix4x4f myResolvePreviousWorldToClip;   // previous frame's matrix, as seen by the resolve pass
 		bool myTemporalHistoryValid = false;

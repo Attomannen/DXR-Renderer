@@ -27,10 +27,16 @@ RWTexture2D<float4> gSurfaceGuide : register(u4);
 RWTexture2D<float4> gDiffuseAlbedo : register(u5); // linear diffuse albedo for DLSS Ray Reconstruction
 RWTexture2D<float4> gSpecularAlbedo : register(u6); // linear F0/specular albedo for DLSS Ray Reconstruction
 // NRD guides and signal, written only while gNrdEnabled is set.
-RWTexture2D<float>  gNrdViewZ : register(u7);           // linear view depth, >NRD denoisingRange for sky
-RWTexture2D<float4> gNrdNormalRoughness : register(u8); // NRD_NORMAL_ENCODING 2 (R10G10B10A2 octahedral)
-RWTexture2D<float4> gNrdDiffuse : register(u9);         // demodulated indirect diffuse radiance + hit distance
-RWTexture2D<float4> gNrdSpecular : register(u10);       // demodulated specular radiance + reflection hit distance
+// Motion for the final resolve (TAA/DLSS) only. NRD keeps the surface motion
+// in gMotionVectors and derives its own specular reprojection from hit
+// distance; this one is the surface motion blended toward the motion of the
+// reflected virtual image, so mirror-like pixels stop smearing when the
+// composited image is reprojected. Written at the end of main().
+RWTexture2D<float2> gResolveMotion : register(u7);
+RWTexture2D<float>  gNrdViewZ : register(u8);           // linear view depth, >NRD denoisingRange for sky
+RWTexture2D<float4> gNrdNormalRoughness : register(u9); // NRD_NORMAL_ENCODING 2 (R10G10B10A2 octahedral)
+RWTexture2D<float4> gNrdDiffuse : register(u10);         // demodulated indirect diffuse radiance + hit distance
+RWTexture2D<float4> gNrdSpecular : register(u11);       // demodulated specular radiance + reflection hit distance
 Texture2D<float2> gBrdfLut : register(t4);
 Texture2D<float> gPreviousEv100 : register(t6);   // exposure history (pre-exposure)
 
@@ -50,6 +56,9 @@ void WriteTemporal(uint2 pixel, float4 currentClip, float4 previousClip, bool ob
 	// which DLSS and NRD read as the whole image moving: visible bouncing.)
 	const float2 motion = valid ? ClipToPixel(previousClip) - ClipToPixel(currentClip) : float2(0,0);
 	gMotionVectors[pixel] = all(isfinite(motion)) ? clamp(motion, -65504.0f, 65504.0f) : float2(0,0);
+	// Default the resolve motion to the surface motion; specular-dominated
+	// pixels overwrite it at the end of main() with the virtual image's motion.
+	gResolveMotion[pixel] = gMotionVectors[pixel];
 	gMotionValidity[pixel] = float2(valid && all(isfinite(motion)) ? 1.0f : 0.0f, previousClip.w > 0 ? saturate(previousClip.z / previousClip.w) : 1.0f);
 	gTemporalDepth[pixel] = currentClip.w > 0.0f ? saturate(currentClip.z / currentClip.w) : 1.0f;
 }
@@ -446,6 +455,38 @@ void main(uint3 dtid : SV_DispatchThreadID)
 	}
 	// Specular occlusion relaxes toward smooth surfaces, preserving mirrors.
 	const float3 specular = envSpecular * lerp(1.0f, ao, hs.roughness);
+
+	// Resolve-time motion for a reflection.
+	//
+	// The temporal resolve reprojects the COMPOSITED image, so it moves a
+	// mirror's reflection with the mirror's own motion vector. A reflected
+	// image does not move with the surface: it moves with the virtual image
+	// that sits behind the surface, along the view ray, at the reflection's hit
+	// distance. Reprojecting it as if it were painted on the surface is what
+	// smeared reflections whenever the camera moved -- worst on smooth,
+	// curved surfaces, where the reflection sweeps fastest.
+	//
+	// Blend by how much this pixel actually IS its reflection, so a rough or
+	// mostly-diffuse surface keeps the surface motion it wants. NRD is not
+	// affected: it still reads gMotionVectors and derives specular
+	// reprojection from the hit distance itself.
+	[branch] if (specularHitDistance < 65504.0f && specularHitDistance > 0.0f)
+	{
+		const float3 toCamera = normalize(gCameraOrigin - hitPos);
+		const float3 virtualPos = hitPos - toCamera * specularHitDistance;
+		const float2 virtualMotion = ClipToPixel(mul(float4(virtualPos, 1), gPreviousWorldToClip))
+			- ClipToPixel(mul(float4(hitPos, 1), gWorldToClip));
+		const float3 kLuma = float3(0.2126f, 0.7152f, 0.0722f);
+		const float specularLuma = dot(max(specular, 0.0f), kLuma);
+		const float otherLuma = dot(max(color, 0.0f), kLuma);
+		const float dominance = specularLuma / max(specularLuma + otherLuma, 1e-4f);
+		// Only near-mirror surfaces have a well-defined virtual image; a broad
+		// lobe has no single one, and its blur hides the error anyway.
+		const float smoothness = 1.0f - smoothstep(0.0f, max(gReflectionRoughnessCutoff, 1e-3f), hs.roughness);
+		const float w = saturate(dominance * smoothness);
+		const float2 blended = lerp(gMotionVectors[dtid.xy], virtualMotion, w);
+		if (all(isfinite(blended))) gResolveMotion[dtid.xy] = clamp(blended, -65504.0f, 65504.0f);
+	}
 	if (gNrdEnabled != 0u && gLightingView == 0u)
 	{
 		// Same demodulation contract as the diffuse signal: NrdCompositeCS

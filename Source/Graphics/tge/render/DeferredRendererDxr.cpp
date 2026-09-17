@@ -135,8 +135,8 @@ bool DeferredRenderer::CreateDxrLightingTargets(Vector2ui aResolution)
 
 	myDxrLightingSrv = dev->CreateSrv(myDxrLightingTex, rhi::SrvDesc{});
 	myDxrLightingUav = dev->CreateUav(myDxrLightingTex, rhi::UavDesc{});
-	const rhi::Format temporalFormats[] = { rhi::Format::R16G16_Float, rhi::Format::R32_Float, rhi::Format::R32G32_Float, rhi::Format::R16G16B16A16_Float, rhi::Format::R16G16B16A16_Float, rhi::Format::R16G16B16A16_Float };
-	const char* temporalNames[] = { "MotionVectorsPixels", "TemporalDeviceDepth", "MotionValidity", "TemporalSurfaceGuide", "DlssDiffuseAlbedo", "DlssSpecularAlbedo" };
+	const rhi::Format temporalFormats[] = { rhi::Format::R16G16_Float, rhi::Format::R32_Float, rhi::Format::R32G32_Float, rhi::Format::R16G16B16A16_Float, rhi::Format::R16G16B16A16_Float, rhi::Format::R16G16B16A16_Float, rhi::Format::R16G16_Float };
+	const char* temporalNames[] = { "MotionVectorsPixels", "TemporalDeviceDepth", "MotionValidity", "TemporalSurfaceGuide", "DlssDiffuseAlbedo", "DlssSpecularAlbedo", "ResolveMotionVectors" };
 	for (size_t i = 0; i < myTemporalTex.size(); ++i) {
 		if (myTemporalUav[i].IsValid()) dev->Destroy(myTemporalUav[i]);
 		if (myTemporalSrv[i].IsValid()) dev->Destroy(myTemporalSrv[i]);
@@ -586,6 +586,7 @@ void DeferredRenderer::ResolveDxrLightingToHdr()
 		ctx.TransitionResource(color, rhi::ResourceState::NonPixelShaderResource);
 		ctx.TransitionResource(myTemporalTex[1], rhi::ResourceState::NonPixelShaderResource);
 		ctx.TransitionResource(myTemporalTex[0], rhi::ResourceState::NonPixelShaderResource);
+		ctx.TransitionResource(myTemporalTex[6], rhi::ResourceState::NonPixelShaderResource);
 		ctx.TransitionResource(myTemporalTex[3], rhi::ResourceState::NonPixelShaderResource);
 		ctx.TransitionResource(myTemporalTex[4], rhi::ResourceState::NonPixelShaderResource);
 		ctx.TransitionResource(myTemporalTex[5], rhi::ResourceState::NonPixelShaderResource);
@@ -601,7 +602,7 @@ void DeferredRenderer::ResolveDxrLightingToHdr()
 			const Matrix4x4f viewToWorld = myWorldToView.GetInverse();
 			dlaaResolved = StreamlineDLSS::Get().EvaluateRayReconstruction(
 				DX11::Rhi()->GetNativeCommandList(), DX11::Rhi()->GetNativeTexture(color), DX11::Rhi()->GetNativeTexture(myDlaaTex),
-				DX11::Rhi()->GetNativeTexture(myTemporalTex[1]), DX11::Rhi()->GetNativeTexture(myTemporalTex[0]), DX11::Rhi()->GetNativeTexture(myTemporalTex[3]),
+				DX11::Rhi()->GetNativeTexture(myTemporalTex[1]), DX11::Rhi()->GetNativeTexture(myTemporalTex[6]), DX11::Rhi()->GetNativeTexture(myTemporalTex[3]),
 				DX11::Rhi()->GetNativeTexture(myTemporalTex[4]), DX11::Rhi()->GetNativeTexture(myTemporalTex[5]),
 				myDxrRenderResolution.x, myDxrRenderResolution.y, myResolution.x, myResolution.y,
 				myTunables.dlssMode > 0 ? myTunables.dlssMode : 1,
@@ -625,7 +626,7 @@ void DeferredRenderer::ResolveDxrLightingToHdr()
 		}
 		else dlaaResolved = StreamlineDLSS::Get().EvaluateDLSS(
 			DX11::Rhi()->GetNativeCommandList(), DX11::Rhi()->GetNativeTexture(color), DX11::Rhi()->GetNativeTexture(myDlaaTex), DX11::Rhi()->GetNativeTexture(myTemporalTex[1]),
-			DX11::Rhi()->GetNativeTexture(myTemporalTex[0]), myDxrRenderResolution.x, myDxrRenderResolution.y, myResolution.x, myResolution.y,
+			DX11::Rhi()->GetNativeTexture(myTemporalTex[6]), myDxrRenderResolution.x, myDxrRenderResolution.y, myResolution.x, myResolution.y,
 			myTunables.dlssMode > 0 ? myTunables.dlssMode : 1, myTaaFrameIndex, myViewToProj.GetDataPtr(), myProjToView.GetDataPtr(),
 			clipToPrevious.GetDataPtr(), previousToClip.GetDataPtr(), myCameraTransform.GetDataPtr(), myNear, myFar, myTaaJitter.x, myTaaJitter.y,
 			!myTaaHistoryValid || myTaaLightingChanged);
@@ -659,7 +660,10 @@ void DeferredRenderer::ResolveDxrLightingToHdr()
 		rhi::ComputePipelineDesc pd; pd.cs = myTaaCS->module;
 		ctx.SetComputePipeline(DX11::Rhi()->CreateComputePipeline(pd));
 		myTaaCb.Bind(ctx);
-		const rhi::SrvHandle inputs[] = {resolvedSrv,myTemporalSrv[1],myTemporalSrv[0],myTemporalSrv[2],myTaaSrv[myTaaHistoryIndex*2],myTaaSrv[myTaaHistoryIndex*2+1],myTemporalSrv[3],myTaaSrv[5+myTaaHistoryIndex]};
+		// Slot 2 is the RESOLVE motion (surface motion, blended toward the
+		// reflected virtual image where specular dominates); NRD above keeps
+		// myTemporalSrv[0], the plain surface motion.
+		const rhi::SrvHandle inputs[] = {resolvedSrv,myTemporalSrv[1],myTemporalSrv[6],myTemporalSrv[2],myTaaSrv[myTaaHistoryIndex*2],myTaaSrv[myTaaHistoryIndex*2+1],myTemporalSrv[3],myTaaSrv[5+myTaaHistoryIndex]};
 		ctx.SetShaderResources(rhi::ShaderStage::Compute,0,8,inputs);
 		ctx.SetSampler(rhi::ShaderStage::Compute,0,myLinearSampler);
 		ctx.SetUnorderedAccess(0,myTaaUav[next*2]);
