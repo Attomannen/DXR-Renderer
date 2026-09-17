@@ -15,7 +15,7 @@ project (projectname)
 	targetname("%{prj.name}_%{cfg.buildcfg}")
 	objdir ("%{dirs.temp}/%{prj.name}/%{cfg.buildcfg}")
 
-	links {"External", "Application", "Game"}
+	links {"External", "Application", "Game", "NRD.lib", "NRI.lib"}
 
 	includedirs { 
 		dirs.external, 
@@ -29,7 +29,13 @@ project (projectname)
 		"source/**.cpp",
 	}
 
-	libdirs { dirs.lib, dirs.dependencies }
+	libdirs { 
+		dirs.lib, 
+		dirs.dependencies, 
+		dirs.root .. "NRD/NRD/NRD-4.17.3/_NRD_SDK/Lib/%{cfg.buildcfg}", 
+		dirs.root .. "NRD/NRD/NRD-4.17.3/_NRI_SDK/Lib/%{cfg.buildcfg}",
+		dirs.root .. "NRD/NRD/NRD-4.17.3/_Bin/%{cfg.buildcfg}" 
+	}
 	
 	filter "configurations:Debug"
 		defines {"_DEBUG"}

@@ -21,6 +21,8 @@ namespace Tga
 	struct VertexShader;
 	struct PixelShader;
 	struct ComputeShader;
+	
+	namespace rhi::dx12 { 	class NrdWrapper; }
 
 	// One point light for the deferred structured-buffer path. Layout must match
 	// GpuLight in DeferredLightingPS.hlsl (two float4s). radius 0 = punctual.
@@ -67,7 +69,7 @@ namespace Tga
 		rhi::SrvHandle GetMotionValiditySrv() const { return myTemporalSrv[2]; }
 		Vector2f GetProjectionJitterPixels() const { return myTaaJitter; }
 		void SetRaySceneStationary(bool stationary) { myRaySceneStationary = stationary; }
-		void ResetTemporalHistory() { myTemporalHistoryValid = false; myTaaHistoryValid = false; myTaaFrameIndex = 0; }
+		void ResetTemporalHistory() { myTemporalHistoryValid = false; myTaaHistoryValid = false; myTaaFrameIndex = 0; myNrdHistoryValid = false; }
 
 		const ModelShader& GetGeometryShader() const { return *myGeometryShader; }
 		// Forward glass uses the opaque HDR snapshot made immediately before the
@@ -327,10 +329,10 @@ namespace Tga
 			bool taaJitter = true;
 			// NVIDIA RTX path.  DLAA runs at native resolution and replaces the
 			// custom temporal resolve only when Streamline reports it available.
-			bool dlaaEnabled = false;
-			// 0=off/native TAA, 1=DLAA, 2=Quality, 3=Balanced, 4=Performance, 5=Ultra Performance.
-			int dlssMode = 0;
-			bool rayReconstructionEnabled = false;
+			int dlssMode = 0;       // 0=off, 1=Native(DLAA), 2=Quality, 3=Balanced, 4=Performance, 5=UltraPerf
+			bool dlaaEnabled = true; // Use DLSS to anti-alias the native resolution
+			bool rayReconstructionEnabled = false; // Override dlaaEnabled and dlssMode to 1
+			bool nrdEnabled = false;
 			// The depth/motion rejection protects disocclusions. Keep more history
 			// on valid samples so single-sample DXR AO and reflections converge
 			// rather than visibly pulse while the camera is still.
@@ -392,8 +394,24 @@ namespace Tga
 		bool CreateDxrBrdfLut();
 		void RenderDxrSmokeTest();
 		void ResolveDxrSmokeToHdr();
+		// One fogged-HDR target plus its half-resolution sun-shaft volume.
+		struct AtmosphereTargetSet
+		{
+			RenderTarget hdr;
+			rhi::TextureHandle volumeTex;
+			rhi::SrvHandle volumeSrv;
+			rhi::UavHandle volumeUav;
+			Vector2ui size{ 0, 0 };
+			bool IsValid() const { return hdr.GetSrv().IsValid() && volumeSrv.IsValid() && volumeUav.IsValid(); }
+		};
+		bool CreateAtmosphereTargetSet(Vector2ui aResolution, AtmosphereTargetSet& aSet);
+		void ReleaseAtmosphereTargetSet(AtmosphereTargetSet& aSet);
 		bool CreateAtmosphereTargets(Vector2ui resolution);
-		bool RenderAtmosphere(bool beforeTemporal = false);
+		// aRenderResolution: apply fog in the DXR render-resolution domain, into
+		// myAtmosphereRender, instead of the display-resolution myHdr. Used when
+		// DLSS upscales, so fog is part of the image DLSS reconstructs --
+		// previously fog was simply never drawn in that mode.
+		bool RenderAtmosphere(bool beforeTemporal = false, bool aRenderResolution = false);
 		rhi::ConstantBuffer myAtmosphereCb;
 		rhi::ConstantBuffer myAtmosphereShadowCameraCb;
 		const PixelShader* myAtmospherePs = nullptr;
@@ -403,6 +421,9 @@ namespace Tga
 		rhi::TextureHandle myVolumeTex;
 		rhi::SrvHandle myVolumeSrv;
 		rhi::UavHandle myVolumeUav;
+		// Render-resolution fog outputs; only allocated while DLSS renders the
+		// ray pass below display resolution.
+		AtmosphereTargetSet myAtmosphereRender;
 		void RenderLocalShadows(const std::function<void(const Camera&)>& aDrawShadowCasters);
 		bool CreatePostFxTargets(Vector2ui aResolution);
 		void PostFxFullscreen(const PixelShader* aPs, RenderTarget& aDst, Vector2ui aDstSize,
@@ -497,6 +518,20 @@ namespace Tga
 		const PixelShader* myDxrSmokeCopyPs = nullptr; // linear HDR copy into myHdr
 		bool myDxrSmokeTestWanted = false;
 		bool myDxrSmokeFullscreenWanted = false;
+		
+		// NVIDIA NRD (RELAX diffuse) over the DXR pass's indirect diffuse.
+		// Created lazily on first use and dropped on every target resize.
+		std::unique_ptr<rhi::dx12::NrdWrapper> myNrd;
+		bool myNrdFailed = false;          // don't retry creation every frame
+		bool myNrdHistoryValid = false;
+		// viewZ (R32F), normal+roughness (R10G10B10A2), noisy diffuse, denoised diffuse (RGBA16F)
+		std::array<rhi::TextureHandle, 4> myNrdTex;
+		std::array<rhi::SrvHandle, 4> myNrdSrv;
+		std::array<rhi::UavHandle, 4> myNrdUav;
+		const ComputeShader* myNrdCompositeCS = nullptr;
+		Matrix4x4f myNrdPrevWorldToView, myNrdPrevViewToClip;
+		bool NrdActive() const;
+		void DenoiseDxrDiffuse(rhi::ICommandContext& ctx);
 
 		// --- SSAO ---
 		const PixelShader* mySsaoPs = nullptr;

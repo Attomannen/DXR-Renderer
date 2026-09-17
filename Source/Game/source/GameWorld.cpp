@@ -1219,7 +1219,7 @@ struct GameWorld::Impl
 		// frame, which makes emissive/direct changes start propagating immediately.
 		// Maintain an approximately constant trace budget when a low ray count
 		// is selected, so each probe gets fresh temporal samples quickly.
-		const int rtBatch = std::clamp(1024 / std::max(giRTRayCount, 1), 1, 32);
+		const int rtBatch = std::clamp(32768 / std::max(giRTRayCount, 1), 1, 256);
 		const int batch = giPriming ? (useRT ? std::max(giPrimeBatch, rtBatch) : giPrimeBatch)
 			: (useRT ? std::max(giTrickle, rtBatch) : 1);
 		std::vector<int> prioritizedProbes;
@@ -1656,6 +1656,7 @@ void GameWorld::Init()
 			// 0 = native temporal, 1 = DLAA, 2..5 = DLSS Quality..Ultra Performance.
 			tun.dlssMode = std::clamp(EnvInt("BENCH_DLSS_MODE", 0), 0, 5);
 			tun.dlaaEnabled = tun.dlssMode == 1;
+			tun.nrdEnabled = EnvInt("BENCH_NRD", 0) != 0;
 			if (EnvInt("BENCH_DXR_DENOISER", 0) != 0)
 			{
 				tun.rayReconstructionEnabled = true;
@@ -1857,11 +1858,21 @@ void GameWorld::DrawDebugUI()
 						s.deferred->ResetTemporalHistory();
 						s.StartGiPrime();
 					}
+					if (ImGui::Checkbox("NVIDIA NRD indirect diffuse denoiser", &tun->nrdEnabled))
+					{
+						if (tun->nrdEnabled) tun->rayReconstructionEnabled = false;
+						s.deferred->ResetTemporalHistory();
+					}
+					ImGui::TextDisabled("RELAX denoises the ray-traced AO/GI/sky term before TAA or DLSS.");
 					ImGui::TextDisabled("DLSS SR modes render DXR at lower resolution and reconstruct HDR at display resolution.");
 					if (ImGui::Checkbox("DLSS Ray Reconstruction denoiser (RTX)", &tun->rayReconstructionEnabled))
 					{
-						// RR is a DLSS extension and owns the temporal accumulation.
-						if (tun->rayReconstructionEnabled) { tun->dlaaEnabled = true; tun->dlssMode = 1; }
+						if (tun->rayReconstructionEnabled)
+						{
+							tun->nrdEnabled = false;
+							tun->dlaaEnabled = true;
+							tun->dlssMode = 1;
+						}
 						s.deferred->RecreateDxrTargets();
 						s.deferred->ResetTemporalHistory();
 						s.StartGiPrime();

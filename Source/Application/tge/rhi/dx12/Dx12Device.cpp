@@ -282,6 +282,21 @@ namespace Tga::rhi::dx12
 				infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_INFO, FALSE);
 				infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_MESSAGE, FALSE);
 			}
+			// DrainDebugMessages only runs at EndFrame, so a message raised
+			// immediately before a mid-frame crash never reaches the log. Print
+			// errors the moment the layer raises them when the runtime supports it.
+			ComPtr<ID3D12InfoQueue1> infoQueue1;
+			if (SUCCEEDED(myDevice.As(&infoQueue1)))
+			{
+				DWORD cookie = 0;
+				infoQueue1->RegisterMessageCallback(
+					[](D3D12_MESSAGE_CATEGORY, D3D12_MESSAGE_SEVERITY severity, D3D12_MESSAGE_ID, LPCSTR description, void*)
+					{
+						if (severity <= D3D12_MESSAGE_SEVERITY_ERROR)
+							ERROR_PRINT("D3D12 debug [immediate]: %s", description);
+					},
+					D3D12_MESSAGE_CALLBACK_FLAG_NONE, nullptr, &cookie);
+			}
 
 			// DXGI_CREATE_FACTORY_DEBUG (set above) turns on DXGI's OWN separate
 			// debug layer (dxgidebug.dll) with its OWN independent break-on-

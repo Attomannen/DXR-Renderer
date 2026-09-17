@@ -19,6 +19,9 @@
 #include <tge/graphics/GraphicsEngine.h>
 #include <tge/graphics/GraphicsStateStack.h>
 #include <tge/graphics/FullscreenEffect.h>
+#include "tge/rhi/dx12/Dx12Device.h"
+#include "tge/rhi/dx12/Dx12CommandContext.h"
+#include "tge/render/NrdWrapper.h"
 #include <tge/graphics/Camera.h>
 #include <tge/shaders/ModelShader.h>
 #include <tge/render/RenderGraph.h>
@@ -160,7 +163,7 @@ namespace
 		uint32_t aoSamples;
 		uint32_t reflectionPad[2];
 		float worldToClip[16], previousWorldToClip[16];
-		uint32_t temporalHistoryValid; float specularAaStrength; uint32_t reflectionFrameIndex, temporalPad;
+		uint32_t temporalHistoryValid; float specularAaStrength; uint32_t reflectionFrameIndex, nrdEnabled;
 		float jitter[2], previousJitter[2];
 	};
 	static_assert(offsetof(DxrSmokeCb, environmentTint) == 128);
@@ -397,6 +400,7 @@ bool DeferredRenderer::Init(Vector2ui aResolution)
 			}
 			myDxrSmokeCopyPs = DX11::LoadPixelShader("Shaders/PostprocessCopyPS");
 			myTaaCS = DX11::LoadComputeShaderDxil("Shaders/TemporalResolveCS");
+			myNrdCompositeCS = DX11::LoadComputeShaderDxil("Shaders/NrdCompositeCS");
 			myTaaCb.Create(*DX11::Rhi(), sizeof(TaaCb), rhi::ShaderStage::Compute, 0, "TaaCb");
 			if (!myTaaCS || !myTaaCb.IsValid()) myTunables.taaEnabled = false;
 			if (!myDxrSmokeCb.IsValid() || !myDxrSmokeSampler.IsValid() || !myDxrSmokeCopyPs ||
@@ -937,6 +941,11 @@ bool DeferredRenderer::CreateDxrSmokeTarget(Vector2ui aResolution)
 	}
 	myDxrRenderResolution = { std::max(1u, uint32_t(std::lround(float(aResolution.x) * renderScale))),
 		std::max(1u, uint32_t(std::lround(float(aResolution.y) * renderScale))) };
+
+	// NRD preallocates its history at a fixed size; recreate it on next use.
+	myNrd.reset();
+	myNrdFailed = false;
+
 	// Resize can replace this target while the renderer stays alive. Release
 	// the old views first, then their texture, so each resize owns exactly one
 	// DXR output resource rather than leaking permanent descriptor slots.
@@ -979,6 +988,21 @@ bool DeferredRenderer::CreateDxrSmokeTarget(Vector2ui aResolution)
 		myTemporalUav[i] = dev->CreateUav(myTemporalTex[i], rhi::UavDesc{});
 		if (!myTemporalTex[i].IsValid() || !myTemporalSrv[i].IsValid() || !myTemporalUav[i].IsValid()) return false;
 	}
+	{
+		// Always allocated: DxrSmokeTestCS declares u7..u9 unconditionally.
+		const rhi::Format nrdFormats[] = { rhi::Format::R32_Float, rhi::Format::R10G10B10A2_UNorm, rhi::Format::R16G16B16A16_Float, rhi::Format::R16G16B16A16_Float };
+		const char* nrdNames[] = { "NrdViewZ", "NrdNormalRoughness", "NrdDiffuseNoisy", "NrdDiffuseDenoised" };
+		for (size_t i = 0; i < myNrdTex.size(); ++i) {
+			if (myNrdUav[i].IsValid()) dev->Destroy(myNrdUav[i]);
+			if (myNrdSrv[i].IsValid()) dev->Destroy(myNrdSrv[i]);
+			if (myNrdTex[i].IsValid()) dev->Destroy(myNrdTex[i]);
+			td.format = nrdFormats[i]; td.debugName = nrdNames[i];
+			myNrdTex[i] = dev->CreateTexture(td);
+			myNrdSrv[i] = dev->CreateSrv(myNrdTex[i], rhi::SrvDesc{});
+			myNrdUav[i] = dev->CreateUav(myNrdTex[i], rhi::UavDesc{});
+			if (!myNrdTex[i].IsValid() || !myNrdSrv[i].IsValid() || !myNrdUav[i].IsValid()) return false;
+		}
+	}
 	for (size_t i = 0; i < myTaaTex.size(); ++i) {
 		if (myTaaUav[i].IsValid()) dev->Destroy(myTaaUav[i]);
 		if (myTaaSrv[i].IsValid()) dev->Destroy(myTaaSrv[i]);
@@ -1005,6 +1029,18 @@ bool DeferredRenderer::CreateDxrSmokeTarget(Vector2ui aResolution)
 	{
 		ERROR_PRINT("DeferredRenderer: DXR smoke-test view creation failed");
 		return false;
+	}
+	// Fog has to be applied in the render-resolution domain when DLSS upscales
+	// (see ResolveDxrSmokeToHdr), and every fog input -- ray depth, the ray
+	// output -- is at render resolution. Only pay for these while upscaling.
+	if (myDxrRenderResolution.x != aResolution.x || myDxrRenderResolution.y != aResolution.y)
+	{
+		if (!CreateAtmosphereTargetSet(myDxrRenderResolution, myAtmosphereRender))
+			ERROR_PRINT("DeferredRenderer: render-resolution fog targets failed; fog will be skipped under DLSS upscaling");
+	}
+	else
+	{
+		ReleaseAtmosphereTargetSet(myAtmosphereRender);
 	}
 	return true;
 }
@@ -1537,6 +1573,10 @@ void DeferredRenderer::RenderDxrSmokeTest()
 		const uint32_t phases = std::clamp(uint32_t(std::lround(8.f * ratio * ratio)), 8u, 64u);
 		const uint32_t index = (myTaaFrameIndex % phases) + 1u;
 		myTaaJitter = { RadicalInverse(index, 2u) - 0.5f, RadicalInverse(index, 3u) - 0.5f };
+		// The rays are jittered through gJitter. Do not also jitter
+		// myViewToProj: SetCamera compares it against the camera's projection
+		// and would reset temporal history every frame, and motion vectors
+		// would pick up the jitter delta.
 	}
 
 	{
@@ -1593,6 +1633,7 @@ void DeferredRenderer::RenderDxrSmokeTest()
 		c.reflectionFrameIndex = myDxrFrameIndex++;
 		c.jitter[0] = myTaaJitter.x; c.jitter[1] = myTaaJitter.y;
 		c.previousJitter[0] = myPreviousTaaJitter.x; c.previousJitter[1] = myPreviousTaaJitter.y;
+		c.nrdEnabled = NrdActive() ? 1u : 0u;
 		myDxrSmokeCb.Update(ctx, c);
 	}
 
@@ -1614,11 +1655,14 @@ void DeferredRenderer::RenderDxrSmokeTest()
 	myGiVolumeCb.Bind(ctx, rhi::ShaderStage::Compute, 13);
 	ctx.SetUnorderedAccess(0, myDxrSmokeUav);
 	for (uint32_t i = 0; i < myTemporalUav.size(); ++i) ctx.SetUnorderedAccess(i + 1, myTemporalUav[i]);
+	const uint32_t nrdFirstUav = uint32_t(myTemporalUav.size()) + 1;
+	for (uint32_t i = 0; i < 3; ++i) ctx.SetUnorderedAccess(nrdFirstUav + i, myNrdUav[i]);
 
 	ctx.Dispatch((myDxrRenderResolution.x + 7) / 8, (myDxrRenderResolution.y + 7) / 8, 1);
 
 	ctx.SetUnorderedAccess(0, {});
 	for (uint32_t i = 0; i < myTemporalUav.size(); ++i) ctx.SetUnorderedAccess(i + 1, {});
+	for (uint32_t i = 0; i < 3; ++i) ctx.SetUnorderedAccess(nrdFirstUav + i, {});
 	myPreviousWorldToClip = myWorldToView * myViewToProj;
 	myTemporalHistoryValid = true;
 	ctx.SetShaderResource(rhi::ShaderStage::Compute, 0, rhi::SrvHandle{});
@@ -1626,6 +1670,91 @@ void DeferredRenderer::RenderDxrSmokeTest()
 	ctx.SetShaderResource(rhi::ShaderStage::Compute, 1, rhi::SrvHandle{});
 	ctx.SetShaderResource(rhi::ShaderStage::Compute, 2, rhi::SrvHandle{});
 	ctx.SetShaderResource(rhi::ShaderStage::Compute, 3, rhi::SrvHandle{});
+	ctx.SetComputePipeline({});
+
+	if (NrdActive())
+		DenoiseDxrDiffuse(ctx);
+}
+
+bool DeferredRenderer::NrdActive() const
+{
+	// Mutually exclusive with Ray Reconstruction, which denoises the composed
+	// frame itself and reads gDiffuseAlbedo.a as plain alpha.
+	return myTunables.nrdEnabled && !myNrdFailed && myNrdCompositeCS && myNrdTex[3].IsValid()
+		&& !myTunables.rayReconstructionEnabled && myTunables.dxrLightingView == 0
+		&& dynamic_cast<rhi::dx12::Dx12CommandContext*>(&DX11::Rhi()->GetContext()) != nullptr;
+}
+
+void DeferredRenderer::DenoiseDxrDiffuse(rhi::ICommandContext& ctx)
+{
+	rhi::IDevice* dev = DX11::Rhi();
+	auto* dx12Ctx = static_cast<rhi::dx12::Dx12CommandContext*>(&ctx);
+	if (!myNrd)
+	{
+		myNrd = std::make_unique<rhi::dx12::NrdWrapper>();
+		if (!myNrd->Initialize(static_cast<rhi::dx12::Dx12Device*>(dev), myDxrRenderResolution.x, myDxrRenderResolution.y))
+		{
+			myNrd.reset();
+			myNrdFailed = true;
+			return;
+		}
+		myNrdHistoryValid = false;
+	}
+
+	nrd::CommonSettings settings = {};
+	// Both engine and NRD store matrices for row vectors in row-major order,
+	// which is byte-identical to NRD's column-major, column-vector layout.
+	// NRD wants the unjittered projection; jitter is passed separately.
+	memcpy(settings.viewToClipMatrix, myViewToProj.GetDataPtr(), sizeof(settings.viewToClipMatrix));
+	memcpy(settings.worldToViewMatrix, myWorldToView.GetDataPtr(), sizeof(settings.worldToViewMatrix));
+	const bool history = myNrdHistoryValid;
+	memcpy(settings.viewToClipMatrixPrev, (history ? myNrdPrevViewToClip : myViewToProj).GetDataPtr(), sizeof(settings.viewToClipMatrixPrev));
+	memcpy(settings.worldToViewMatrixPrev, (history ? myNrdPrevWorldToView : myWorldToView).GetDataPtr(), sizeof(settings.worldToViewMatrixPrev));
+	// IN_MV holds pixel deltas; NRD wants UV deltas.
+	settings.motionVectorScale[0] = 1.f / float(myDxrRenderResolution.x);
+	settings.motionVectorScale[1] = 1.f / float(myDxrRenderResolution.y);
+	settings.motionVectorScale[2] = 0.f;
+	settings.isMotionVectorInWorldSpace = false;
+	settings.cameraJitter[0] = myTaaJitter.x;
+	settings.cameraJitter[1] = myTaaJitter.y;
+	settings.cameraJitterPrev[0] = myPreviousTaaJitter.x;
+	settings.cameraJitterPrev[1] = myPreviousTaaJitter.y;
+	settings.resourceSize[0] = settings.resourceSizePrev[0] = settings.rectSize[0] = settings.rectSizePrev[0] = uint16_t(myDxrRenderResolution.x);
+	settings.resourceSize[1] = settings.resourceSizePrev[1] = settings.rectSize[1] = settings.rectSizePrev[1] = uint16_t(myDxrRenderResolution.y);
+	settings.denoisingRange = 1e6f; // sky writes 1e7
+	settings.accumulationMode = history ? nrd::AccumulationMode::CONTINUE : nrd::AccumulationMode::CLEAR_AND_RESTART;
+	myNrdPrevViewToClip = myViewToProj;
+	myNrdPrevWorldToView = myWorldToView;
+	myNrdHistoryValid = true;
+
+	// NRD restores exactly these states, so the RHI's tracking stays valid.
+	ctx.TransitionResource(myNrdTex[0], rhi::ResourceState::NonPixelShaderResource);
+	ctx.TransitionResource(myNrdTex[1], rhi::ResourceState::NonPixelShaderResource);
+	ctx.TransitionResource(myNrdTex[2], rhi::ResourceState::NonPixelShaderResource);
+	ctx.TransitionResource(myTemporalTex[0], rhi::ResourceState::NonPixelShaderResource);
+	ctx.TransitionResource(myNrdTex[3], rhi::ResourceState::UnorderedAccess);
+	dx12Ctx->FlushBarriers();
+
+	rhi::dx12::NrdWrapper::Inputs in;
+	in.viewZ = static_cast<ID3D12Resource*>(dev->GetNativeTexture(myNrdTex[0]));
+	in.normalRoughness = static_cast<ID3D12Resource*>(dev->GetNativeTexture(myNrdTex[1]));
+	in.diffuse = static_cast<ID3D12Resource*>(dev->GetNativeTexture(myNrdTex[2]));
+	in.output = static_cast<ID3D12Resource*>(dev->GetNativeTexture(myNrdTex[3]));
+	in.motion = static_cast<ID3D12Resource*>(dev->GetNativeTexture(myTemporalTex[0]));
+	dx12Ctx->PushMarker("NRD RELAX diffuse");
+	myNrd->Denoise(*dx12Ctx, in, settings);
+	dx12Ctx->PopMarker();
+
+	rhi::ComputePipelineDesc pd;
+	pd.cs = myNrdCompositeCS->module;
+	ctx.SetComputePipeline(dev->CreateComputePipeline(pd));
+	ctx.SetShaderResource(rhi::ShaderStage::Compute, 0, myNrdSrv[3]);
+	ctx.SetShaderResource(rhi::ShaderStage::Compute, 1, myTemporalSrv[4]);
+	ctx.SetUnorderedAccess(0, myDxrSmokeUav);
+	ctx.Dispatch((myDxrRenderResolution.x + 7) / 8, (myDxrRenderResolution.y + 7) / 8, 1);
+	ctx.SetUnorderedAccess(0, {});
+	ctx.SetShaderResource(rhi::ShaderStage::Compute, 0, rhi::SrvHandle{});
+	ctx.SetShaderResource(rhi::ShaderStage::Compute, 1, rhi::SrvHandle{});
 	ctx.SetComputePipeline({});
 }
 
@@ -1954,6 +2083,37 @@ void DeferredRenderer::PostFxFullscreen(const PixelShader* aPs, RenderTarget& aD
 	gss.SetBlendState(BlendState::Disabled);
 }
 
+bool DeferredRenderer::CreateAtmosphereTargetSet(Vector2ui aResolution, AtmosphereTargetSet& aSet)
+{
+	ReleaseAtmosphereTargetSet(aSet);
+	auto* dev = DX11::Rhi();
+	aSet.hdr = RenderTarget::Create(aResolution, rhi::Format::R16G16B16A16_Float);
+	rhi::TextureDesc td{};
+	// The volume shader and the composite both derive the volume size as
+	// ceil(target / 2), so it must match the target it is paired with exactly.
+	td.width = (aResolution.x + 1) / 2; td.height = (aResolution.y + 1) / 2;
+	td.format = rhi::Format::R16G16B16A16_Float;
+	td.bind = rhi::TextureBind::ShaderResource | rhi::TextureBind::UnorderedAccess;
+	td.debugName = "AtmosphereSunlightRender";
+	aSet.volumeTex = dev->CreateTexture(td);
+	if (aSet.volumeTex.IsValid())
+	{
+		aSet.volumeSrv = dev->CreateSrv(aSet.volumeTex, rhi::SrvDesc{});
+		aSet.volumeUav = dev->CreateUav(aSet.volumeTex, rhi::UavDesc{});
+	}
+	aSet.size = aResolution;
+	return aSet.IsValid();
+}
+
+void DeferredRenderer::ReleaseAtmosphereTargetSet(AtmosphereTargetSet& aSet)
+{
+	auto* dev = DX11::Rhi();
+	if (aSet.volumeUav.IsValid()) dev->Destroy(aSet.volumeUav);
+	if (aSet.volumeSrv.IsValid()) dev->Destroy(aSet.volumeSrv);
+	if (aSet.volumeTex.IsValid()) dev->Destroy(aSet.volumeTex);
+	aSet = AtmosphereTargetSet{};
+}
+
 bool DeferredRenderer::CreateAtmosphereTargets(Vector2ui resolution)
 {
 	auto* dev = DX11::Rhi();
@@ -1975,21 +2135,32 @@ bool DeferredRenderer::CreateAtmosphereTargets(Vector2ui resolution)
 	return myAtmosphereHdr.GetSrv().IsValid() && myVolumeSrv.IsValid() && myVolumeUav.IsValid();
 }
 
-bool DeferredRenderer::RenderAtmosphere(bool beforeTemporal)
+bool DeferredRenderer::RenderAtmosphere(bool beforeTemporal, bool aRenderResolution)
 {
 	const auto& t = myTunables;
+	// Two output domains. Display resolution writes into myAtmosphereHdr and
+	// swaps it into myHdr, as before. Render resolution (DLSS upscaling) writes
+	// into myAtmosphereRender, whose image then becomes DLSS's colour input;
+	// every fog input in that mode (ray depth, the ray output) is already at
+	// render resolution, and the shaders derive all their pixel maths from
+	// FogWidth/FogHeight, so the only thing that changes is the extent.
+	const Vector2ui extent = aRenderResolution ? myDxrRenderResolution : myResolution;
+	const bool targetsValid = aRenderResolution ? myAtmosphereRender.IsValid() : myAtmosphereHdr.GetSrv().IsValid();
 	// Diagnostic images must remain unmodified. Fog has no temporal history of its own.
-	if (!t.fogEnabled || (t.fogDensity <= 0.f && t.atmosphereDebugView == 0) || !myAtmospherePs || !myAtmosphereCb.IsValid() || !myAtmosphereHdr.GetSrv().IsValid()
+	if (!t.fogEnabled || (t.fogDensity <= 0.f && t.atmosphereDebugView == 0) || !myAtmospherePs || !myAtmosphereCb.IsValid() || !targetsValid
 		|| (IsDxrSmokeFullscreen() && t.dxrLightingView != 0)
 		|| (myTaaWasEnabled && t.taaDebugView != 0)) return false;
 	auto* dev = DX11::Rhi(); auto& ctx = dev->GetContext();
 	const bool rayDepth = IsDxrRenderer() || IsDxrSmokeFullscreen();
 	if (rayDepth && !beforeTemporal) return false;
+	if (aRenderResolution && !rayDepth) return false; // only the DXR path renders below display resolution
+	const rhi::UavHandle volumeUav = aRenderResolution ? myAtmosphereRender.volumeUav : myVolumeUav;
+	const rhi::SrvHandle volumeSrv = aRenderResolution ? myAtmosphereRender.volumeSrv : myVolumeSrv;
 	const bool rayVolume = rayDepth && myVolumeRTCS && dev->BindRaytracingSceneForCompute();
 	const ComputeShader* volume = rayDepth ? myVolumeRTCS : myVolumeCS;
 	const bool volumeActive = t.volumetricEnabled && t.volumetricStrength > 0 && t.fogDensity > 0 && volume
 		&& t.dxrSunIntensity * (t.dxrSunTint[0] + t.dxrSunTint[1] + t.dxrSunTint[2]) > 0.f
-		&& myVolumeUav.IsValid() && (rayDepth ? rayVolume : (IsShadows() && myAtmosphereShadowCameraCb.IsValid()));
+		&& volumeUav.IsValid() && (rayDepth ? rayVolume : (IsShadows() && myAtmosphereShadowCameraCb.IsValid()));
 	AtmosphereCb cb{};
 	const Matrix4x4f clipToWorld = myProjToView * Matrix4x4f::GetFastInverse(myWorldToView);
 	std::memcpy(cb.clipToWorld, clipToWorld.GetDataPtr(), 64);
@@ -2009,7 +2180,7 @@ bool DeferredRenderer::RenderAtmosphere(bool beforeTemporal)
 	cb.volumeDistance=std::clamp(t.volumetricDistance,1.f,300.f);
 	cb.volumeStrength=std::clamp(t.volumetricStrength,0.f,2.f);
 	cb.anisotropy=std::clamp(t.volumetricAnisotropy,0.f,0.8f);
-	cb.width=myResolution.x; cb.height=myResolution.y;
+	cb.width=extent.x; cb.height=extent.y;
 	cb.steps=uint32_t(std::clamp(t.volumetricSteps,8,64));
 	cb.affectSky=t.fogAffectSky ? 1u:0u;
 	cb.volumeEnabled=volumeActive ? 1u:0u; cb.debugView=uint32_t(t.atmosphereDebugView);
@@ -2036,16 +2207,16 @@ bool DeferredRenderer::RenderAtmosphere(bool beforeTemporal)
 			ctx.SetShaderResource(rhi::ShaderStage::Compute,1,myShadowSrv);
 			ctx.SetSampler(rhi::ShaderStage::Compute,2,myShadowCmpSampler);
 		}
-		ctx.SetUnorderedAccess(0,myVolumeUav);
-		ctx.Dispatch(((myResolution.x+1)/2+7)/8,((myResolution.y+1)/2+7)/8,1);
+		ctx.SetUnorderedAccess(0,volumeUav);
+		ctx.Dispatch(((extent.x+1)/2+7)/8,((extent.y+1)/2+7)/8,1);
 		ctx.SetUnorderedAccess(0,{});
 		const rhi::SrvHandle nulls[5]={}; ctx.SetShaderResources(rhi::ShaderStage::Compute,0,5,nulls);
 		ctx.SetComputePipeline({});
 	}
 	auto& gss=GraphicsEngine::GetInstance()->GetGraphicsStateStack();
 	gss.SetBlendState(BlendState::Disabled);
-	SetTargets(ctx,{myAtmosphereHdr.GetRtv()},{},myResolution);
-	const rhi::SrvHandle inputs[]={beforeTemporal ? myDxrSmokeTestSrv : myHdr.GetSrv(),volumeActive ? myVolumeSrv : rhi::SrvHandle{}};
+	SetTargets(ctx,{aRenderResolution ? myAtmosphereRender.hdr.GetRtv() : myAtmosphereHdr.GetRtv()},{},extent);
+	const rhi::SrvHandle inputs[]={beforeTemporal ? myDxrSmokeTestSrv : myHdr.GetSrv(),volumeActive ? volumeSrv : rhi::SrvHandle{}};
 	ctx.SetShaderResources(rhi::ShaderStage::Pixel,1,2,inputs);
 	ctx.SetShaderResource(rhi::ShaderStage::Pixel,4,depth);
 	ctx.SetSampler(rhi::ShaderStage::Pixel,3,myLinearSampler);
@@ -2053,7 +2224,7 @@ bool DeferredRenderer::RenderAtmosphere(bool beforeTemporal)
 	BindFullscreen(myAtmospherePs); ctx.Draw(3,0);
 	const rhi::SrvHandle nulls[5]={}; ctx.SetShaderResources(rhi::ShaderStage::Pixel,0,5,nulls);
 	ctx.SetRenderTargets(0,nullptr,{});
-	std::swap(myHdr,myAtmosphereHdr);
+	if (!aRenderResolution) std::swap(myHdr,myAtmosphereHdr);
 	return true;
 }
 
@@ -2170,16 +2341,21 @@ void DeferredRenderer::ResolveDxrSmokeToHdr()
 {
 	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
 	const bool superResolution = myTunables.dlssMode >= 2 && StreamlineDLSS::Get().IsAvailable();
-	// Atmosphere is display-resolution compositing; it must be applied after
-	// DLSS, not folded into a low-resolution radiance input.
-	const bool atmosphereApplied = superResolution ? false : RenderAtmosphere(true);
-	rhi::SrvHandle resolvedSrv = atmosphereApplied ? myHdr.GetSrv() : myDxrSmokeTestSrv;
+	// Fog is applied before the temporal/DLSS resolve in both modes. When DLSS
+	// upscales, it is applied at render resolution and becomes part of the image
+	// DLSS reconstructs. This used to be skipped entirely under upscaling on the
+	// grounds that fog belongs after DLSS at display resolution -- but the pass
+	// meant to do that returns immediately for ray depth, so fog was simply
+	// never drawn in any DLSS super-resolution mode.
+	const bool atmosphereApplied = RenderAtmosphere(true, superResolution);
+	const RenderTarget& foggedTarget = superResolution ? myAtmosphereRender.hdr : myHdr;
+	rhi::SrvHandle resolvedSrv = atmosphereApplied ? foggedTarget.GetSrv() : myDxrSmokeTestSrv;
 	const bool dlaaRequested = (myTunables.dlssMode > 0 || myTunables.dlaaEnabled || myTunables.rayReconstructionEnabled) && myTunables.dxrLightingView == 0 && StreamlineDLSS::Get().IsAvailable();
 	const bool rrRequested = myTunables.rayReconstructionEnabled && !superResolution && StreamlineDLSS::Get().IsRayReconstructionAvailable();
 	bool dlaaResolved = false;
 	if (dlaaRequested && myDlaaTex.IsValid())
 	{
-		const rhi::TextureHandle color = atmosphereApplied ? myHdr.GetTextureHandle() : myDxrSmokeTex;
+		const rhi::TextureHandle color = atmosphereApplied ? foggedTarget.GetTextureHandle() : myDxrSmokeTex;
 		// Streamline validates every supplied state.  Make the RHI perform the
 		// transitions, then pass those exact D3D12 states in the resource tags.
 		ctx.TransitionResource(color, rhi::ResourceState::NonPixelShaderResource);
@@ -2189,6 +2365,7 @@ void DeferredRenderer::ResolveDxrSmokeToHdr()
 		ctx.TransitionResource(myTemporalTex[4], rhi::ResourceState::NonPixelShaderResource);
 		ctx.TransitionResource(myTemporalTex[5], rhi::ResourceState::NonPixelShaderResource);
 		ctx.TransitionResource(myDlaaTex, rhi::ResourceState::UnorderedAccess);
+
 		const Matrix4x4f worldToClip = myWorldToView * myViewToProj;
 		const Matrix4x4f previousToWorld = myPreviousWorldToClip.GetInverse();
 		const Matrix4x4f clipToPrevious = worldToClip.GetInverse() * myPreviousWorldToClip;
@@ -2270,7 +2447,18 @@ void DeferredRenderer::ResolveDxrSmokeToHdr()
 		myPreviousTaaJitter = myTaaJitter;
 		++myTaaFrameIndex;
 	} else myTaaHistoryValid = false;
-	if (atmosphereApplied && !resolveTemporal) return;
+	// The only case where the finished image is already in myHdr: display-
+	// resolution fog was written there and nothing resolved it afterwards.
+	// This used to be `atmosphereApplied && !resolveTemporal`, which is also
+	// true when DLSS/DLAA/RR *did* resolve -- so with fog on, their output was
+	// computed and then thrown away. It also skipped the lighting-changed reset
+	// below, leaving that flag stuck after a light edit, which in turn kept
+	// jitter off and forced a DLSS history reset every frame.
+	if (atmosphereApplied && !superResolution && !resolveTemporal && !dlaaResolved)
+	{
+		myTaaLightingChanged = false;
+		return;
+	}
 	const float clear[4] = { 0.f, 0.f, 0.f, 0.f };
 	ctx.ClearRenderTarget(myHdr.GetRtv(), clear);
 	SetTargets(ctx, { myHdr.GetRtv() }, {}, myResolution);

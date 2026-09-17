@@ -47,6 +47,14 @@ namespace Tga::rhi::dx12
 		myBoundIb = {};
 	}
 
+	void Dx12CommandContext::RestoreAfterExternalCommands()
+	{
+		ID3D12DescriptorHeap* heaps[] = { myDevice.CbvSrvUavScratch().Heap(), myDevice.SamplerScratch().Heap() };
+		List()->SetDescriptorHeaps(2, heaps);
+		// Everything OnBeginFrame rebinds was invalidated the same way.
+		OnBeginFrame();
+	}
+
 	// ---- targets / viewport / clears ----
 	// SEH-isolated + retried: found debugging DeferredRenderer::GiProjectProbe
 	// (2026-09-11) -- the FIRST OMSetRenderTargets call after ANY compute-

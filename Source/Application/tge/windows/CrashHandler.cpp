@@ -31,6 +31,41 @@ namespace
 				code, gotSymbol ? symbol->Name : "???", symDisplacement,
 				gotLine ? line.FileName : "???", gotLine ? line.LineNumber : 0u, addr);
 
+			// The faulting frame alone is often a CRT or driver routine (memset,
+			// memcpy) that says nothing about who called it. Walk the rest.
+			CONTEXT context = *aInfo->ContextRecord;
+			STACKFRAME64 frame = {};
+			frame.AddrPC.Offset = context.Rip;    frame.AddrPC.Mode = AddrModeFlat;
+			frame.AddrFrame.Offset = context.Rbp; frame.AddrFrame.Mode = AddrModeFlat;
+			frame.AddrStack.Offset = context.Rsp; frame.AddrStack.Mode = AddrModeFlat;
+			HANDLE thread = GetCurrentThread();
+			for (int depth = 0; depth < 32; ++depth)
+			{
+				if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, process, thread, &frame, &context, nullptr,
+					SymFunctionTableAccess64, SymGetModuleBase64, nullptr) || frame.AddrPC.Offset == 0)
+					break;
+				const DWORD64 pc = frame.AddrPC.Offset;
+				DWORD64 frameDisplacement = 0;
+				const bool frameSymbol = SymFromAddr(process, pc, &frameDisplacement, symbol);
+				IMAGEHLP_LINE64 frameLine = {};
+				frameLine.SizeOfStruct = sizeof(frameLine);
+				DWORD frameLineDisplacement = 0;
+				const bool frameHasLine = SymGetLineFromAddr64(process, pc, &frameLineDisplacement, &frameLine);
+				char moduleName[MAX_PATH] = "?";
+				if (HMODULE module = reinterpret_cast<HMODULE>(SymGetModuleBase64(process, pc)))
+				{
+					char modulePath[MAX_PATH] = {};
+					if (GetModuleFileNameA(module, modulePath, MAX_PATH))
+					{
+						const char* slash = strrchr(modulePath, '\\');
+						strncpy_s(moduleName, slash ? slash + 1 : modulePath, _TRUNCATE);
+					}
+				}
+				ERROR_PRINT("  #%02d %s!%s+0x%llX (%s:%lu)", depth, moduleName,
+					frameSymbol ? symbol->Name : "???", frameDisplacement,
+					frameHasLine ? frameLine.FileName : "???", frameHasLine ? frameLine.LineNumber : 0u);
+			}
+
 			SymCleanup(process);
 		}
 		else

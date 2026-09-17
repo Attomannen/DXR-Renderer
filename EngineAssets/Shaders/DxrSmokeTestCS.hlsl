@@ -25,6 +25,10 @@ RWTexture2D<float2> gMotionValidity : register(u3); // valid transform, expected
 RWTexture2D<float4> gSurfaceGuide : register(u4);
 RWTexture2D<float4> gDiffuseAlbedo : register(u5); // linear diffuse albedo for DLSS Ray Reconstruction
 RWTexture2D<float4> gSpecularAlbedo : register(u6); // linear F0/specular albedo for DLSS Ray Reconstruction
+// NRD guides and signal, written only while gNrdEnabled is set.
+RWTexture2D<float>  gNrdViewZ : register(u7);           // linear view depth, >NRD denoisingRange for sky
+RWTexture2D<float4> gNrdNormalRoughness : register(u8); // NRD_NORMAL_ENCODING 2 (R10G10B10A2 octahedral)
+RWTexture2D<float4> gNrdDiffuse : register(u9);         // demodulated indirect diffuse radiance + hit distance
 Texture2D<float2> gBrdfLut : register(t4);
 
 // Minimal, self-contained camera -- deliberately not the engine's shared
@@ -70,7 +74,7 @@ cbuffer SmokeTestCB : register(b0)
 	uint gTemporalHistoryValid;
 	float gSpecularAaStrength;
 	uint gReflectionFrameIndex;
-	uint _temporalPad;
+	uint gNrdEnabled;
 	float2 gJitter;
 	float2 gPreviousJitter;
 };
@@ -96,6 +100,28 @@ void WriteTemporal(uint2 pixel, float4 currentClip, float4 previousClip, bool ob
 	gTemporalDepth[pixel] = currentClip.w > 0.0f ? saturate(currentClip.z / currentClip.w) : 1.0f;
 }
 
+// NRD_FrontEnd_PackNormalAndRoughness for NRD_NORMAL_ENCODING 2 (R10G10B10A2)
+// and NRD_ROUGHNESS_ENCODING 1 (linear), the configuration NRD.dll is built with.
+float4 PackNrdNormalRoughness(float3 n, float linearRoughness)
+{
+	n /= abs(n.x) + abs(n.y) + abs(n.z);
+	float3 r;
+	r.y = n.y * 0.5f + 0.5f;
+	r.x = n.x * 0.5f + r.y;
+	r.y -= n.x * 0.5f;
+	const float roughness = max(saturate(linearRoughness), 1.5f / 512.0f); // keeps the n.z sign bit
+	r.z = (n.z < 0.0f ? -roughness : roughness) * 0.5f + 0.5f;
+	return float4(r, 0.0f);
+}
+
+void WriteNrdMiss(uint2 pixel)
+{
+	if (gNrdEnabled == 0u) return;
+	gNrdViewZ[pixel] = 1e7f; // beyond CommonSettings::denoisingRange: NRD skips it
+	gNrdNormalRoughness[pixel] = float4(0.5f, 0.5f, 1.0f, 0.0f);
+	gNrdDiffuse[pixel] = 0.0f;
+}
+
 float Hash01(uint2 p, uint salt)
 {
 	uint h = p.x * 1664525u + p.y * 1013904223u + salt * 747796405u + 1013904223u;
@@ -103,8 +129,9 @@ float Hash01(uint2 p, uint salt)
 	return (float)(h & 0x00ffffffu) / 16777216.0f;
 }
 
-float TraceAmbientOcclusion(float3 position, float3 normal, uint sourceInstanceId, uint2 pixel, uint frameIndex)
+float TraceAmbientOcclusion(float3 position, float3 normal, uint sourceInstanceId, uint sourcePrimitiveIndex, uint2 pixel, uint frameIndex, out float hitDistance)
 {
+	hitDistance = 0.0f;
 	const float3 tangent = normalize(abs(normal.z) < 0.999f ? cross(float3(0,0,1), normal) : cross(float3(0,1,0), normal));
 	const float3 bitangent = cross(normal, tangent);
 	float visible = 0.0f;
@@ -131,26 +158,29 @@ float TraceAmbientOcclusion(float3 position, float3 normal, uint sourceInstanceI
 		RayDesc aoRay;
 		aoRay.Origin = OffsetRayOrigin(position, normal, aoDir); aoRay.Direction = aoDir;
 		aoRay.TMin = 0.05f; aoRay.TMax = max(gAoDistance, 0.05f);
-		// This keeps RAY_FLAG_FORCE_NON_OPAQUE and the same-instance rejection,
-		// unlike the camera/reflection/GI rays. Dropping both (so the TLAS's
-		// FORCE_OPAQUE instances go through traversal hardware) was measured
-		// interleaved on a warm GPU and was worth nothing -- 15.33 vs 15.21 ms,
-		// inside the noise -- so the rejection stays and AO keeps its existing
-		// look. Worth revisiting as a *correctness* question rather than a
-		// performance one: a mesh occluding itself is real ambient occlusion,
-		// and because ModelFactory merges sub-meshes by material, one "instance"
-		// is a large share of the scene, so this systematically under-occludes.
-		RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES | RAY_FLAG_FORCE_NON_OPAQUE> aq;
+		RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES> aq;
 		aq.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, aoRay);
 		while (aq.Proceed()) {
 			if (aq.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
-				aq.CandidateInstanceID() != sourceInstanceId &&
 				AcceptRayTriangle(aq.CandidateInstanceID(), aq.CandidatePrimitiveIndex(), aq.CandidateTriangleBarycentrics(), 2.0f))
 				aq.CommitNonOpaqueTriangleHit();
 		}
-		visible += aq.CommittedStatus() == COMMITTED_TRIANGLE_HIT ?
-			saturate(aq.CommittedRayT() / aoRay.TMax) : 1.0f;
+		
+		// Use a smoother quadratic falloff for the AO hit instead of linear,
+		// which makes corners and deep crevices look punchier and more natural.
+		if (aq.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
+		{
+			float hitDist = saturate(aq.CommittedRayT() / aoRay.TMax);
+			visible += hitDist * hitDist; // Quadratic falloff
+			hitDistance += aq.CommittedRayT();
+		}
+		else
+		{
+			visible += 1.0f;
+			hitDistance += aoRay.TMax;
+		}
 	}
+	hitDistance *= invAoSamples;
 	return visible * invAoSamples;
 }
 
@@ -230,6 +260,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
 		gSurfaceGuide[dtid.xy] = float4(0,0,0,-1);
 		gDiffuseAlbedo[dtid.xy] = 0;
 		gSpecularAlbedo[dtid.xy] = 0;
+		WriteNrdMiss(dtid.xy);
 		// Raw background display, matching SkyboxPS's mip-0/intensity-1 sample
 		// exactly -- gEnvironmentTint is the GI-tuned scale (see SkyRadiance's
 		// comment) and must not dim what the player actually sees as sky.
@@ -257,15 +288,49 @@ void main(uint3 dtid : SV_DispatchThreadID)
 	// self-intersect the origin triangle on the shadow traces inside ShadeDirect.
 	const float3 shadowOrigin = hs.rayOrigin;
 	// These views bypass lighting and TAA to isolate visibility from normals.
+	if (gLightingView != 0u)
+		WriteNrdMiss(dtid.xy);
 	if (gLightingView >= 10u && gLightingView <= 14u)
 	{
 		float3 diagnostic = 0.0f;
-		if (gLightingView == 10u) diagnostic = TraceSunVisibility(hs.worldPosition, hs.geoWorldNormal, gSunDirToLight, hs.instanceId, hs.primitiveIndex).xxx;
+		if (gLightingView == 10u) diagnostic = TraceSunVisibility(hs.shadowPosition, hs.geoWorldNormal, gSunDirToLight, hs.instanceId, hs.primitiveIndex).xxx;
 		if (gLightingView == 11u) diagnostic = hs.geoWorldNormal * 0.5f + 0.5f;
 		if (gLightingView == 12u) diagnostic = hs.worldNormal * 0.5f + 0.5f;
 		if (gLightingView == 13u) diagnostic = saturate(dot(hs.worldNormal, gSunDirToLight)).xxx;
 		if (gLightingView == 14u) diagnostic = saturate(dot(hs.geoWorldNormal, gSunDirToLight)).xxx;
 		gOutput[dtid.xy] = float4(diagnostic, 1);
+		return;
+	}
+	if (gLightingView == 16u)
+	{
+		// Debug-only: who blocks the sun here? Traces one un-jittered sun ray
+		// to its NEAREST occluder, ignoring only the originating triangle.
+		//   white   = unoccluded
+		//   red     = own instance, front face    magenta = own instance, back face
+		//   blue    = other instance, front face  cyan    = other instance, back face
+		// Brightness falls off with occluder distance (bright = close).
+		// Separates real shadowing from self-shadowing artefacts on thin meshes.
+		RayDesc sr;
+		sr.Origin = OffsetRayOrigin(hs.shadowPosition, hs.geoWorldNormal, gSunDirToLight);
+		sr.Direction = gSunDirToLight;
+		sr.TMin = 0.05f; sr.TMax = 100000.0f;
+		RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> sq;
+		sq.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, sr);
+		while (sq.Proceed()) {
+			const bool originTri = sq.CandidateInstanceID() == hs.instanceId && sq.CandidatePrimitiveIndex() == hs.primitiveIndex;
+			if (sq.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE && !originTri &&
+				AcceptRayTriangle(sq.CandidateInstanceID(), sq.CandidatePrimitiveIndex(), sq.CandidateTriangleBarycentrics(), 2.0f))
+				sq.CommitNonOpaqueTriangleHit();
+		}
+		float3 occ = 1.0f;
+		if (sq.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
+		{
+			const bool self = sq.CommittedInstanceID() == hs.instanceId;
+			const bool front = sq.CommittedTriangleFrontFace();
+			const float closeness = lerp(0.35f, 1.0f, saturate(1.0f - sq.CommittedRayT() / 300.0f));
+			occ = (self ? (front ? float3(1,0,0) : float3(1,0,1)) : (front ? float3(0,0,1) : float3(0,1,1))) * closeness;
+		}
+		gOutput[dtid.xy] = float4(occ, 1);
 		return;
 	}
 	if (gLightingView == 15u)
@@ -283,13 +348,33 @@ void main(uint3 dtid : SV_DispatchThreadID)
 	const float3 viewDir = normalize(-ray.Direction);
 
 	float ao = hs.ao;
+	float aoHitDistance = max(gAoDistance, 0.05f);
 	if (gEnableAmbientOcclusion != 0u)
-		ao *= lerp(1.0f, TraceAmbientOcclusion(hs.worldPosition, hs.geoWorldNormal, hs.instanceId, dtid.xy, gReflectionFrameIndex), saturate(gAoStrength));
+		ao *= lerp(1.0f, TraceAmbientOcclusion(hs.worldPosition, hs.geoWorldNormal, hs.instanceId, hs.primitiveIndex, dtid.xy, gReflectionFrameIndex, aoHitDistance), saturate(gAoStrength));
 	float3 envDiffuse, envSpecular;
 	EvaluateEnvironmentLighting(hs, viewDir, envDiffuse, envSpecular);
 	if (gEnableEnvironmentLighting == 0u) { envDiffuse = 0.0f; envSpecular = 0.0f; }
 	const float3 gi = gEnableIndirectGi != 0u ? (1.0f - hs.metalness) * hs.albedo * ao * EvaluateDxrGi(hitPos, hs.worldNormal) : 0.0f;
-	float3 color = hs.emissive + gi + envDiffuse * ao;
+	float3 color = hs.emissive;
+	const float3 indirectDiffuse = gi + envDiffuse * ao;
+	if (gNrdEnabled != 0u && gLightingView == 0u)
+	{
+		// NRD denoises the stochastic (AO-traced) indirect diffuse on its own.
+		// It must not see material detail, so divide out diffuse albedo and
+		// texture AO here; NrdCompositeCS multiplies them back afterwards using
+		// max(gDiffuseAlbedo.rgb * gDiffuseAlbedo.a, 0.01), the exact inverse.
+		const float3 demodulator = gDiffuseAlbedo[dtid.xy].rgb * hs.ao;
+		gDiffuseAlbedo[dtid.xy].a = hs.ao;
+		float3 radiance = indirectDiffuse / max(demodulator, 0.01f);
+		radiance = all(isfinite(radiance)) ? clamp(radiance, 0.0f, 65504.0f) : 0.0f;
+		gNrdDiffuse[dtid.xy] = float4(radiance, aoHitDistance);
+		gNrdViewZ[dtid.xy] = dot(hitPos - gCameraOrigin, gCameraForward);
+		gNrdNormalRoughness[dtid.xy] = PackNrdNormalRoughness(hs.worldNormal, hs.roughness);
+	}
+	else
+	{
+		color += indirectDiffuse;
+	}
 	if (gEnableDirectLighting != 0u)
 		color += ShadeDirect(hs, shadowOrigin, viewDir, gSunDirToLight, gLightCount, gSunRadiance, gAmbientIntensity);
 	// Replace environment specular smoothly; do not add the same sky twice.

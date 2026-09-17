@@ -15,7 +15,16 @@ project (projectname)
 	targetname("%{prj.name}_%{cfg.buildcfg}")
 	objdir ("%{dirs.temp}/%{prj.name}/%{cfg.buildcfg}")
 
-	links {"Core", "External", "Application", "Game", "Editor", "EditorDefaultGraphics" }
+	links {"Core", "External", "Application", "Game", "Editor", "EditorDefaultGraphics", "NRD.lib", "NRI.lib"}
+	
+	libdirs { 
+		dirs.lib, 
+		dirs.dependencies,
+		dirs.root .. "NRD/NRD/NRD-4.17.3/_NRD_SDK/Lib/Release",
+		dirs.root .. "NRD/NRD/NRD-4.17.3/_NRI_SDK/Lib/Release",
+		dirs.root .. "NRD/NRD/NRD-4.17.3/_Bin/Release"
+	}
+	
 	includedirs { 
 		dirs.core,
 		dirs.external, 
@@ -31,8 +40,6 @@ project (projectname)
 		"source/**.h",
 		"source/**.cpp",
 	}
-
-	libdirs { dirs.lib, dirs.dependencies }
 
 	defines
 	{

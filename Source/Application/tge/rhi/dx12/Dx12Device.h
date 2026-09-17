@@ -260,7 +260,7 @@ namespace Tga::rhi::dx12
 
 		static constexpr uint32_t kNumCbvRegisters = 14;   // b0..b13
 		static constexpr uint32_t kNumSrvRegisters = 24;   // t0..t23
-		static constexpr uint32_t kNumUavRegisters = 8;    // u0..u7 (DXR output + temporal/RR guides)
+		static constexpr uint32_t kNumUavRegisters = 10;   // u0..u9 (DXR output + temporal/RR guides + NRD guides)
 		static constexpr uint32_t kNumSamplerRegisters = 6; // s0..s5
 		static constexpr uint32_t kRaySceneRootParameter = kNumCbvRegisters + 3;
 		// Fixed root SRVs in space2, bound directly by GPU virtual address --
@@ -326,7 +326,7 @@ namespace Tga::rhi::dx12
 		static constexpr uint32_t kCbvSrvUavCapacity = 8192;          // permanent (non-shader-visible)
 		static constexpr uint32_t kSamplerCapacity = 256;             // permanent (non-shader-visible)
 		static constexpr uint32_t kRaySceneDescriptorCapacity = 32768;
-		static constexpr uint32_t kCbvSrvUavScratchPerFrame = 131072; // transient shader-visible descriptors
+		static constexpr uint32_t kCbvSrvUavScratchPerFrame = 900000; // transient shader-visible descriptors
 		static constexpr uint32_t kCbvSrvUavHeapPerFrame = kRaySceneDescriptorCapacity + kCbvSrvUavScratchPerFrame;
 		// 2048 is the actual D3D12 hardware limit for a single shader-visible
 		// sampler heap (Tier 1+), so this is the most headroom this heap can
@@ -338,7 +338,7 @@ namespace Tga::rhi::dx12
 		static constexpr uint32_t kSamplerScratchPerFrame = 2048;     // shader-visible, per frame-in-flight (hardware max)
 		static constexpr uint32_t kRtvCapacity = 256;
 		static constexpr uint32_t kDsvCapacity = 64;
-		static constexpr uint32_t kDynRingBytes = 4u << 20;   // 4 MB per frame
+		static constexpr uint32_t kDynRingBytes = 32u << 20;   // 32 MB per frame
 		static constexpr uint32_t kImGuiSrvCapacity = 4096;   // shader-visible, owned exclusively by imgui_impl_dx12
 
 		ComPtr<IDXGIFactory6> myFactory;

@@ -1,4 +1,4 @@
-// Shared bindless-scene declarations + direct-lighting helpers for every DXR
+﻿// Shared bindless-scene declarations + direct-lighting helpers for every DXR
 // compute pass in the engine (DxrSmokeTestCS.hlsl, GiTraceInlineCS.hlsl).
 // Kept as one header so the TLAS/material/light bindings and the BRDF can't
 // drift apart between passes the way they briefly did across DxrSmokeTestCS's
@@ -48,6 +48,16 @@
 // always use 4). See TraceReflection.
 #ifndef DXR_REFLECTION_SUN_SAMPLES
 #define DXR_REFLECTION_SUN_SAMPLES 1u
+#endif
+// DXR_SELF_SHADOW_DISTANCE: world units (cm) within which a shadow ray ignores
+// triangles of the instance it started on. See TraceShadowRay.
+// DXR_SHADOW_TERMINATOR_OFFSET: lift shadow-ray origins onto the smooth surface
+// implied by vertex normals (see DecodeHit). 0 = start from the flat facet.
+#ifndef DXR_SHADOW_TERMINATOR_OFFSET
+#define DXR_SHADOW_TERMINATOR_OFFSET 1
+#endif
+#ifndef DXR_SELF_SHADOW_DISTANCE
+#define DXR_SELF_SHADOW_DISTANCE 10.0f
 #endif
 #ifndef DXR_TWO_SIDED_SHADOWS
 #define DXR_TWO_SIDED_SHADOWS 1
@@ -262,8 +272,24 @@ float TraceShadowRay(float3 origin, float3 dir, float maxDist, uint sourceInstan
 	// the next candidate; the committed hit is final only after traversal ends.
 	while (sq.Proceed()) {
 #if DXR_TWO_SIDED_SHADOWS
+		// Rejecting only the origin triangle was not enough: on thin, low-poly
+		// folded cloth (Sponza's swags) the neighbouring triangles of the same
+		// mesh sit a few centimetres away and occlude the sun wherever the flat
+		// facets disagree with the smooth shading normal -- the "shadow
+		// terminator" problem -- which rendered sunlit swags as black blotches
+		// with jagged lit triangles. So same-instance occluders are ignored
+		// within DXR_SELF_SHADOW_DISTANCE as well. Beyond it they still cast
+		// shadows, which is what keeps the light-leak fix: the old code ignored
+		// the whole (material-merged, scene-spanning) instance at any distance.
+		// A same-mesh BACK face means the ray is leaving through the receiver's
+		// own sheet -- double-layered or slightly interpenetrating thin cloth
+		// (Sponza's swags are both). A thin sheet cannot shadow itself that way,
+		// so those are ignored. Same-mesh FRONT faces still occlude, and so does
+		// everything belonging to other meshes, from either side.
 		const bool isSelf = sq.CandidateInstanceID() == sourceInstanceId &&
-			sq.CandidatePrimitiveIndex() == sourcePrimitive;
+			(sq.CandidatePrimitiveIndex() == sourcePrimitive ||
+			 !sq.CandidateTriangleFrontFace() ||
+			 sq.CandidateTriangleRayT() < DXR_SELF_SHADOW_DISTANCE);
 #else
 		const bool isSelf = sq.CandidateInstanceID() == sourceInstanceId;
 #endif
@@ -525,6 +551,10 @@ struct HitSurface
 	uint primitiveIndex;   // originating triangle, for shadow-ray self rejection
 	float3 worldPosition;
 	float3 rayOrigin;
+	// Where shadow rays start: worldPosition lifted onto the smooth surface the
+	// vertex normals describe (see DecodeHit). Not the same as rayOrigin, which is
+	// only an error-bounded push off the flat triangle.
+	float3 shadowPosition;
 	float3 albedo;
 	float  ao, roughness, metalness;
 	float textureMip;
@@ -718,6 +748,38 @@ HitSurface DecodeHit(RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES> q, float cone
 	s.primitiveIndex = q.CommittedPrimitiveIndex();
 	ReconstructRaySurface(p[0], p[1], p[2], bary, o2w, q.CommittedWorldToObject3x4(),
 		q.WorldRayDirection(), s.worldPosition, s.geoWorldNormal, s.rayOrigin);
+
+	// Shadow-terminator offset (Hanika, "Hacking the Shadow Terminator",
+	// Ray Tracing Gems II). Low-poly meshes with smooth vertex normals are
+	// shaded as if curved, but shadow rays leave the flat facet, which sits
+	// *below* that implied curved surface wherever the mesh bends away. The
+	// neighbouring facets then block the light, giving jagged, triangle-shaped
+	// black regions on surfaces the shading says are lit -- exactly what
+	// Sponza's swags showed. Push the point out of each vertex's tangent plane
+	// it lies beneath, weighted by barycentrics, so shadow rays start from the
+	// smooth surface instead. Vertex normals are oriented to the side the ray
+	// arrived from, so back-side hits on single-sided cloth lift the right way.
+	{
+		const float3 wp0 = mul(o2w, float4(p[0], 1.0f));
+		const float3 wp1 = mul(o2w, float4(p[1], 1.0f));
+		const float3 wp2 = mul(o2w, float4(p[2], 1.0f));
+		float3 wn0 = normalize(mul(normalToWorld, n[0]));
+		float3 wn1 = normalize(mul(normalToWorld, n[1]));
+		float3 wn2 = normalize(mul(normalToWorld, n[2]));
+		if (dot(wn0, s.geoWorldNormal) < 0.0f) wn0 = -wn0;
+		if (dot(wn1, s.geoWorldNormal) < 0.0f) wn1 = -wn1;
+		if (dot(wn2, s.geoWorldNormal) < 0.0f) wn2 = -wn2;
+		const float3 P = s.worldPosition;
+		const float3 lift =
+			-w0     * min(0.0f, dot(P - wp0, wn0)) * wn0
+			-bary.x * min(0.0f, dot(P - wp1, wn1)) * wn1
+			-bary.y * min(0.0f, dot(P - wp2, wn2)) * wn2;
+#if DXR_SHADOW_TERMINATOR_OFFSET
+		s.shadowPosition = all(isfinite(lift)) ? P + lift : P;
+#else
+		s.shadowPosition = P;
+#endif
+	}
 	s.worldNormal = shadingWorldNormal;
 	s.textureMip = 0.0f;
 	s.roughnessAdjustment = 0.0f;
@@ -805,7 +867,7 @@ float3 ShadeDirect(HitSurface hs, float3 shadowOrigin, float3 viewDir, float3 su
 	const float sunNdotl = saturate(dot(hs.worldNormal, sunDirToLight));
 	if (sunNdotl > 0.f)
 	{
-		const float sunShadow = TraceSunVisibility(hs.worldPosition, hs.geoWorldNormal, sunDirToLight, hs.instanceId, hs.primitiveIndex, sunSamples);
+		const float sunShadow = TraceSunVisibility(hs.shadowPosition, hs.geoWorldNormal, sunDirToLight, hs.instanceId, hs.primitiveIndex, sunSamples);
 		float3 kd;
 		const float3 specular = CookTorrance(hs.worldNormal, viewDir, sunDirToLight, hs.albedo, hs.roughness, hs.metalness, kd);
 		const float3 diffuse = kd * hs.albedo / 3.14159265f;
@@ -814,7 +876,7 @@ float3 ShadeDirect(HitSurface hs, float3 shadowOrigin, float3 viewDir, float3 su
 
 	float3 localLit = 0.f;
 	for (uint li = 0; li < lightCount; ++li)
-		localLit += EvaluatePunctualLight(gLights[li], hs.worldPosition, hs.geoWorldNormal, hs.instanceId, hs.primitiveIndex, hs.worldNormal, viewDir, hs.albedo, hs.roughness, hs.metalness);
+		localLit += EvaluatePunctualLight(gLights[li], hs.shadowPosition, hs.geoWorldNormal, hs.instanceId, hs.primitiveIndex, hs.worldNormal, viewDir, hs.albedo, hs.roughness, hs.metalness);
 
 	const float3 ambient = (1.0f - hs.metalness) * hs.albedo * hs.ao * ambientIntensity;
 	return ambient + sunLit + localLit;
@@ -832,7 +894,7 @@ float3 ShadeDiffuseDirect(HitSurface hs, float3 shadowOrigin, float3 sunDirToLig
 	if (sunNdotL > 0.0f)
 	{
 		const float3 kd = (1.0f - hs.metalness) * hs.albedo;
-		result += kd * sunRadiance * (sunNdotL * TraceSunVisibility(hs.worldPosition, hs.geoWorldNormal, sunDirToLight, hs.instanceId, hs.primitiveIndex) / 3.14159265f);
+		result += kd * sunRadiance * (sunNdotL * TraceSunVisibility(hs.shadowPosition, hs.geoWorldNormal, sunDirToLight, hs.instanceId, hs.primitiveIndex) / 3.14159265f);
 	}
 
 	for (uint li = 0; li < lightCount; ++li)
@@ -852,7 +914,7 @@ float3 ShadeDiffuseDirect(HitSurface hs, float3 shadowOrigin, float3 sunDirToLig
 
 		const float nDotL = saturate(dot(hs.worldNormal, l));
 		const float attenuation = PunctualAttenuation(AreaLightDistance(distanceToLight, EffectiveLightRadius(light.radius)), light.range) * spotFactor;
-		const float3 lightOrigin = hs.worldPosition + hs.geoWorldNormal * (dot(hs.geoWorldNormal, l) >= 0.0f ? 0.05f : -0.05f);
+		const float3 lightOrigin = hs.shadowPosition + hs.geoWorldNormal * (dot(hs.geoWorldNormal, l) >= 0.0f ? 0.05f : -0.05f);
 		if (nDotL <= 0.0f || attenuation <= 1e-5f ||
 			TraceShadowRay(lightOrigin, l, distanceToLight - 0.5f, hs.instanceId, hs.primitiveIndex) <= 0.0f) continue;
 
@@ -941,7 +1003,14 @@ float3 TraceReflection(float3 origin, float3 dir, float3 sunDirToLight, uint lig
 	const float3 lit = ShadeDirect(hs, shadowOrigin, viewDir, sunDirToLight, lightCount, sunRadiance, ambientIntensity, DXR_REFLECTION_SUN_SAMPLES) + hs.emissive;
 	const float3 environment = environmentMip >= 0.0f ?
 		(1.0f - hs.metalness) * hs.albedo * hs.ao * gDxrEnvironment.SampleLevel(gMaterialSampler, hs.worldNormal, 6.0f).rgb * environmentTint : 0.0f;
-	return lit + environment + (enableIndirectGi ? (1.0f - hs.metalness) * hs.albedo * hs.ao * EvaluateDxrGi(hitPos, hs.worldNormal) : 0.0f);
+	float3 result = lit + environment + (enableIndirectGi ? (1.0f - hs.metalness) * hs.albedo * hs.ao * EvaluateDxrGi(hitPos, hs.worldNormal) : 0.0f);
+	
+	// Clamp fireflies from extremely bright secondary hits (e.g. emissives)
+	const float lum = dot(result, float3(0.2126f, 0.7152f, 0.0722f));
+	if (lum > 10.0f)
+		result *= 10.0f / lum;
+		
+	return result;
 }
 
 #endif

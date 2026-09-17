@@ -517,7 +517,10 @@ static std::string InferPackedMLayout(const fs::path& file)
 	if (IEndsWith(stem, "_arm")) return "arm";
 	// glTF core metallicRoughness has no occlusion channel: R is unused, G=roughness, B=metalness.
 	if (IEndsWith(stem, "_metallicroughness") || IEndsWith(stem, "_roughnessmetallic")) return "-rm";
-	return "orm";
+	// Plain ORM: R=AO, G=roughness, B=metalness. Written with this file's own
+	// label alphabet (a,r,m,s,-); the old "orm" spelling used an "o" nothing
+	// looks up, so every map on the default layout silently lost its AO.
+	return "arm";
 }
 
 static int PackedChannel(const std::string& layout, char semantic)
@@ -1052,7 +1055,7 @@ static CookResult CookOne(MaterialGroup& g, OutKind kind, const std::string& out
 			Plane m = MakePlane(g, Role::PackedM, w, h);
 			if (!m.ok) { gLog.err("packed _m plane failed: " + outName); return r; }
 			const std::string layout = ov.packedMLayout ? *ov.packedMLayout
-				: (g.packedMLayout.empty() ? "orm" : g.packedMLayout);
+				: (g.packedMLayout.empty() ? "arm" : g.packedMLayout);
 			const int aoChannel = PackedChannel(layout, 'a');
 			const int roughnessChannel = PackedChannel(layout, 'r');
 			const int smoothnessChannel = PackedChannel(layout, 's');
@@ -1220,12 +1223,43 @@ static std::vector<std::string> ReadFbxMaterials(const fs::path& fbx, std::strin
 // Match an fbx material name to a cooked group key.
 static const MaterialGroup* MatchGroup(const std::vector<MaterialGroup>& groups, const std::string& matName)
 {
+	// Fuzzy-match by nearest key length, not "first group found in vector
+	// order". A source pack with one malformed duplicate-named file (e.g.
+	// "dirt_decal_01_dirt_decal_01_mask_alpha_dirt_decal_Opacity.png",
+	// confirmed present in Intel-Sponza's textures) produces its own bogus
+	// MaterialGroup whose key ALSO starts with the real material name --
+	// "dirt_decal_01_dirt_decal_01_mask_alpha_dirt_decal".rfind("dirt_decal_01", 0) == 0
+	// is just as true as the real "dirt_decal_01" group's. Picking whichever
+	// came first meant an unlucky vector order silently bound the FBX
+	// material to the malformed, textureless group instead of the real one.
+	// The closest-length key is the correct one in every case that matters:
+	// an exact/prefix match's key is never shorter than the material name
+	// (extra clutter only makes it longer), so minimal length difference
+	// prefers the real group over any junk superset of it.
 	for (const std::string& cand : { ToLower(matName), ToLower(StripDupSuffix(matName)) })
 	{
 		const std::string& ml = cand;
 		for (const auto& g : groups) if (ToLower(g.key) == ml) return &g;
-		for (const auto& g : groups) { std::string k = ToLower(g.key); if (ml.rfind(k, 0) == 0 || k.rfind(ml, 0) == 0) return &g; }
-		for (const auto& g : groups) { std::string k = ToLower(g.key); if (ml.find(k) != std::string::npos || k.find(ml) != std::string::npos) return &g; }
+
+		const MaterialGroup* best = nullptr;
+		size_t bestDiff = SIZE_MAX;
+		for (const auto& g : groups)
+		{
+			const std::string k = ToLower(g.key);
+			if (ml.rfind(k, 0) != 0 && k.rfind(ml, 0) != 0) continue;
+			const size_t diff = (k.size() > ml.size()) ? (k.size() - ml.size()) : (ml.size() - k.size());
+			if (diff < bestDiff) { bestDiff = diff; best = &g; }
+		}
+		if (best) return best;
+
+		for (const auto& g : groups)
+		{
+			const std::string k = ToLower(g.key);
+			if (ml.find(k) == std::string::npos && k.find(ml) == std::string::npos) continue;
+			const size_t diff = (k.size() > ml.size()) ? (k.size() - ml.size()) : (ml.size() - k.size());
+			if (diff < bestDiff) { bestDiff = diff; best = &g; }
+		}
+		if (best) return best;
 	}
 	return nullptr;
 }
@@ -1420,7 +1454,18 @@ int main(int argc, char** argv)
 		}
 		if (!base) continue;
 		for (const auto& [role, source] : base->maps)
-			if (role != Role::Color && !variant.maps.count(role)) variant.maps[role].path = source.path;
+		{
+			if (role == Role::Color || variant.maps.count(role)) continue;
+			variant.maps[role].path = source.path;
+			// The packed map's channel layout is a property of that file, not
+			// of the group, so it has to travel with it. Without this a variant
+			// inheriting a Unity MaskMap (R=metal G=AO B=detail A=smooth) fell
+			// back to the default layout and cooked G as roughness and the
+			// all-255 detail mask as metalness -- Sponza's curtains came out as
+			// AO 1 / roughness 0.96 / metalness 1, i.e. fully metallic cloth
+			// with no diffuse response at all.
+			if (role == Role::PackedM) variant.packedMLayout = base->packedMLayout;
+		}
 	}
 
 	// Manifest-only materials: listed in cook.json with constants but no source files.
@@ -1700,7 +1745,7 @@ int main(int argc, char** argv)
 			} }
 		};
 		fs::create_directories(a.tgm.parent_path());
-		std::ofstream(a.tgm) << j.dump(2) << "\n";
+		std::ofstream(a.tgm) << j.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
 		gLog.info("  wrote " + a.tgm.string());
 	}
 
@@ -1773,7 +1818,7 @@ int main(int argc, char** argv)
 				{ "normalStrength", 1.0f }, { "previewMesh", "Sphere" }, { "maps", maps }
 			};
 			fs::create_directories(materialFile.parent_path());
-			std::ofstream(materialFile) << material.dump(2) << "\n";
+			std::ofstream(materialFile) << material.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
 			keepTgmatNames.insert(ToLower(materialFile.filename().string()));
 			// A named remap preserves a deliberately authored material instead of
 			// replacing it with a generated default. Match Blender's .001 material
@@ -1802,7 +1847,7 @@ int main(int argc, char** argv)
 		j["parent-object-definition"] = "";
 		j["properties"] = json::array({ prop });
 		fs::create_directories(a.tgo.parent_path());
-		std::ofstream(a.tgo) << j.dump(2) << "\n";
+		std::ofstream(a.tgo) << j.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
 		gLog.info("  wrote " + a.tgo.string());
 	}
 
@@ -1874,8 +1919,20 @@ int main(int argc, char** argv)
 		{ "threads", (int)nthreads },
 		{ "compressor", (gComp.device && !a.cpu) ? "gpu-bc7" : "cpu" },
 	};
+	// The actual cook (every .dds already written to disk) is done by this
+	// point -- report.json is a summary artifact. Never let writing it take
+	// down a run that otherwise succeeded (this is also why every .dump()
+	// above passes error_handler_t::replace: a source filename with non-UTF-8
+	// bytes -- e.g. this pack's own "Fortress-Kaštel-4K.hdr" under Windows'
+	// native narrow encoding -- used to throw here uncaught, killing the
+	// whole process with exit code 3 right at the finish line).
+	try
 	{
-		std::ofstream(a.out / "cook_report.json") << report.dump(2) << "\n";
+		std::ofstream(a.out / "cook_report.json") << report.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
+	}
+	catch (const std::exception& e)
+	{
+		gLog.err(std::string("could not write cook_report.json: ") + e.what());
 	}
 
 	gLog.info("done: " + std::to_string(nProduced) + " cooked, " + std::to_string(nSkipped)

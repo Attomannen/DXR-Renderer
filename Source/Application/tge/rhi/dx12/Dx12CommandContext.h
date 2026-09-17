@@ -101,7 +101,15 @@ namespace Tga::rhi::dx12
 		void OnBeginFrame();
 		void FlushBarriers();               // submits accumulated resource barriers
 
+		// For third-party libraries (NRD) that record straight onto the frame's
+		// command list: FlushBarriers() first so the tracked states are real,
+		// then RestoreAfterExternalCommands() once they return, because they
+		// bind their own descriptor heaps, root signature and pipeline.
+		ID3D12GraphicsCommandList* NativeList() { return List(); }
+		void RestoreAfterExternalCommands();
+
 	private:
+		friend class Dx12Device;
 		ID3D12GraphicsCommandList* List();
 		void ResolveGraphicsPipeline();     // lazily builds/looks up the PSO for pending state, binds it
 		void FlushGraphicsTables();         // copies dirty SRV/Sampler tables into scratch, binds them
@@ -130,7 +138,10 @@ namespace Tga::rhi::dx12
 		D3D_PRIMITIVE_TOPOLOGY myBoundTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
 
 		// ---- bound resources, shared across graphics/compute (see class comment) ----
-		static constexpr uint32_t kNumCbv = 14, kNumSrv = 24, kNumUav = 4, kNumSampler = 6;
+		// kNumUav must equal Dx12Device::kNumUavRegisters: the root signature
+		// declares that many UAVs, so a shorter table leaves the remaining
+		// registers aliasing whatever the scratch heap allocates next.
+		static constexpr uint32_t kNumCbv = 14, kNumSrv = 24, kNumUav = 10, kNumSampler = 6;
 		SrvHandle     myBoundSrv[kNumSrv] = {};
 		UavHandle     myBoundUav[kNumUav] = {};
 		SamplerHandle myBoundSampler[kNumSampler] = {};
