@@ -122,7 +122,22 @@ resolution, honest per-pass timers, and is the prerequisite for ReSTIR and SER.
 Typically 10-30% on divergent secondary-ray shading, which is exactly the
 reflection case. Needs a RayGen shader (DXR 1.2 / SM 6.9), so it depends on 3.4.
 
-### 3.6 Opacity Micromaps
+### 3.6 ReSTIR GI (quality, not a saving)
+The probe volume is stable and cheap (0.7 ms lookup on Sponza, 1.1 ms on Bistro,
+plus ~0.4-0.9 ms of probe updates) but inherently low-frequency: no contact-scale
+indirect, no colour bleed across small details, and it leaks through walls.
+ReSTIR GI replaces it with per-pixel indirect that has real detail and no grid to
+place. It is a cost *increase*: an extra indirect ray per pixel, reservoir
+buffers, temporal + spatial reuse and heavier denoising - budget 3-6 ms at
+1600x900 on this 60 W part, against ~1.5-2 ms today.
+- Do it after SHARC: SHARC is a natural radiance source for the reused samples,
+  so that order makes this cheaper rather than wasted.
+- Depends on 3.4 (reservoir reuse wants its own passes) and on bug 1 being
+  fixed, since ReSTIR is judged on temporal stability.
+- Show it against the path-traced reference mode; the difference is subtle in a
+  still, obvious in an A/B.
+
+### 3.7 Opacity Micromaps
 Cuts alpha-test traversal for foliage; Bistro pays about 7% for correct cutouts
 today. Needs a newer Agility SDK plus the OMM SDK.
 
