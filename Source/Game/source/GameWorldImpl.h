@@ -32,6 +32,7 @@
 #include <tge/settings/settings.h>
 #include <tge/log/Log.h>
 #include <tge/EngineDefines.h>
+#include <tge/physics/PhysicsWorld.h>
 #include <Windows.h>
 #include <d3d11.h>
 #include <dxgi.h>
@@ -398,6 +399,23 @@ struct GameWorld::Impl
 	static void DrawHistory(const char* label, const float* history, int offset, int count, float target);
 
 	void DrawProfilerTab();
+
+	// --- physics test on the debug sphere (GameWorldPhysics.cpp) ---
+	Tga::PhysicsWorld physics;
+	Tga::PhysicsBodyId physicsBall;
+	bool physicsActive = false;
+	bool physicsSavedFollowCam = true;
+	bool physicsSavedShowBall = false;
+	Vector3f physicsStartPos{ 0.f, 0.f, 0.f };
+	float physicsGravity = 9.81f;         // m/s^2
+	float physicsMass = 0.f;              // kg, 0 = from volume
+	float physicsRestitution = 0.5f;
+	float physicsFriction = 0.5f;
+	float physicsFloorOffset = 0.f;       // cm above the bottom of the scene bounds
+	void StartPhysicsTest();
+	void ResetPhysicsTest();
+	void UpdatePhysicsTest(float deltaSeconds);
+	void DrawPhysicsTab();
 #endif
 
 	// Always-on GPU/CPU timing HUD (free-fly only). Reads the per-pass scopes the

@@ -39,6 +39,7 @@ project "External"
 		"spdlog/tests/**",
 		"spdlog/cmake/**",
 		"spdlog/example/**",
+		"Jolt/**",
 	}
 	
 	includedirs {
@@ -51,7 +52,7 @@ project "External"
 		"ffmpeg-2.0/",
 		"spdlog/include",
 		"imgui/",
-		"imnodes/",
+		"imgui_node_editor/",
 		"imguizmo/",
 		"Recast/Include/",
 		--?? on these, spine part of assimp?

@@ -18,7 +18,6 @@
 #include <tge/editor/ScriptEditor/Commands/CreateScriptCommand.h>
 
 #include <tge/editor/Editor.h>
-#include <tge/editor/p4/p4.h>
 
 #include "tge/Application.h"
 #include <tge/animation/Skeleton.h>
@@ -264,11 +263,6 @@ void ObjectDefinitionDocument::OnAction(CommandManager::Action action)
 {
 	if (action == CommandManager::Action::Do)
 	{
-		if (myUndoStackSize == 0)
-		{
-			P4::CheckoutFile(myObjectDefinition->GetPath());
-		}
-
 		// If doing something when the undo stack is lower than when we saved, it means we can't get back to the saved state
 		if (myUndoStackSize < mySaveUndoStackSize)
 			mySaveUndoStackSize = -1;
@@ -403,13 +397,123 @@ void ObjectDefinitionDocument::DrawObjectDefinitionPanel()
 	}
 
 
-	bool showVariables = ImGui::TreeNodeEx("Properties", sectionFlags);
+	// Components: what the object is made of (Mesh, Collider, Rigidbody), like a Blueprint.
+	// Everything else below is a plain variable.
+	bool showComponents = ImGui::TreeNodeEx("Components", sectionFlags);
+	ImGui::SameLine();
+	if (ImGui::SmallButton("Add##Component"))
+	{
+		locCreateVariableData.typeName = StringId();
+		for (const StringId& name : PropertyTypeRegistry::GetAllPropertyNames())
+		{
+			if (PropertyTypeRegistry::GetPropertyType(name)->IsComponent())
+			{
+				locCreateVariableData.typeName = name;
+				break;
+			}
+		}
+		ImGui::OpenPopup("Add Component");
+	}
+
+	if (ImGui::BeginPopupModal("Add Component", NULL, ImGuiWindowFlags_AlwaysAutoResize))
+	{
+		if (ImGui::BeginCombo("##ComponentType", locCreateVariableData.typeName.GetString()))
+		{
+			for (const StringId& name : PropertyTypeRegistry::GetAllPropertyNames())
+			{
+				if (!PropertyTypeRegistry::GetPropertyType(name)->IsComponent())
+					continue;
+
+				bool isSelected = name == locCreateVariableData.typeName;
+				if (ImGui::Selectable(name.GetString(), isSelected))
+					locCreateVariableData.typeName = name;
+				if (isSelected)
+					ImGui::SetItemDefaultFocus();
+			}
+			ImGui::EndCombo();
+		}
+
+		ImGui::Separator();
+
+		if (ImGui::Button("Add", ImVec2(120, 0)) && !locCreateVariableData.typeName.IsEmpty())
+		{
+			const PropertyTypeBase* type = PropertyTypeRegistry::GetPropertyType(locCreateVariableData.typeName);
+
+			// The component is named after its type, and a definition holds one of each.
+			bool alreadyPresent = false;
+			for (const ScenePropertyDefinition& existing : myObjectDefinition->GetProperties())
+				alreadyPresent |= existing.type == type;
+
+			if (!alreadyPresent)
+			{
+				ScenePropertyDefinition newProperty = {};
+				newProperty.name = type->GetName();
+				newProperty.type = type;
+				newProperty.value = Property(type);
+				newProperty.flags = ScenePropertyFlags::None;
+
+				std::shared_ptr<ChangePropertiesCommand> command = std::make_shared<ChangePropertiesCommand>(*myObjectDefinition, ChangePropertiesCommand::Action::Add, newProperty, ScenePropertyDefinition{});
+				CommandManager::DoCommand(command);
+				mySelectedProperty = newProperty.name;
+				mySelectedScript.clear();
+			}
+
+			ImGui::CloseCurrentPopup();
+		}
+
+		ImGui::SameLine();
+		if (ImGui::Button("Cancel##Component", ImVec2(120, 0)))
+			ImGui::CloseCurrentPopup();
+
+		ImGui::EndPopup();
+	}
+
+	if (showComponents)
+	{
+		std::span<const ScenePropertyDefinition> components = myObjectDefinition->GetProperties();
+		for (int i = 0; i < components.size(); i++)
+		{
+			if (!components[i].type->IsComponent())
+				continue;
+
+			ImGuiTreeNodeFlags flags = itemFlags;
+			if (mySelectedProperty == components[i].name)
+				flags |= ImGuiTreeNodeFlags_Selected;
+
+			ImGui::TreeNodeEx(components[i].name.GetString(), flags);
+			if (ImGui::IsItemClicked())
+			{
+				mySelectedProperty = components[i].name;
+				mySelectedScript.clear();
+			}
+
+			if (ImGui::BeginPopupContextItem(components[i].name.GetString()))
+			{
+				if (ImGui::Selectable("Remove"))
+				{
+					std::shared_ptr<ChangePropertiesCommand> command = std::make_shared<ChangePropertiesCommand>(*myObjectDefinition, ChangePropertiesCommand::Action::Remove, ScenePropertyDefinition{}, components[i]);
+					CommandManager::DoCommand(command);
+				}
+				ImGui::EndPopup();
+			}
+		}
+		ImGui::TreePop();
+	}
+
+	bool showVariables = ImGui::TreeNodeEx("Variables", sectionFlags);
 	ImGui::SameLine();
 	if (ImGui::SmallButton("Add##Variable"))
 	{
 		strncpy_s(locCreateVariableData.name, "untitled", sizeof(locCreateVariableData.name));
 		locCreateVariableData.name[sizeof(locCreateVariableData.name) - 1] = '\0';
-		locCreateVariableData.typeName = PropertyTypeRegistry::GetAllPropertyNames()[0];
+		for (const StringId& name : PropertyTypeRegistry::GetAllPropertyNames())
+		{
+			if (!PropertyTypeRegistry::GetPropertyType(name)->IsComponent())
+			{
+				locCreateVariableData.typeName = name;
+				break;
+			}
+		}
 
 		ImGui::OpenPopup("Add Property");
 	}
@@ -425,6 +529,9 @@ void ObjectDefinitionDocument::DrawObjectDefinitionPanel()
 
 			for (const StringId& name : allTypes)
 			{
+				if (PropertyTypeRegistry::GetPropertyType(name)->IsComponent())
+					continue;
+
 				bool isSelected = name == locCreateVariableData.typeName;
 				if (ImGui::Selectable(name.GetString(), isSelected))
 				{
@@ -476,6 +583,9 @@ void ObjectDefinitionDocument::DrawObjectDefinitionPanel()
 		std::span<const ScenePropertyDefinition> properties = myObjectDefinition->GetProperties();
 		for (int i = 0; i < properties.size(); i++)
 		{
+			if (properties[i].type->IsComponent())
+				continue;
+
 			if (properties[i].groupName != groupName)
 			{
 				if (!groupName.IsEmpty() && showGroup)

@@ -243,7 +243,12 @@ namespace Tga
 						if (meshCount > 1)
 						{
 							PropertyEditor::PropertyLabel(true);
-							display = ImGui::TreeNode(meshInfo.meshNames[i].GetString());
+							// Label the slot with its material, like Blender's slot list -- the
+							// source mesh node's name ("Mesh.123") doesn't tell you which
+							// material you're assigning. Fall back to the mesh name only for a
+							// slot with no material recorded at all.
+							const StringId materialName = meshInfo.materialNames[i];
+							display = ImGui::TreeNode(!materialName.IsEmpty() ? materialName.GetString() : meshInfo.meshNames[i].GetString());
 							PropertyEditor::PropertyValue(true);
 						}
 
@@ -268,7 +273,230 @@ namespace Tga
 		return hasBeenEdited;
 	}
 
-	IMPLEMENT_PROPERTY_TYPE(CopyOnWriteWrapper<SceneModel>, "Model")
+	IMPLEMENT_COMPONENT_PROPERTY_TYPE(CopyOnWriteWrapper<SceneModel>, "Model")
+
+	namespace
+	{
+		const char* const kColliderShapeNames[] = { "Auto", "Box", "Sphere", "Capsule", "ConvexHull", "TriangleMesh" };
+		const char* const kBodyMotionNames[] = { "Static", "Kinematic", "Dynamic" };
+
+		template <typename E, size_t N>
+		E EnumFromName(const std::string& name, const char* const (&names)[N], E fallback)
+		{
+			for (size_t i = 0; i < N; i++)
+				if (name == names[i])
+					return static_cast<E>(i);
+			return fallback;
+		}
+
+		Vector3f ReadVector3(const nlohmann::json& json, const char* key, const Vector3f& fallback)
+		{
+			if (!json.contains(key) || !json[key].is_array() || json[key].size() < 3)
+				return fallback;
+			return { json[key][0].get<float>(), json[key][1].get<float>(), json[key][2].get<float>() };
+		}
+
+		void BeginRow(const char* label)
+		{
+			PropertyEditor::PropertyLabel(true);
+			ImGui::Indent();
+			ImGui::Text("%s", label);
+			ImGui::Unindent();
+			PropertyEditor::PropertyValue(true);
+			ImGui::PushID(label);
+		}
+
+		void EndRow()
+		{
+			ImGui::PopID();
+		}
+
+		template <size_t N>
+		bool EnumRow(const char* label, int& value, const char* const (&names)[N])
+		{
+			BeginRow(label);
+			bool changed = false;
+			if (ImGui::BeginCombo("##v", names[value]))
+			{
+				for (int i = 0; i < static_cast<int>(N); i++)
+				{
+					if (ImGui::Selectable(names[i], i == value) && i != value)
+					{
+						value = i;
+						changed = true;
+					}
+				}
+				ImGui::EndCombo();
+			}
+			EndRow();
+			return changed;
+		}
+
+		bool FloatRow(const char* label, float& value, float speed, float minValue, float maxValue)
+		{
+			BeginRow(label);
+			const float before = value;
+			const bool changed = ImGui::DragFloat("##v", &value, speed, minValue, maxValue) && value != before;
+			EndRow();
+			return changed;
+		}
+
+		bool Vector3Row(const char* label, Vector3f& value, float speed)
+		{
+			BeginRow(label);
+			const Vector3f before = value;
+			const bool changed = ImGui::DragFloat3("##v", &value.x, speed) && value != before;
+			EndRow();
+			return changed;
+		}
+
+		void PropertyHeader(const char* name, const char* description)
+		{
+			PropertyEditor::PropertyLabel();
+			ImGui::Text("%s", name);
+			if (description && *description != 0)
+				PropertyEditor::HelpMarker(description);
+			PropertyEditor::PropertyValue();
+		}
+	}
+
+	template<>
+	void LoadFromJson<CopyOnWriteWrapper<SceneCollider>>(CopyOnWriteWrapper<SceneCollider>& value, const JsonData& jsonData)
+	{
+		value = CopyOnWriteWrapper<SceneCollider>::Create();
+		SceneCollider& collider = value.Edit();
+		const nlohmann::json& json = jsonData.json;
+
+		collider.shape = EnumFromName(json.value("shape", "Auto"), kColliderShapeNames, SceneColliderShape::Auto);
+		collider.halfExtents = ReadVector3(json, "halfExtents", collider.halfExtents);
+		collider.radius = json.value("radius", collider.radius);
+		collider.halfHeight = json.value("halfHeight", collider.halfHeight);
+		collider.offset = ReadVector3(json, "offset", collider.offset);
+	}
+
+	template<>
+	void WriteToJson<CopyOnWriteWrapper<SceneCollider>>(const CopyOnWriteWrapper<SceneCollider>& value, JsonData& jsonData)
+	{
+		const SceneCollider& collider = value.Get();
+		nlohmann::json& json = jsonData.json;
+
+		json["shape"] = kColliderShapeNames[static_cast<int>(collider.shape)];
+		json["halfExtents"] = { collider.halfExtents.x, collider.halfExtents.y, collider.halfExtents.z };
+		json["radius"] = collider.radius;
+		json["halfHeight"] = collider.halfHeight;
+		json["offset"] = { collider.offset.x, collider.offset.y, collider.offset.z };
+	}
+
+	template<>
+	bool ShowImGuiEditor<CopyOnWriteWrapper<SceneCollider>>(CopyOnWriteWrapper<SceneCollider>& value, const char* name, const char* description)
+	{
+		const SceneCollider& collider = value.Get();
+
+		if (name == nullptr)
+		{
+			ImGui::Text("%s", kColliderShapeNames[static_cast<int>(collider.shape)]);
+			return false;
+		}
+
+		PropertyHeader(name, description);
+
+		// Edit a copy and only touch the copy-on-write value if something changed.
+		SceneCollider edited = collider;
+		bool changed = false;
+
+		int shape = static_cast<int>(edited.shape);
+		if (EnumRow("Shape", shape, kColliderShapeNames))
+		{
+			edited.shape = static_cast<SceneColliderShape>(shape);
+			changed = true;
+		}
+
+		if (edited.shape == SceneColliderShape::Box)
+			changed |= Vector3Row("Half extents", edited.halfExtents, 1.f);
+		if (edited.shape == SceneColliderShape::Sphere || edited.shape == SceneColliderShape::Capsule)
+			changed |= FloatRow("Radius", edited.radius, 1.f, 0.1f, 100000.f);
+		if (edited.shape == SceneColliderShape::Capsule)
+			changed |= FloatRow("Half height", edited.halfHeight, 1.f, 0.1f, 100000.f);
+		if (edited.shape == SceneColliderShape::Box || edited.shape == SceneColliderShape::Sphere || edited.shape == SceneColliderShape::Capsule)
+			changed |= Vector3Row("Offset", edited.offset, 1.f);
+
+		if (changed)
+			value.Edit() = edited;
+		return changed;
+	}
+
+	IMPLEMENT_COMPONENT_PROPERTY_TYPE(CopyOnWriteWrapper<SceneCollider>, "Collider")
+
+	template<>
+	void LoadFromJson<CopyOnWriteWrapper<SceneRigidBody>>(CopyOnWriteWrapper<SceneRigidBody>& value, const JsonData& jsonData)
+	{
+		value = CopyOnWriteWrapper<SceneRigidBody>::Create();
+		SceneRigidBody& body = value.Edit();
+		const nlohmann::json& json = jsonData.json;
+
+		body.motion = EnumFromName(json.value("motion", "Dynamic"), kBodyMotionNames, SceneBodyMotion::Dynamic);
+		body.mass = json.value("mass", body.mass);
+		body.friction = json.value("friction", body.friction);
+		body.restitution = json.value("restitution", body.restitution);
+		body.gravityFactor = json.value("gravityFactor", body.gravityFactor);
+		body.linearDamping = json.value("linearDamping", body.linearDamping);
+		body.angularDamping = json.value("angularDamping", body.angularDamping);
+	}
+
+	template<>
+	void WriteToJson<CopyOnWriteWrapper<SceneRigidBody>>(const CopyOnWriteWrapper<SceneRigidBody>& value, JsonData& jsonData)
+	{
+		const SceneRigidBody& body = value.Get();
+		nlohmann::json& json = jsonData.json;
+
+		json["motion"] = kBodyMotionNames[static_cast<int>(body.motion)];
+		json["mass"] = body.mass;
+		json["friction"] = body.friction;
+		json["restitution"] = body.restitution;
+		json["gravityFactor"] = body.gravityFactor;
+		json["linearDamping"] = body.linearDamping;
+		json["angularDamping"] = body.angularDamping;
+	}
+
+	template<>
+	bool ShowImGuiEditor<CopyOnWriteWrapper<SceneRigidBody>>(CopyOnWriteWrapper<SceneRigidBody>& value, const char* name, const char* description)
+	{
+		const SceneRigidBody& body = value.Get();
+
+		if (name == nullptr)
+		{
+			ImGui::Text("%s", kBodyMotionNames[static_cast<int>(body.motion)]);
+			return false;
+		}
+
+		PropertyHeader(name, description);
+
+		SceneRigidBody edited = body;
+		bool changed = false;
+
+		int motion = static_cast<int>(edited.motion);
+		if (EnumRow("Motion", motion, kBodyMotionNames))
+		{
+			edited.motion = static_cast<SceneBodyMotion>(motion);
+			changed = true;
+		}
+
+		if (edited.motion == SceneBodyMotion::Dynamic)
+		{
+			changed |= FloatRow("Mass (kg, 0 = auto)", edited.mass, 0.1f, 0.f, 1000000.f);
+			changed |= FloatRow("Gravity factor", edited.gravityFactor, 0.01f, -10.f, 10.f);
+			changed |= FloatRow("Linear damping", edited.linearDamping, 0.005f, 0.f, 100.f);
+			changed |= FloatRow("Angular damping", edited.angularDamping, 0.005f, 0.f, 100.f);
+		}
+		changed |= FloatRow("Friction", edited.friction, 0.01f, 0.f, 10.f);
+		changed |= FloatRow("Restitution", edited.restitution, 0.01f, 0.f, 1.f);
+
+		if (changed)
+			value.Edit() = edited;
+		return changed;
+	}
+
+	IMPLEMENT_COMPONENT_PROPERTY_TYPE(CopyOnWriteWrapper<SceneRigidBody>, "Rigidbody")
 
 	template<>
 	void LoadFromJson<CopyOnWriteWrapper<SceneSprite>>(CopyOnWriteWrapper<SceneSprite>& value, const JsonData& jsonData)

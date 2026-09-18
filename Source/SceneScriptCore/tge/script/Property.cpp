@@ -14,7 +14,7 @@ static bool locIsRegistryFinalized;
 static std::unordered_map<StringId, const PropertyTypeBase*> locStringIdToPropertyType;
 static std::vector<StringId> locSortedPropertyNames;
 
-PropertyTypeBase::PropertyTypeBase(const char* name)
+PropertyTypeBase::PropertyTypeBase(const char* name, bool isComponent)
 {
 	if (locIsRegistryFinalized)
 		std::abort();
@@ -23,6 +23,7 @@ PropertyTypeBase::PropertyTypeBase(const char* name)
 		std::abort();
 
 	myName = name;
+	myIsComponent = isComponent;
 	myId = { locTypeCount };
 	locType[locTypeCount] = this;
 	locTypeCount++;

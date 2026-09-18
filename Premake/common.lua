@@ -22,8 +22,27 @@ dirs["engine_assets"] 	= os.realpath(dirs.root .. "EngineAssets/")
 dirs["game"]			= os.realpath(dirs.root .. "Source/Game/")
 dirs["gamemain"]		= os.realpath(dirs.root .. "Source/GameMain")
 dirs["texture_cooker"]	= os.realpath(dirs.root .. "Source/TextureCooker")
+dirs["jolt"]			= os.realpath(dirs.root .. "Source/External/Jolt")
+dirs["physics"]			= os.realpath(dirs.root .. "Source/Physics")
 dirs["cooked_assets"]	= os.realpath(dirs.root .. "Bin/CookedAssets/")
 dirs["shader_dir"] 		= os.realpath(dirs.root .. "Bin/CookedAssets/Shaders/")
+
+-----------------------------------------------------------------------
+-- Jolt's headers change layout with these macros, so the SAME set must be
+-- defined when building Jolt and when compiling anything that includes its
+-- headers (Jolt checks this at startup and refuses to run on a mismatch).
+-- Call it inside a project. Only the Physics project includes Jolt headers,
+-- so nothing else in the engine needs it.
+function jolt_defines()
+	defines { "JPH_USE_SSE4_1", "JPH_USE_SSE4_2" }
+	filter "configurations:Debug"
+		defines { "JPH_ENABLE_ASSERTS" }
+	-- Without NDEBUG (which this engine's Release does not define) Jolt turns on
+	-- its slow debug-only checks; JPH_NO_DEBUG is its explicit switch for that.
+	filter "configurations:not Debug"
+		defines { "JPH_NO_DEBUG" }
+	filter {}
+end
 
 application_settings = os.realpath(dirs.settings .. "/ApplicationSettings.json")
 

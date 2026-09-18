@@ -21,6 +21,8 @@ include "."
 
 group "Engine"
 include (dirs.external)
+include (dirs.jolt)
+include (dirs.physics)
 include (dirs.application)
 include (dirs.graphics)
 include (dirs.core)

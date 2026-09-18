@@ -14,9 +14,9 @@ project "Game"
 	targetname("%{prj.name}_%{cfg.buildcfg}")
 	objdir ("%{dirs.temp}/%{prj.name}/%{cfg.buildcfg}")
 
-	links {"External", "Application", "Core", "Graphics", "SceneScriptCore"}
+	links {"External", "Application", "Core", "Graphics", "SceneScriptCore", "Physics", "Jolt"}
 
-	includedirs { dirs.external, dirs.application, dirs.core, dirs.graphics,dirs.scene_script_core }
+	includedirs { dirs.external, dirs.application, dirs.core, dirs.graphics,dirs.scene_script_core, dirs.physics .. "/" }
 
 	files {
 		"source/**.h",

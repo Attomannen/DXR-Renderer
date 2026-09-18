@@ -46,8 +46,12 @@ namespace Tga
 		PropertyTypeId myId = {};
 		const char* myName;
 		StringId myStringId; // not available during static intialization
+		bool myIsComponent = false;
 	public:
-		PropertyTypeBase(const char* name);
+		PropertyTypeBase(const char* name, bool isComponent = false);
+		// Components (Mesh, Collider, Rigidbody) are what an object definition is built from,
+		// like a Blueprint; every other type is a plain variable.
+		bool IsComponent() const { return myIsComponent; }
 		PropertyTypeId GetTypeId() const { return myId; }
 		StringId GetName() const;
 
@@ -66,7 +70,7 @@ namespace Tga
 	struct PropertyType : PropertyTypeBase
 	{
 	public:
-		PropertyType(const char* name) : PropertyTypeBase(name) 
+		PropertyType(const char* name, bool isComponent = false) : PropertyTypeBase(name, isComponent)
 		{
 			static_assert(sizeof(T) <= PropertyBufferSize);
 		};
@@ -134,6 +138,9 @@ static PropertyType<T> Type;\
 
 #define IMPLEMENT_PROPERTY_TYPE(T, NAME) \
 PropertyType<T> PropertyTypeDefinition<T>::Type(NAME);
+
+#define IMPLEMENT_COMPONENT_PROPERTY_TYPE(T, NAME) \
+PropertyType<T> PropertyTypeDefinition<T>::Type(NAME, true);
 
 template<typename T>
 const PropertyTypeBase* GetPropertyType()
