@@ -444,6 +444,7 @@ namespace Tga
 		bool CreateDxrLightingTargets(Vector2ui aResolution);
 		bool CreateDxrBrdfLut();
 		void GatherEmissiveLights(rhi::ICommandContext& ctx);
+		void EnsureReservoirs();
 		void RenderDxrLighting();
 		void ResolveDxrLightingToHdr();
 		// One fogged-HDR target plus its half-resolution sun-shaft volume.
@@ -584,6 +585,11 @@ namespace Tga
 		rhi::StructuredBuffer myEmissiveCountBuffer;
 		rhi::ConstantBuffer myEmissiveGatherCb;
 		uint32_t myEmissiveGatheredFor = 0xffffffffu;   // instance count the list was built from
+		// ReSTIR reservoirs, ping-ponged: one frame writes while the previous
+		// frame's is read for temporal reuse. A reservoir is 48 bytes.
+		rhi::StructuredBuffer myReservoirBuffer[2];
+		uint32_t myReservoirIndex = 0;
+		Vector2ui myReservoirResolution{ 0, 0 };
 		static constexpr uint32_t kMaxEmissiveLights = 65536;
 		rhi::TextureHandle myDxrBrdfLutTex;              // 256² RG16F split-sum BRDF integration
 		rhi::SrvHandle myDxrBrdfLutSrv;

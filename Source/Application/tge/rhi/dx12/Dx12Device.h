@@ -268,7 +268,7 @@ namespace Tga::rhi::dx12
 
 		static constexpr uint32_t kNumCbvRegisters = 14;   // b0..b13
 		static constexpr uint32_t kNumSrvRegisters = 24;   // t0..t23
-		static constexpr uint32_t kNumUavRegisters = 12;   // u0..u11 (DXR output + temporal/RR guides + resolve motion + NRD guides)
+		static constexpr uint32_t kNumUavRegisters = 13;   // u0..u12 (DXR output + temporal/RR guides + resolve motion + NRD guides + ReSTIR reservoirs)
 		static constexpr uint32_t kNumSamplerRegisters = 6; // s0..s5
 		static constexpr uint32_t kRaySceneRootParameter = kNumCbvRegisters + 3;
 		// Fixed root SRVs in space2, bound directly by GPU virtual address --

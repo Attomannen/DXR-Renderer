@@ -319,7 +319,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
 		{
 			float3 dd, ds;
 			SampleEmissiveDirect(hs, normalize(gCameraOrigin - hs.worldPosition), dtid.xy,
-				gReflectionFrameIndex, max(gEmissiveLightSamples, 1u), dd, ds);
+				gReflectionFrameIndex, max(gEmissiveLightSamples, 1u), gOutputSize, int2(-1, -1), false, dd, ds);
 			d = dd + ds;
 		}
 		gOutput[dtid.xy] = float4(d, 1);
@@ -400,8 +400,15 @@ void main(uint3 dtid : SV_DispatchThreadID)
 	// half joins the indirect signal so NRD denoises it with everything else.
 	float3 emissiveDiffuse = 0.0f, emissiveSpecular = 0.0f;
 	if (gEnableDirectLighting != 0u)
+	{
+		// Reproject with the surface motion this pass already wrote: the
+		// reservoir belongs to the surface, so it follows the surface.
+		const float2 motion = gMotionVectors[dtid.xy];
+		const int2 previousPixel = int2(round(float2(dtid.xy) + motion));
+		const bool historyValid = gTemporalHistoryValid != 0u && gMotionValidity[dtid.xy].x > 0.5f;
 		SampleEmissiveDirect(hs, viewDir, dtid.xy, gReflectionFrameIndex, gEmissiveLightSamples,
-			emissiveDiffuse, emissiveSpecular);
+			gOutputSize, previousPixel, historyValid, emissiveDiffuse, emissiveSpecular);
+	}
 	const float3 indirectDiffuse = gi + envDiffuse * ao + emissiveDiffuse;
 	if (gNrdEnabled != 0u && gLightingView == 0u)
 	{

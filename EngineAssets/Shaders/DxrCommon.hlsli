@@ -150,6 +150,19 @@ struct EmissiveLight
 StructuredBuffer<EmissiveLight> gEmissiveLights : register(t7);
 StructuredBuffer<uint> gEmissiveLightCount : register(t8);
 
+// A ReSTIR reservoir: the one light sample this pixel kept, plus the weight that
+// makes it an unbiased estimate of the whole list, and how many candidates it
+// stands for. Stored per pixel and reprojected next frame, which is what turns
+// one shadow ray per frame into an effective sample count in the hundreds.
+struct LightReservoir
+{
+	float3 lightPoint;   float W;        // unbiased contribution weight
+	float3 radiance;     uint  M;        // candidates this reservoir represents
+	float3 lightNormal;  float _pad;
+};
+StructuredBuffer<LightReservoir> gPrevReservoirs : register(t9);
+RWStructuredBuffer<LightReservoir> gReservoirs : register(u12);
+
 // DeferredRenderer's own point/spot light list -- same layout as GpuLight in
 // DeferredLightingPS.hlsl (kept in sync manually; the raster and DXR paths
 // don't share a register layout, only this struct's shape).
@@ -932,19 +945,32 @@ float Hash01(uint2 p, uint salt)
 // signal NRD denoises. Added straight to the output instead, this is the only
 // un-denoised term in the frame and it dominates the image's noise.
 void SampleEmissiveDirect(HitSurface hs, float3 viewDir, uint2 pixel, uint frameIndex, uint candidates,
+	uint2 screenSize, int2 previousPixel, bool historyValid,
 	out float3 diffuseOut, out float3 specularOut)
 {
 	diffuseOut = 0.0f;
 	specularOut = 0.0f;
+	const uint pixelIndex = pixel.y * screenSize.x + pixel.x;
 	const uint lightCount = gEmissiveLightCount[0];
-	if (lightCount == 0u || candidates == 0u) return;
+	if (lightCount == 0u || candidates == 0u)
+	{
+		LightReservoir empty = (LightReservoir)0;
+		gReservoirs[pixelIndex] = empty;
+		return;
+	}
 	const uint usable = min(lightCount, 65536u);
+	const float3 kLum = float3(0.2126f, 0.7152f, 0.0722f);
 
+	// Target function at THIS shading point: what the sample would contribute if
+	// nothing occluded it. Reused for the temporal sample too, which is the
+	// whole point -- a neighbour's sample is only worth keeping in proportion to
+	// what it is worth HERE.
+	#define RESTIR_TARGET(lightPoint, lightNormal, radiance, outGeom) 		{ 			const float3 toL = (lightPoint) - hs.worldPosition; 			const float d2 = max(dot(toL, toL), 1e-4f); 			const float3 ldir = toL * rsqrt(d2); 			const float ndl = dot(hs.worldNormal, ldir); 			const float ldn = abs(dot((lightNormal), -ldir)); 			outGeom = (ndl > 0.0f && ldn > 0.0f) ? (ndl * ldn) / max(d2, 1e-3f) : 0.0f; 		}
+
+	// ---- this frame's candidates -----------------------------------------
 	float weightSum = 0.0f;
 	float chosenTarget = 0.0f;
-	float3 chosenRadiance = 0.0f;
-	float3 chosenPoint = 0.0f;
-	uint chosenInstance = 0u, chosenPrimitive = 0u;
+	float3 chosenRadiance = 0.0f, chosenPoint = 0.0f, chosenNormal = 0.0f;
 
 	for (uint c = 0; c < candidates; ++c)
 	{
@@ -954,44 +980,33 @@ void SampleEmissiveDirect(HitSurface hs, float3 viewDir, uint2 pixel, uint frame
 		const float r2 = Hash01(pixel + uint2(c * 53u + 11u, c * 41u + 5u), seed + 2u);
 
 		const EmissiveLight light = gEmissiveLights[min((uint)(r0 * usable), usable - 1u)];
-
-		// Uniform point on the triangle.
 		float su = r1, sv = r2;
 		if (su + sv > 1.0f) { su = 1.0f - su; sv = 1.0f - sv; }
 		const float3 lightPoint = light.p0 + light.e0 * su + light.e1 * sv;
+		const float3 lightNormal = normalize(cross(light.e0, light.e1));
 
+		// distSq is floored by the triangle's area: uniform area sampling is only
+		// sane while the receiver is further away than the triangle is wide, and
+		// closer than that 1/distSq diverges into a firefly.
 		const float3 toLight = lightPoint - hs.worldPosition;
 		const float distSq = max(dot(toLight, toLight), 1e-4f);
-		const float dist = sqrt(distSq);
-		const float3 l = toLight / dist;
+		const float3 l = toLight * rsqrt(distSq);
 		const float nDotL = dot(hs.worldNormal, l);
-		if (nDotL <= 0.0f) continue;
-
-		// Emitter-side cosine: a lamp's triangle only lights what it faces.
-		const float3 lightNormal = normalize(cross(light.e0, light.e1));
 		const float lDotN = abs(dot(lightNormal, -l));
-		if (lDotN <= 0.0f) continue;
+		if (nDotL <= 0.0f || lDotN <= 0.0f) continue;
 
-		// Geometry term in AREA measure, without the triangle's area: the area
-		// belongs in the source pdf below, not in the target.
-		//
-		// distSq is floored by the triangle's own area. Sampling a point
-		// uniformly over a triangle is only a sane estimator while the receiver
-		// is further away than the triangle is wide; closer than that, 1/distSq
-		// diverges and one unlucky candidate returns a blinding sample. With
-		// tens of thousands of emitters something is always nearly touching a
-		// surface -- a lamp's glass against its own fixture, a sign against its
-		// wall -- so without this floor the image is covered in fireflies.
 		const float geometry = (nDotL * lDotN) / max(distSq, light.area);
-		const float target = dot(light.radiance, float3(0.2126f, 0.7152f, 0.0722f)) * geometry;
+		const float target = dot(light.radiance, kLum) * geometry;
 		if (target <= 0.0f) continue;
 
-		// RIS weight is target / source pdf. Candidates are drawn uniformly over
-		// the list and uniformly over the chosen triangle, so the source pdf is
-		// 1 / (lightCount * area) -- and leaving that factor out (as a first
-		// version of this did) makes the whole term ~N times too dark, which
-		// with tens of thousands of emissive triangles is invisible rather than
-		// merely wrong.
+		// weight = target / source pdf, and the source pdf for "uniform over the
+		// list, uniform over the triangle" is 1 / (lightCount * area).
+		//
+		// Power-weighted selection was tried here and measured WORSE (frame-to-
+		// frame flicker 6909 -> 8200 changed pixels): it ignores distance, so a
+		// nearby dim lamp becomes rare and arrives with a huge weight, which is
+		// a new firefly rather than a fixed one. A light hierarchy that knows
+		// about distance would be the real answer; a flat power CDF is not.
 		const float weight = target * (float)usable * light.area;
 		weightSum += weight;
 		if (Hash01(pixel + uint2(c * 71u, c * 97u), seed + 3u) * weightSum <= weight)
@@ -999,43 +1014,132 @@ void SampleEmissiveDirect(HitSurface hs, float3 viewDir, uint2 pixel, uint frame
 			chosenTarget = target;
 			chosenRadiance = light.radiance;
 			chosenPoint = lightPoint;
-			chosenInstance = light.instanceId;
-			chosenPrimitive = light.primitiveIndex;
+			chosenNormal = lightNormal;
 		}
 	}
 
-	if (chosenTarget <= 0.0f || weightSum <= 0.0f) return;
+	uint sampleCount = candidates;
 
-	// One shadow ray for the whole list.
+	// ---- temporal reuse ---------------------------------------------------
+	// Last frame's reservoir for this surface is a free extra candidate, and it
+	// carries everything ITS frame had already accumulated. Re-weight it by what
+	// its sample is worth at the current shading point, so a sample that no
+	// longer helps is dropped rather than smeared forward.
+	if (historyValid && previousPixel.x >= 0 && previousPixel.y >= 0
+		&& previousPixel.x < (int)screenSize.x && previousPixel.y < (int)screenSize.y)
+	{
+		const LightReservoir prev = gPrevReservoirs[previousPixel.y * screenSize.x + previousPixel.x];
+		// Cap the history's influence. Without this a reservoir keeps compounding
+		// its own confidence and stops responding to the scene, and any error it
+		// picked up at a disocclusion never washes out.
+		const uint prevM = min(prev.M, candidates * 20u);
+		if (prevM > 0u && dot(prev.radiance, kLum) > 0.0f && prev.W > 0.0f)
+		{
+			float geom = 0.0f;
+			RESTIR_TARGET(prev.lightPoint, prev.lightNormal, prev.radiance, geom);
+			const float prevTarget = dot(prev.radiance, kLum) * geom;
+			const float weight = prevTarget * prev.W * (float)prevM;
+			if (weight > 0.0f)
+			{
+				weightSum += weight;
+				sampleCount += prevM;
+				if (Hash01(pixel + uint2(13u, 7u), frameIndex * 5779u) * weightSum <= weight)
+				{
+					chosenTarget = prevTarget;
+					chosenRadiance = prev.radiance;
+					chosenPoint = prev.lightPoint;
+					chosenNormal = prev.lightNormal;
+				}
+			}
+		}
+	}
+
+	// ---- spatial reuse ----------------------------------------------------
+	// Neighbours shading the same surface looked for the same lights and mostly
+	// found different ones. Pooling their reservoirs is what stops the outcome
+	// depending on whether THIS pixel happened to draw the lamp -- which is the
+	// variance that reads as sparks. It costs no extra rays: the neighbours'
+	// samples are re-weighted for this shading point, exactly like the temporal
+	// one, and only the survivor is ever traced.
+	//
+	// Neighbours come from the PREVIOUS frame's buffer: the current one is being
+	// written by other threads in this same dispatch, so reading it would be a
+	// race.
+	if (historyValid)
+	{
+		const float radius = 16.0f;
+		for (uint sp = 0; sp < 3u; ++sp)
+		{
+			const uint seed = frameIndex * 3331u + sp * 7919u;
+			const float a = Hash01(pixel + uint2(sp * 5u, sp * 11u), seed) * 6.28318530718f;
+			const float r = sqrt(Hash01(pixel + uint2(sp * 23u, sp * 3u), seed + 1u)) * radius;
+			const int2 tap = previousPixel + int2(round(cos(a) * r), round(sin(a) * r));
+			if (tap.x < 0 || tap.y < 0 || tap.x >= (int)screenSize.x || tap.y >= (int)screenSize.y) continue;
+
+			const LightReservoir n = gPrevReservoirs[tap.y * screenSize.x + tap.x];
+			const uint nM = min(n.M, candidates * 20u);
+			if (nM == 0u || n.W <= 0.0f || dot(n.radiance, kLum) <= 0.0f) continue;
+
+			float geom = 0.0f;
+			RESTIR_TARGET(n.lightPoint, n.lightNormal, n.radiance, geom);
+			const float nTarget = dot(n.radiance, kLum) * geom;
+			const float weight = nTarget * n.W * (float)nM;
+			if (weight <= 0.0f) continue;
+
+			weightSum += weight;
+			sampleCount += nM;
+			if (Hash01(pixel + uint2(sp * 17u + 3u, sp * 29u + 7u), seed + 2u) * weightSum <= weight)
+			{
+				chosenTarget = nTarget;
+				chosenRadiance = n.radiance;
+				chosenPoint = n.lightPoint;
+				chosenNormal = n.lightNormal;
+			}
+		}
+	}
+
+	LightReservoir out_ = (LightReservoir)0;
+	if (chosenTarget <= 0.0f || weightSum <= 0.0f || sampleCount == 0u)
+	{
+		gReservoirs[pixelIndex] = out_;
+		return;
+	}
+
+	// W makes the single surviving sample an unbiased estimate of the whole list.
+	const float W = weightSum / ((float)sampleCount * chosenTarget);
+
 	const float3 toChosen = chosenPoint - hs.worldPosition;
 	const float chosenDist = length(toChosen);
 	const float3 l = toChosen / max(chosenDist, 1e-4f);
-	// Stop short of the emitter so its own triangle does not occlude it.
 	const float visibility = TraceShadowRay(hs.shadowPosition, l, chosenDist * 0.999f, hs.instanceId, hs.primitiveIndex);
+
+	// Store the reservoir for next frame. An occluded sample is stored with no
+	// weight rather than dropped, so the pixel does not immediately re-propose
+	// the same blocked light every frame.
+	out_.lightPoint = chosenPoint;
+	out_.W = visibility > 0.0f ? W : 0.0f;
+	out_.radiance = chosenRadiance;
+	out_.M = min(sampleCount, candidates * 20u);
+	out_.lightNormal = chosenNormal;
+	gReservoirs[pixelIndex] = out_;
+
 	if (visibility <= 0.0f) return;
 
-	const float nDotL = saturate(dot(hs.worldNormal, l));
 	float3 kd;
 	const float3 specularBrdf = CookTorrance(hs.worldNormal, viewDir, l, hs.albedo, hs.roughness, hs.metalness, kd);
 	const float3 diffuseBrdf = kd * hs.albedo / 3.14159265f;
 
-	// The RIS estimator is f(x)/p^(x) times the mean weight. Both the geometry
-	// term and the luminance cancel out of f/p^, leaving just the BRDF and the
-	// emitter's colour -- all the geometry is carried by the accumulated weight.
-	const float3 lum = float3(0.2126f, 0.7152f, 0.0722f);
-	const float3 fOverTarget = chosenRadiance / max(dot(chosenRadiance, lum), 1e-6f);
-	const float3 common = fOverTarget * (weightSum / (float)candidates) * visibility;
+	// estimate = f(y) * W, and f/p^ leaves only the BRDF and the emitter colour:
+	// all the geometry is carried by W.
+	const float3 common = (chosenRadiance / max(dot(chosenRadiance, kLum), 1e-6f)) * (chosenTarget * W);
 	diffuseOut = diffuseBrdf * common;
 	specularOut = specularBrdf * common;
 
-	// Bound whatever outliers survive the distance floor above, the same way the
-	// reflection path bounds its own. Until temporal reuse raises the effective
-	// sample count, a single-sample estimator will occasionally land on a
-	// configuration no clamp-free estimator can make quiet.
-	const float diffuseLum = dot(diffuseOut, lum);
+	const float diffuseLum = dot(diffuseOut, kLum);
 	if (diffuseLum > 8.0f) diffuseOut *= 8.0f / diffuseLum;
-	const float specularLum = dot(specularOut, lum);
+	const float specularLum = dot(specularOut, kLum);
 	if (specularLum > 8.0f) specularOut *= 8.0f / specularLum;
+	#undef RESTIR_TARGET
 }
 
 float3 ShadeDirect(HitSurface hs, float3 shadowOrigin, float3 viewDir, float3 sunDirToLight, uint lightCount,

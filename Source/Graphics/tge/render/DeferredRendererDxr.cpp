@@ -264,6 +264,20 @@ void DeferredRenderer::RenderDxrSunShadows()
 // Build the emissive-triangle light list. Only when the ray scene changes: the
 // list is a property of the geometry, not of the frame, and walking every
 // triangle in Bistro every frame would cost far more than the lights are worth.
+// One reservoir per pixel, double buffered: this frame writes one while reading
+// the other, which is what temporal reuse reprojects into.
+void DeferredRenderer::EnsureReservoirs()
+{
+	if (myReservoirResolution.x == myDxrRenderResolution.x && myReservoirResolution.y == myDxrRenderResolution.y)
+		return;
+	rhi::IDevice* dev = DX11::Rhi();
+	const uint32_t count = std::max(1u, myDxrRenderResolution.x * myDxrRenderResolution.y);
+	for (int i = 0; i < 2; ++i)
+		myReservoirBuffer[i].Create(*dev, 48, count, true, false, i == 0 ? "RestirReservoirA" : "RestirReservoirB");
+	myReservoirResolution = myDxrRenderResolution;
+	myReservoirIndex = 0;
+}
+
 void DeferredRenderer::GatherEmissiveLights(rhi::ICommandContext& ctx)
 {
 	rhi::IDevice* dev = DX11::Rhi();
@@ -293,6 +307,7 @@ void DeferredRenderer::GatherEmissiveLights(rhi::ICommandContext& ctx)
 	ctx.Dispatch(instances, 1, 1);
 	ctx.SetUnorderedAccess(0, {});
 	ctx.SetUnorderedAccess(1, {});
+
 	ctx.SetComputePipeline({});
 }
 
@@ -306,6 +321,7 @@ void DeferredRenderer::RenderDxrLighting()
 	// TLAS build, and an empty scene must never trace the previous frame.
 	if (!dev->BindRaytracingSceneForCompute()) { ResetTemporalHistory(); return; }
 	GatherEmissiveLights(ctx);
+	EnsureReservoirs();
 	MeasureEnvironment(ctx);
 	EnsureExposureHistory();
 	const bool dlssActive = IsDxrRenderer() && (myTunables.dlssMode > 0 || myTunables.dlaaEnabled || myTunables.rayReconstructionEnabled) && StreamlineDLSS::Get().IsAvailable() && myTunables.dxrLightingView == 0;
@@ -432,10 +448,12 @@ void DeferredRenderer::RenderDxrLighting()
 	ctx.SetShaderResource(rhi::ShaderStage::Compute, 6, myExposure[myExposureSrc].GetSrv());
 	ctx.SetShaderResource(rhi::ShaderStage::Compute, 7, myEmissiveLightBuffer.Srv());
 	ctx.SetShaderResource(rhi::ShaderStage::Compute, 8, myEmissiveCountBuffer.Srv());
+	ctx.SetShaderResource(rhi::ShaderStage::Compute, 9, myReservoirBuffer[1u - myReservoirIndex].Srv());
 	ctx.SetSampler(rhi::ShaderStage::Compute, 0, myDxrMaterialSampler);
 	myGiVolumeCb.Bind(ctx, rhi::ShaderStage::Compute, 13);
 	ctx.SetUnorderedAccess(0, myDxrLightingUav);
 	for (uint32_t i = 0; i < myTemporalUav.size(); ++i) ctx.SetUnorderedAccess(i + 1, myTemporalUav[i]);
+	ctx.SetUnorderedAccess(12, myReservoirBuffer[myReservoirIndex].Uav());
 	const uint32_t nrdFirstUav = uint32_t(myTemporalUav.size()) + 1;
 	for (uint32_t i = 0; i <= kNrdSpecular; ++i) ctx.SetUnorderedAccess(nrdFirstUav + i, myNrdUav[i]);
 
@@ -447,6 +465,9 @@ void DeferredRenderer::RenderDxrLighting()
 	}
 
 	ctx.SetUnorderedAccess(0, {});
+	ctx.SetUnorderedAccess(12, {});
+	// Next frame reads what this one just wrote.
+	myReservoirIndex = 1u - myReservoirIndex;
 	for (uint32_t i = 0; i < myTemporalUav.size(); ++i) ctx.SetUnorderedAccess(i + 1, {});
 	for (uint32_t i = 0; i <= kNrdSpecular; ++i) ctx.SetUnorderedAccess(nrdFirstUav + i, {});
 	// The resolve (DLSS / RR) runs after this and needs last frame's matrix.
