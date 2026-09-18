@@ -25,6 +25,26 @@ namespace
 		mesh.rayGeometry.materialIndex = RayTracingMaterialTable::GetOrAssignMaterialIndex(mesh.materialName);
 	}
 
+	// Open batch for the current thread, if any. See ScopedBlasBatch.
+	struct DeferredBlases
+	{
+		std::vector<rhi::RaytracingBlasDesc> descs;
+		std::vector<Model::MeshData*> owners;
+		int depth = 0;
+	};
+	thread_local DeferredBlases tlsDeferred;
+
+	void FlushBlases(std::vector<rhi::RaytracingBlasDesc>& descs, std::vector<Model::MeshData*>& owners)
+	{
+		if (descs.empty()) return;
+		std::vector<rhi::RaytracingBlasHandle> handles(descs.size());
+		DX11::Rhi()->CreateRaytracingBlases(descs.data(), (uint32_t)descs.size(), handles.data());
+		for (size_t i = 0; i < owners.size(); ++i)
+			owners[i]->rayGeometry.blas = handles[i];
+		descs.clear();
+		owners.clear();
+	}
+
 	// All of a model's BLASes in one batched build.
 	void BuildBlases(Model::MeshData* meshes, size_t meshCount)
 	{
@@ -32,8 +52,11 @@ namespace
 		if (!device || !device->SupportsRaytracingTier11()) return;
 		TGA_CPU_SCOPE("BLAS build");
 
-		std::vector<rhi::RaytracingBlasDesc> descs;
-		std::vector<Model::MeshData*> owners;
+		const bool deferred = tlsDeferred.depth > 0;
+		std::vector<rhi::RaytracingBlasDesc> localDescs;
+		std::vector<Model::MeshData*> localOwners;
+		std::vector<rhi::RaytracingBlasDesc>& descs = deferred ? tlsDeferred.descs : localDescs;
+		std::vector<Model::MeshData*>& owners = deferred ? tlsDeferred.owners : localOwners;
 		for (size_t m = 0; m < meshCount; ++m)
 		{
 			Model::MeshData& mesh = meshes[m];
@@ -50,10 +73,9 @@ namespace
 			descs.push_back(blas);
 			owners.push_back(&mesh);
 		}
-		std::vector<rhi::RaytracingBlasHandle> handles(descs.size());
-		device->CreateRaytracingBlases(descs.data(), (uint32_t)descs.size(), handles.data());
-		for (size_t i = 0; i < owners.size(); ++i)
-			owners[i]->rayGeometry.blas = handles[i];
+		// A deferred batch is flushed by the ScopedBlasBatch that opened it; the
+		// mesh pointers stay valid because the caller owns them past that scope.
+		if (!deferred) FlushBlases(descs, owners);
 	}
 
 	void ComputeUnionBounds(const std::vector<Model::MeshData>& meshes, BoxSphereBounds& out)
@@ -195,4 +217,23 @@ void Model::FinishInit(const std::string& aPath)
 		std::vector<Vertex>().swap(mesh.vertices);
 		std::vector<unsigned int>().swap(mesh.indices);
 	}
+}
+
+Tga::ScopedBlasBatch::ScopedBlasBatch()
+{
+	++tlsDeferred.depth;
+}
+
+Tga::ScopedBlasBatch::~ScopedBlasBatch()
+{
+	if (--tlsDeferred.depth > 0) return;
+	rhi::IDevice* device = DX11::Rhi();
+	if (!device || !device->SupportsRaytracingTier11())
+	{
+		tlsDeferred.descs.clear();
+		tlsDeferred.owners.clear();
+		return;
+	}
+	TGA_CPU_SCOPE("BLAS build (batched)");
+	FlushBlases(tlsDeferred.descs, tlsDeferred.owners);
 }

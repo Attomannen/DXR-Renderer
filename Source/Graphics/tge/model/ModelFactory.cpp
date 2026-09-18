@@ -649,6 +649,8 @@ bool ModelFactory::InitUnitCylinder()
 bool ModelFactory::InitPrimitives()
 {
 	TGA_CPU_SCOPE("Primitive meshes");
+	// One BLAS build for all six rather than six builds of a few kilobytes each.
+	ScopedBlasBatch blasBatch;
 	if (!InitUnitCube())
 		return false;
 

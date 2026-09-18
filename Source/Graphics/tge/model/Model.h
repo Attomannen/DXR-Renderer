@@ -112,4 +112,23 @@ private:
 	const TextureResource* myDefaultTextures[MAX_MESHES_PER_MODEL][4] = {};
 };
 
+// Defers every BLAS build made on this thread until the scope closes, then
+// issues them as a single batch.
+//
+// A batched build costs a fixed three GPU synchronisation points regardless of
+// how many meshes it carries, so six one-mesh models pay that toll six times
+// over for a few kilobytes of geometry each. The primitives are the pathological
+// case: their builds are essentially free and the stalls are all of the cost.
+//
+// Thread-local on purpose. Model loading runs on worker threads, and a batch one
+// thread opened must not swallow a build another thread is waiting on.
+class ScopedBlasBatch
+{
+public:
+	ScopedBlasBatch();
+	~ScopedBlasBatch();
+	ScopedBlasBatch(const ScopedBlasBatch&) = delete;
+	ScopedBlasBatch& operator=(const ScopedBlasBatch&) = delete;
+};
+
 } // namespace Tga
