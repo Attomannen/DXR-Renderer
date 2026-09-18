@@ -5,6 +5,13 @@ art-showcase portfolio piece, and the order to do it in. Written 2026-09-18
 from source, not from memory: every "exists" claim below has a file reference
 and every "missing" claim was confirmed by a repo-wide search.
 
+**Revised 2026-09-18, later the same day**, after a working session that closed
+part of section 2 and added a day-night cycle and a cloud system the original
+document did not anticipate. Statuses below were re-checked against the code,
+not carried over. Where a fix turned out differently from what the original
+entry guessed, the entry says so -- the guesses are left visible on purpose,
+because several of them were wrong in instructive ways.
+
 Companion documents, still valid and not repeated here:
 - `PORTFOLIO_ROADMAP.md` - measured costs, hardware caveats, SHARC / SER plan.
 - `DXR_RENDERER_AUDIT.md` - the measurement protocol and the per-ray cost audit.
@@ -72,6 +79,7 @@ in section 7.
 | Physical camera: aperture / shutter / ISO to EV100, auto metering via log-luma chain, EV comp, pre-exposure | `Photometry.h`, `DeferredRendererPostFx.cpp:111-135`, `DeferredRendererDxr.cpp:34` | Complete |
 | Bloom: 6-mip prefilter / down / tent-up with threshold and knee | `DeferredRendererPostFx.cpp:86-105` | Complete |
 | Tonemap: AgX, AgX Punchy, ACES, none | `PostFxCommon.hlsli`, `DeferredCompositePS.hlsl` | Complete. ACES curve was recovered from a disassembled `.cso`; no source of truth |
+| Auto exposure, partially compensating | `ExposureAdaptPS.hlsl`, `DeferredRenderer.h` | Complete. On by default at 0.25 strength. A fully compensating meter makes every scene the same screen brightness and cancels a day-night cycle out: measured night mean over day mean was 2.02 at full strength, 0.84 at 0.25 |
 | Depth of field | none | **Missing** |
 | Motion blur | none | **Missing** |
 | Colour grading (LUT, lift/gamma/gain, white balance) | none | **Missing** |
@@ -113,31 +121,54 @@ in section 7.
 
 ## 2. Bugs and correctness debt to clear first
 
-A showcase cannot carry visible defects. In priority order:
+A showcase cannot carry visible defects. In priority order. Statuses re-checked
+against the code on 2026-09-18 after the session that closed items 1, 2 and 7.
 
-1. **TAA jitter forced to zero** (`DeferredRendererDxr.cpp:353`). Restore the
+1. ~~**TAA jitter forced to zero**~~ **DONE, with a caveat.** (`DeferredRendererDxr.cpp:353`). Restore the
    Halton jitter and re-verify the DLSS wobble fix still holds with it on.
-   Without jitter, nothing stochastic fully converges and DLSS is being fed a
-   zero offset. This is the highest value-per-line change in the codebase.
-2. **Bistro glass renders as flat grey noisy panels** (open since the last
-   roadmap). Either a material misclassification or the glass pass reading
-   the wrong HDR copy. Bistro is the hero scene; this is visible in every shot.
+   Jitter is on for DLSS, DLAA and Ray Reconstruction. It is deliberately left
+   off for the *native* temporal resolve, which measurably falls apart under
+   it: on a completely static camera, 7000 pixels per frame change by more than
+   30/255 with jitter on against 25 with it off. DLAA under the same jitter is
+   stable at 22, so this is the native resolve's bug, not the jitter's. That
+   defect is not tracked anywhere else and belongs on this list.
+2. ~~**Bistro glass renders as flat grey noisy panels**~~ **DONE, and neither
+   guess was right.** It was not a misclassification and not the wrong HDR
+   copy: the asset import had written no material definitions at all, so every
+   mesh fell back to a default. Regenerating them from the cook report fixed
+   it. Two real bugs surfaced underneath, both now fixed: the material apply
+   loop passed the *positional* path alongside the name-resolved definition, so
+   meshes sharing a material got separate records and meshes colliding on an
+   index shared the wrong one; and the loop was bounded by the material list's
+   length as well as the mesh count, leaving every mesh past the end of the
+   list untextured.
 3. **Glass is invisible to rays.** `kRayTransparent` instances are skipped
    entirely, so glass casts no shadow, tints nothing behind it, and vanishes
    from reflections. Short term: include glass in shadow rays as a coloured
    attenuator. Long term: section 3.3.
-4. **Glass is composited before fog** (graph order in `BuildFrame:1031-1035`).
-   Any window in the middle distance is unfogged against a fogged wall.
-5. **ReSTIR DI spatial reuse is biased.** No Jacobian or MIS weighting on the
-   three spatial taps and no normal / depth similarity rejection
-   (`DxrCommon.hlsli:1077-1120`). Shows as light bleeding across depth edges
-   next to emissive geometry.
+4. **Glass is composited before fog** (graph order in `BuildFrame`). Any window
+   in the middle distance is unfogged against a fogged wall. Worse than
+   written: the transparent pass depth-tests at *display* resolution against a
+   depth buffer point-upsampled from *render* resolution, so its silhouettes
+   are quantised into render-resolution blocks while the glass itself
+   rasterises at display resolution. Under DLSS upscaling a one-pixel glass
+   edge then passes the depth test on some jitter phases and fails on others,
+   and because the shader divides its additive reflection by opacity (a
+   six-fold amplification at the Bistro windows' 0.16) that edge flashed to
+   white for single frames. The flash is capped; the resolution mismatch is
+   not fixed. Sizing the cloud and transparent passes to the render resolution
+   under upscaling is the real cure.
+5. **ReSTIR DI spatial reuse is biased.** PARTLY FIXED: taps are now rejected
+   across surfaces on normal and plane distance, which was the visible half --
+   the light bleeding across depth edges next to emissive geometry. Still no
+   Jacobian and no MIS weighting on the three spatial taps, so it remains
+   biased.
 6. **Emissive light list only rebuilds on instance-count change**
    (`DeferredRendererDxr.cpp:286`). Any moving or animated emitter lights its
    old position. Rebuild on any emissive transform change, or every frame for
    dynamic instances.
-7. **Specular ReSTIR contribution is added un-denoised** while the diffuse half
-   goes through NRD. Route it into the NRD specular signal.
+7. ~~**Specular ReSTIR contribution is added un-denoised**~~ **DONE.** It is
+   written into the NRD specular signal.
 8. **DX11 backend crashes on exit** in `Dx11Device::WrapNativeSrv`. Not a
    showcase issue, but the launcher offers DX11 and a crash is a bad first
    impression. Either fix or hide the DX11 option from the launcher.
@@ -147,6 +178,16 @@ A showcase cannot carry visible defects. In priority order:
     (`DeferredRendererDxr.cpp:59-66`). Matters once time-of-day animates.
 11. **ACES curve has no source.** Re-derive from the published fit (Narkowicz
     or Hill) so the tonemapper is auditable.
+12. **The native temporal resolve cannot handle jitter.** See item 1. Until
+    this is fixed, the native path is the low-quality option and DLAA is the
+    only way to get a converged image at 1:1.
+13. **The cloud and transparent passes render at display resolution while the
+    frame renders below it.** Both should follow the render resolution under
+    upscaling: the clouds are resampled down and back up for nothing, and the
+    transparent pass's depth mismatch is item 4.
+14. **Star brightness is absolute rather than metered**, so once auto exposure
+    reaches its floor the stars carry the frame mean up and deep night reads
+    brighter than dusk.
 
 ---
 
@@ -232,7 +273,11 @@ tech demo. None exist today.
 | **Higher-resolution sky cubemap** | 128 px per face is visible in sharp reflections of the sun; raise to 512 and prefilter accordingly. | S |
 | **HDRI sun matching** | Extract the brightest direction and intensity from a loaded HDRI and drive the sun from it so HDRI and shadows agree. | S |
 | **Froxel volumetric fog** | 3D scattering / extinction volume with temporal reprojection, local fog volumes (box / sphere), point and spot light scattering, fog affecting sky. The current global medium looks the same everywhere. | L |
-| **Volumetric clouds** | Optional. Ray-marched noise clouds in the sky-view pass. Large visual payoff for outdoor shots, large effort. | L |
+| ~~**Volumetric clouds**~~ | **Done.** Ray-marched, 96 steps, temporally accumulated, composited before fog so the horizon haze washes them out. Two baked noise volumes (128^3 shape, 64^3 detail). Coverage, cloud type and tower height come from weather fields sampled at a fixed altitude, so they vary per column rather than per sample. Spherical shell with an exaggeration factor that trades recession against fullness. | done |
+| ~~**Procedural stars**~~ | **Done.** `StarField.hlsli`, evaluated per pixel in the atmosphere composite rather than baked into the cubemap, where a star is far smaller than a texel. Occluded by clouds, extinguished toward the horizon, turns rigidly with the sun. | done |
+| ~~**Day-night cycle**~~ | **Done.** Sun radiance, cloud lighting, fog colour and ambient all follow sun elevation; the night sky no longer blends the scene's daylight HDRI in at 5 percent. Night went from 22 percent darker than day to 80 percent. | done |
+| **A moon** | The remaining gap at night: with the sun gone nothing lights the geometry, so buildings read as flat silhouettes. Correct, but dull. A directional light with the moon's illuminance and a disc in the sky. | S |
+| **Star intensity tied to exposure** | Stars are absolute, so once the meter hits its floor they carry the frame mean up and -30 degrees is brighter than -10. | S |
 | **Fog-aware GI and reflections** | Apply transmittance to reflected and GI radiance so fogged reflections do not read as sharper than the scene. | S |
 
 ### 3.7 Geometry, animation, dynamic content
@@ -367,18 +412,32 @@ Only what a showcase needs; the full editor list is in
 Ordered by visible payoff per week. Each phase ends with a new set of stills
 and a short clip, so the portfolio improves continuously rather than at the end.
 
-### Phase 1: make the current frame clean (1-2 weeks)
-1. Restore TAA jitter and re-verify DLSS stability.
-2. Fix Bistro glass, coloured shadows through glass, glass after fog.
-3. ReSTIR spatial reuse correctness, emissive list rebuild, specular half into NRD.
-4. NRD performance mode, trilinear secondary sampler.
-5. Commit the Material Graph work.
+### Phase 1: make the current frame clean (1-2 weeks) -- MOSTLY DONE
+1. ~~Restore TAA jitter~~ done for DLSS/DLAA/RR. Left off for the *native*
+   resolve, which measurably falls apart under jitter: 7000 pixels per frame
+   swinging on a still camera against 25 with it off. That is its own defect
+   and is not tracked anywhere else in this document.
+2. ~~Fix Bistro glass~~ done, but not for the reason item 2 of section 2
+   guessed. Coloured shadows through glass and glass-after-fog are still open.
+3. ~~Specular half into NRD~~ done. ReSTIR spatial reuse now rejects taps
+   across surfaces, which was the visible half, but still has no Jacobian or
+   MIS. Emissive list rebuild untouched.
+4. NRD performance mode, trilinear secondary sampler -- untouched.
+5. Commit the Material Graph work -- untouched.
 
-### Phase 2: the lens (1-2 weeks)
+Also done in this phase, unplanned: a performance pass that took the Bistro
+frame from 32.8 ms to 20.1 (sun shadow rays 4 to 1 after fixing a sampler that
+only randomised one of the disc's two polar coordinates, AO rays 2 to 1, fog
+march to quarter resolution), and the whole atmosphere section above.
+
+### Phase 2: the lens (1-2 weeks) -- NEXT, and still entirely untouched
 6. Post-process reorder, then DoF, motion blur, colour grading LUT, vignette,
    grain, chromatic aberration, lens flare and dirt, sharpen.
-7. Time-of-day animation with the existing sky and per-hour exposure comp.
-8. Bistro at night lighting rig.
+7. ~~Time-of-day animation~~ the lighting side is done; what remains is driving
+   the sun from a clock and authoring the exposure compensation curve.
+8. Bistro at night lighting rig. More interesting now that the cycle works:
+   at night nothing lights the geometry at all, so this and the moon above are
+   really the same task.
 
 ### Phase 3: the proof (1-2 weeks)
 9. Spline camera paths, camera cuts, deterministic frame dump, ffmpeg script.
