@@ -941,15 +941,20 @@ float Hash01(uint2 p, uint salt)
 // This is the sampling half of ReSTIR. Temporal and spatial reuse -- the "R" --
 // build on exactly this reservoir, so they can be added without changing the
 // shading below.
-// Diffuse and specular are returned separately so the diffuse bulk can join the
-// signal NRD denoises. Added straight to the output instead, this is the only
-// un-denoised term in the frame and it dominates the image's noise.
+// Diffuse and specular are returned separately because they join different NRD
+// signals -- the diffuse half the indirect one, the specular half the reflection
+// one, alongside the hit distance that signal needs to reproject. Added straight
+// to the output instead, either half is the only un-denoised term in the frame
+// and dominates its noise.
 void SampleEmissiveDirect(HitSurface hs, float3 viewDir, uint2 pixel, uint frameIndex, uint candidates,
 	uint2 screenSize, int2 previousPixel, bool historyValid,
-	out float3 diffuseOut, out float3 specularOut)
+	out float3 diffuseOut, out float3 specularOut, out float specularHitDistanceOut)
 {
 	diffuseOut = 0.0f;
 	specularOut = 0.0f;
+	// 0 = "nothing lit this pixel", which the caller reads as "no opinion on the
+	// hit distance" rather than as a light sitting on the surface.
+	specularHitDistanceOut = 0.0f;
 	const uint pixelIndex = pixel.y * screenSize.x + pixel.x;
 	const uint lightCount = gEmissiveLightCount[0];
 	if (lightCount == 0u || candidates == 0u)
@@ -1132,6 +1137,7 @@ void SampleEmissiveDirect(HitSurface hs, float3 viewDir, uint2 pixel, uint frame
 	// estimate = f(y) * W, and f/p^ leaves only the BRDF and the emitter colour:
 	// all the geometry is carried by W.
 	const float3 common = (chosenRadiance / max(dot(chosenRadiance, kLum), 1e-6f)) * (chosenTarget * W);
+	specularHitDistanceOut = chosenDist;
 	diffuseOut = diffuseBrdf * common;
 	specularOut = specularBrdf * common;
 

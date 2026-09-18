@@ -317,9 +317,9 @@ void main(uint3 dtid : SV_DispatchThreadID)
 		// back to the camera.
 		else
 		{
-			float3 dd, ds;
+			float3 dd, ds; float dHitT;
 			SampleEmissiveDirect(hs, normalize(gCameraOrigin - hs.worldPosition), dtid.xy,
-				gReflectionFrameIndex, max(gEmissiveLightSamples, 1u), gOutputSize, int2(-1, -1), false, dd, ds);
+				gReflectionFrameIndex, max(gEmissiveLightSamples, 1u), gOutputSize, int2(-1, -1), false, dd, ds, dHitT);
 			d = dd + ds;
 		}
 		gOutput[dtid.xy] = float4(d, 1);
@@ -399,6 +399,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
 	// makes a lamp light the pavement instead of merely glowing. The diffuse
 	// half joins the indirect signal so NRD denoises it with everything else.
 	float3 emissiveDiffuse = 0.0f, emissiveSpecular = 0.0f;
+	float emissiveHitDistance = 0.0f;
 	if (gEnableDirectLighting != 0u)
 	{
 		// Reproject with the surface motion this pass already wrote: the
@@ -407,7 +408,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
 		const int2 previousPixel = int2(round(float2(dtid.xy) + motion));
 		const bool historyValid = gTemporalHistoryValid != 0u && gMotionValidity[dtid.xy].x > 0.5f;
 		SampleEmissiveDirect(hs, viewDir, dtid.xy, gReflectionFrameIndex, gEmissiveLightSamples,
-			gOutputSize, previousPixel, historyValid, emissiveDiffuse, emissiveSpecular);
+			gOutputSize, previousPixel, historyValid, emissiveDiffuse, emissiveSpecular, emissiveHitDistance);
 	}
 	const float3 indirectDiffuse = gi + envDiffuse * ao + emissiveDiffuse;
 	if (gNrdEnabled != 0u && gLightingView == 0u)
@@ -429,7 +430,6 @@ void main(uint3 dtid : SV_DispatchThreadID)
 	{
 		color += indirectDiffuse;
 	}
-	color += emissiveSpecular;
 	if (gEnableDirectLighting != 0u)
 		color += ShadeDirect(hs, shadowOrigin, viewDir, gSunDirToLight, gLightCount, gSunRadiance, gAmbientIntensity, clamp(gSunShadowSamples, 1u, 4u),
 			gSunShadowSamples < 4u ? frac(float(gReflectionFrameIndex) * 0.618034f) : 0.0f);
@@ -481,7 +481,29 @@ void main(uint3 dtid : SV_DispatchThreadID)
 		specularHitDistance = lerp(specularHitDistance, reflectionHitDistance / float(reflectionSamples), rayWeight);
 	}
 	// Specular occlusion relaxes toward smooth surfaces, preserving mirrors.
-	const float3 specular = envSpecular * lerp(1.0f, ao, hs.roughness);
+	// The emissive area lights' specular half joins here rather than being added
+	// straight to the image, so it goes through NRD with everything else --
+	// previously the diffuse half was denoised and this one was not, which left
+	// lamp highlights sparkling on top of an otherwise clean frame.
+	const float3 specular = envSpecular * lerp(1.0f, ao, hs.roughness) + emissiveSpecular;
+
+	// NRD derives specular reprojection from the hit distance, so the combined
+	// signal needs a combined one. Weight by luminance in INVERSE distance: that
+	// is the space parallax actually lives in, and it takes the 65504 "the
+	// environment is infinitely far" sentinel in its stride, where a plain
+	// average of it with a lamp 3 m away would produce nonsense.
+	{
+		const float3 kL = float3(0.2126f, 0.7152f, 0.0722f);
+		const float envLuma = dot(max(envSpecular * lerp(1.0f, ao, hs.roughness), 0.0f), kL);
+		const float emiLuma = dot(max(emissiveSpecular, 0.0f), kL);
+		if (emiLuma > 0.0f && emissiveHitDistance > 0.0f)
+		{
+			const float invEnv = specularHitDistance > 0.0f ? 1.0f / specularHitDistance : 0.0f;
+			const float invEmi = 1.0f / emissiveHitDistance;
+			const float invMean = (envLuma * invEnv + emiLuma * invEmi) / max(envLuma + emiLuma, 1e-6f);
+			specularHitDistance = invMean > 1e-9f ? min(1.0f / invMean, 65504.0f) : 65504.0f;
+		}
+	}
 
 	// Resolve-time motion for a reflection.
 	//
