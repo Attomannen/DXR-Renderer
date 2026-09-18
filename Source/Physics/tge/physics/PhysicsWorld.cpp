@@ -10,7 +10,10 @@
 #include <Jolt/Core/JobSystemThreadPool.h>
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
+#include <Jolt/Physics/Body/BodyFilter.h>
 #include <Jolt/Physics/Body/BodyInterface.h>
+#include <Jolt/Physics/Character/CharacterVirtual.h>
+#include <Jolt/Physics/Collision/ShapeFilter.h>
 #include <Jolt/Physics/Collision/BroadPhase/BroadPhaseLayer.h>
 #include <Jolt/Physics/Collision/ObjectLayer.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
@@ -219,6 +222,46 @@ namespace Tga
 		std::vector<JPH::RefConst<JPH::Shape>> shapes; // released slots are null
 		std::vector<uint32_t> freeShapeSlots;
 
+		// Declared after `system`, so characters are released before it.
+		struct Character
+		{
+			JPH::Ref<JPH::CharacterVirtual> character;
+			JPH::Vec3 horizontal = JPH::Vec3::sZero(); // wanted sideways velocity, m/s
+			float vertical = 0.f;                       // up velocity, m/s
+			float stepHeight = 0.4f;                    // m
+		};
+		std::vector<Character> characters;              // destroyed slots have a null character
+
+		void UpdateCharacters(float dt)
+		{
+			const JPH::Vec3 gravity = system->GetGravity();
+			for (Character& c : characters)
+			{
+				if (!c.character)
+					continue;
+
+				const bool grounded = c.character->GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround;
+				if (grounded && c.vertical < 0.f)
+					c.vertical = 0.f;                   // standing: no build-up of fall speed
+				else
+					c.vertical += gravity.GetY() * dt;
+
+				c.character->SetLinearVelocity(c.horizontal + JPH::Vec3(0.f, c.vertical, 0.f));
+
+				JPH::CharacterVirtual::ExtendedUpdateSettings settings;
+				settings.mStickToFloorStepDown = JPH::Vec3(0.f, -c.stepHeight, 0.f);
+				settings.mWalkStairsStepUp = JPH::Vec3(0.f, c.stepHeight, 0.f);
+
+				c.character->ExtendedUpdate(dt, gravity, settings,
+					JPH::DefaultBroadPhaseLayerFilter(objectVsBroadPhase, Layers::Moving),
+					JPH::DefaultObjectLayerFilter(objectPairs, Layers::Moving),
+					JPH::BodyFilter(), JPH::ShapeFilter(), *tempAllocator);
+
+				// Up speed after the sweep: a ceiling hit zeroes it, ground contact resets it.
+				c.vertical = c.character->GetLinearVelocity().GetY();
+			}
+		}
+
 		float accumulator = 0.f;
 
 		JPH::BodyInterface& Bodies() { return system->GetBodyInterface(); }
@@ -281,6 +324,7 @@ namespace Tga
 		int steps = 0;
 		while (s.accumulator >= kFixedStep && steps < kMaxSubSteps)
 		{
+			s.UpdateCharacters(kFixedStep);
 			s.system->Update(kFixedStep, 1, s.tempAllocator.get(), s.jobSystem.get());
 			s.accumulator -= kFixedStep;
 			++steps;
@@ -453,6 +497,92 @@ namespace Tga
 		return myImpl ? myImpl->system->GetNumBodies() : 0;
 	}
 
+	PhysicsCharacterId PhysicsWorld::CreateCharacter(const PhysicsCharacterDesc& desc)
+	{
+		if (!myImpl)
+			return {};
+		Impl& s = *myImpl;
+
+		const float radius = std::max(desc.radius, 1.f) * kCmToM;
+		const float height = std::max(desc.height, desc.radius * 2.f + 1.f) * kCmToM;
+		const float cylinderHalf = (height - 2.f * radius) * 0.5f;
+
+		// The capsule is lifted so the character's position is at its feet.
+		JPH::RotatedTranslatedShapeSettings shapeSettings(JPH::Vec3(0.f, cylinderHalf + radius, 0.f), JPH::Quat::sIdentity(),
+			new JPH::CapsuleShape(cylinderHalf, radius));
+		const JPH::ShapeSettings::ShapeResult shape = shapeSettings.Create();
+		if (shape.HasError())
+			return {};
+
+		JPH::CharacterVirtualSettings settings;
+		settings.mShape = shape.Get();
+		settings.mUp = JPH::Vec3::sAxisY();
+		settings.mMass = desc.mass;
+		settings.mMaxSlopeAngle = JPH::DegreesToRadians(desc.maxSlopeDegrees);
+		// Only the lower part of the capsule counts as ground, so a wall against the side never supports it.
+		settings.mSupportingVolume = JPH::Plane(JPH::Vec3::sAxisY(), -radius);
+
+		Impl::Character character;
+		character.character = new JPH::CharacterVirtual(&settings, JPH::RVec3(ToJolt(desc.position)), JPH::Quat::sIdentity(), 0, s.system.get());
+		character.stepHeight = desc.stepHeight * kCmToM;
+
+		for (size_t i = 0; i < s.characters.size(); ++i)
+		{
+			if (!s.characters[i].character)
+			{
+				s.characters[i] = std::move(character);
+				return { (uint32_t)i };
+			}
+		}
+		s.characters.push_back(std::move(character));
+		return { (uint32_t)(s.characters.size() - 1) };
+	}
+
+	void PhysicsWorld::DestroyCharacter(PhysicsCharacterId character)
+	{
+		if (myImpl && character.IsValid() && character.value < myImpl->characters.size())
+			myImpl->characters[character.value] = {};
+	}
+
+	void PhysicsWorld::SetCharacterMove(PhysicsCharacterId character, const PhysicsVec3& velocity)
+	{
+		if (myImpl && character.IsValid() && character.value < myImpl->characters.size())
+			myImpl->characters[character.value].horizontal = JPH::Vec3(velocity.x * kCmToM, 0.f, velocity.z * kCmToM);
+	}
+
+	void PhysicsWorld::CharacterJump(PhysicsCharacterId character, float speed)
+	{
+		if (!myImpl || !character.IsValid() || character.value >= myImpl->characters.size())
+			return;
+		Impl::Character& c = myImpl->characters[character.value];
+		if (c.character && c.character->GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround)
+			c.vertical = speed * kCmToM;
+	}
+
+	void PhysicsWorld::SetCharacterPosition(PhysicsCharacterId character, const PhysicsVec3& feet)
+	{
+		if (myImpl && character.IsValid() && character.value < myImpl->characters.size() && myImpl->characters[character.value].character)
+		{
+			myImpl->characters[character.value].character->SetPosition(JPH::RVec3(ToJolt(feet)));
+			myImpl->characters[character.value].vertical = 0.f;
+		}
+	}
+
+	bool PhysicsWorld::GetCharacterPosition(PhysicsCharacterId character, PhysicsVec3& outFeet) const
+	{
+		if (!myImpl || !character.IsValid() || character.value >= myImpl->characters.size() || !myImpl->characters[character.value].character)
+			return false;
+		outFeet = ToEngine(JPH::Vec3(myImpl->characters[character.value].character->GetPosition()));
+		return true;
+	}
+
+	bool PhysicsWorld::IsCharacterOnGround(PhysicsCharacterId character) const
+	{
+		if (!myImpl || !character.IsValid() || character.value >= myImpl->characters.size() || !myImpl->characters[character.value].character)
+			return false;
+		return myImpl->characters[character.value].character->GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround;
+	}
+
 	void PhysicsWorld::CollectDebugLines(const PhysicsVec3& center, float radius, size_t maxLines, PhysicsDebugLines& out) const
 	{
 		if (!myImpl)
@@ -463,17 +593,29 @@ namespace Tga
 		const float r = radius * kCmToM;
 		const JPH::AABox region(c - JPH::Vec3::sReplicate(r), c + JPH::Vec3::sReplicate(r));
 
+		// Everything to draw: the bodies, then the characters (which are not bodies).
+		struct Item { JPH::TransformedShape shape; PhysicsDebugLines::Kind kind; };
+		std::vector<Item> items;
+
 		JPH::BodyIDVector ids;
 		s.system->GetBodies(ids);
 		for (const JPH::BodyID& id : ids)
 		{
-			const JPH::TransformedShape shape = s.system->GetBodyInterface().GetTransformedShape(id);
-			if (!shape.mShape || !shape.GetWorldSpaceBounds().Overlaps(region))
-				continue;
-
 			PhysicsDebugLines::Kind kind = PhysicsDebugLines::Static;
 			if (s.Bodies().GetMotionType(id) != JPH::EMotionType::Static)
 				kind = s.Bodies().IsActive(id) ? PhysicsDebugLines::Awake : PhysicsDebugLines::Asleep;
+			items.push_back({ s.system->GetBodyInterface().GetTransformedShape(id), kind });
+		}
+		for (const Impl::Character& character : s.characters)
+			if (character.character)
+				items.push_back({ character.character->GetTransformedShape(), PhysicsDebugLines::Awake });
+
+		for (const Item& item : items)
+		{
+			const JPH::TransformedShape& shape = item.shape;
+			const PhysicsDebugLines::Kind kind = item.kind;
+			if (!shape.mShape || !shape.GetWorldSpaceBounds().Overlaps(region))
+				continue;
 
 			JPH::Shape::GetTrianglesContext context;
 			shape.GetTrianglesStart(context, region, JPH::RVec3(c));

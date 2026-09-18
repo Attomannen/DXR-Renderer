@@ -63,12 +63,19 @@ namespace GameScene
 		bool activeOnStart = true;
 	};
 
+	struct SceneEntryCharacter
+	{
+		bool has = false;
+		float radius = 35.f, height = 170.f, stepHeight = 40.f, maxSlope = 50.f, mass = 80.f;
+	};
+
 	struct SceneEntry
 	{
 		std::string fbx;
 		std::vector<std::string> materials;
 		SceneEntryPhysics physics;
 		SceneEntryCamera camera;
+		SceneEntryCharacter character;
 		json instanceProperties;                            // per-instance property values written in the scene file
 		std::string tgoPath;                                // "Folder/Name" of the .tgo (no extension); scripts live in <tgoPath>/
 		Matrix4x4f transform;                               // identity by default

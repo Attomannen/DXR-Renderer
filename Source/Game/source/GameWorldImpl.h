@@ -446,6 +446,18 @@ struct GameWorld::Impl
 	void RegisterSceneScripts(const GameScene::SceneEntry& entry, size_t instanceIndex);
 	void UpdateSceneScripts(float deltaSeconds);
 
+	// --- Characters (GameWorldScripts.cpp) ---
+	// A character is created when the simulation starts and destroyed on Reset, like the props.
+	struct SceneCharacterObject
+	{
+		size_t instance = 0;
+		Tga::PhysicsCharacterDesc desc;
+		Tga::PhysicsCharacterId id;
+		Matrix4x4f startTransform;
+	};
+	std::vector<SceneCharacterObject> sceneCharacters;
+	void RegisterSceneCharacter(const GameScene::SceneEntry& entry, const Matrix4x4f& worldTransform, size_t instanceIndex);
+
 	// --- Camera components (GameWorldScripts.cpp) ---
 	struct SceneCameraObject
 	{

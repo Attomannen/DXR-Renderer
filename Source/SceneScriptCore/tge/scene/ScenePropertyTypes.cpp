@@ -604,6 +604,62 @@ namespace Tga
 	IMPLEMENT_COMPONENT_PROPERTY_TYPE(CopyOnWriteWrapper<SceneCamera>, "Camera")
 
 	template<>
+	void LoadFromJson<CopyOnWriteWrapper<SceneCharacter>>(CopyOnWriteWrapper<SceneCharacter>& value, const JsonData& jsonData)
+	{
+		value = CopyOnWriteWrapper<SceneCharacter>::Create();
+		SceneCharacter& character = value.Edit();
+		const nlohmann::json& json = jsonData.json;
+
+		character.radius = json.value("radius", character.radius);
+		character.height = json.value("height", character.height);
+		character.stepHeight = json.value("stepHeight", character.stepHeight);
+		character.maxSlope = json.value("maxSlope", character.maxSlope);
+		character.mass = json.value("mass", character.mass);
+	}
+
+	template<>
+	void WriteToJson<CopyOnWriteWrapper<SceneCharacter>>(const CopyOnWriteWrapper<SceneCharacter>& value, JsonData& jsonData)
+	{
+		const SceneCharacter& character = value.Get();
+		nlohmann::json& json = jsonData.json;
+
+		json["radius"] = character.radius;
+		json["height"] = character.height;
+		json["stepHeight"] = character.stepHeight;
+		json["maxSlope"] = character.maxSlope;
+		json["mass"] = character.mass;
+	}
+
+	template<>
+	bool ShowImGuiEditor<CopyOnWriteWrapper<SceneCharacter>>(CopyOnWriteWrapper<SceneCharacter>& value, const char* name, const char* description)
+	{
+		const SceneCharacter& character = value.Get();
+
+		if (name == nullptr)
+		{
+			ImGui::Text("%.0f x %.0f cm", character.radius * 2.f, character.height);
+			return false;
+		}
+
+		PropertyHeader(name, description);
+
+		SceneCharacter edited = character;
+		bool changed = false;
+
+		changed |= FloatRow("Radius", edited.radius, 0.5f, 5.f, 200.f);
+		changed |= FloatRow("Height", edited.height, 1.f, 20.f, 500.f);
+		changed |= FloatRow("Step height", edited.stepHeight, 0.5f, 0.f, 150.f);
+		changed |= FloatRow("Max slope", edited.maxSlope, 0.5f, 0.f, 89.f);
+		changed |= FloatRow("Mass (kg)", edited.mass, 0.5f, 1.f, 1000.f);
+
+		if (changed)
+			value.Edit() = edited;
+		return changed;
+	}
+
+	IMPLEMENT_COMPONENT_PROPERTY_TYPE(CopyOnWriteWrapper<SceneCharacter>, "Character")
+
+	template<>
 	void LoadFromJson<CopyOnWriteWrapper<SceneSprite>>(CopyOnWriteWrapper<SceneSprite>& value, const JsonData& jsonData)
 	{
 		value = CopyOnWriteWrapper<SceneSprite>::Create();

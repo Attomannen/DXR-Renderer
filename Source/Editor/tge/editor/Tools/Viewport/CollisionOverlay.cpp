@@ -104,6 +104,20 @@ const CollisionOverlay::MeshLines* CollisionOverlay::GetMeshLines(StringId model
 	return &myMeshCache.back().second;
 }
 
+void CollisionOverlay::Capsule(const Vector3f& o, float r, float h, unsigned int color, const Matrix4x4f& world)
+{
+	const Vector3f top = o + Vector3f{ 0, h, 0 }, bottom = o - Vector3f{ 0, h, 0 };
+	Circle(top, { r, 0, 0 }, { 0, 0, r }, color, world);
+	Circle(bottom, { r, 0, 0 }, { 0, 0, r }, color, world);
+	for (const Vector3f& side : { Vector3f{ r, 0, 0 }, Vector3f{ -r, 0, 0 }, Vector3f{ 0, 0, r }, Vector3f{ 0, 0, -r } })
+		Line(top + side, bottom + side, color, world);
+	constexpr float kPi = 3.14159265f;
+	Circle(top, { r, 0, 0 }, { 0, r, 0 }, color, world, 0.f, kPi);
+	Circle(top, { 0, 0, r }, { 0, r, 0 }, color, world, 0.f, kPi);
+	Circle(bottom, { r, 0, 0 }, { 0, -r, 0 }, color, world, 0.f, kPi);
+	Circle(bottom, { 0, 0, r }, { 0, -r, 0 }, color, world, 0.f, kPi);
+}
+
 void CollisionOverlay::DrawObject(const std::vector<ScenePropertyDefinition>& properties, const Matrix4x4f& world)
 {
 	if (!myDraw)
@@ -112,18 +126,28 @@ void CollisionOverlay::DrawObject(const std::vector<ScenePropertyDefinition>& pr
 	const SceneModel* model = nullptr;
 	const SceneCollider* collider = nullptr;
 	const SceneRigidBody* body = nullptr;
+	const SceneCharacter* character = nullptr;
 	for (const ScenePropertyDefinition& property : properties)
 	{
 		if (property.type == GetPropertyType<CopyOnWriteWrapper<SceneModel>>())
 			model = &property.value.Get<CopyOnWriteWrapper<SceneModel>>()->Get();
 		else if (property.type == GetPropertyType<CopyOnWriteWrapper<SceneCollider>>())
 			collider = &property.value.Get<CopyOnWriteWrapper<SceneCollider>>()->Get();
+		else if (property.type == GetPropertyType<CopyOnWriteWrapper<SceneCharacter>>())
+			character = &property.value.Get<CopyOnWriteWrapper<SceneCharacter>>()->Get();
 		else if (property.type == GetPropertyType<CopyOnWriteWrapper<SceneRigidBody>>())
 			body = &property.value.Get<CopyOnWriteWrapper<SceneRigidBody>>()->Get();
 	}
 
 	const bool isStatic = !body || body->motion == SceneBodyMotion::Static;
 	const ImU32 color = isStatic ? kStaticColor : kDynamicColor;
+
+	// A character is a capsule standing on the object's origin.
+	if (character)
+	{
+		const float halfHeight = std::max(character->height * 0.5f - character->radius, 0.f);
+		Capsule({ 0.f, character->height * 0.5f, 0.f }, character->radius, halfHeight, IM_COL32(255, 220, 60, 230), world);
+	}
 
 	// Explicit primitive on a Collider component.
 	if (collider && collider->shape != SceneColliderShape::Auto && collider->shape != SceneColliderShape::ConvexHull && collider->shape != SceneColliderShape::TriangleMesh)
@@ -143,20 +167,8 @@ void CollisionOverlay::DrawObject(const std::vector<ScenePropertyDefinition>& pr
 			break;
 		}
 		case SceneColliderShape::Capsule:
-		{
-			const float r = collider->radius, h = collider->halfHeight;
-			const Vector3f top = o + Vector3f{ 0, h, 0 }, bottom = o - Vector3f{ 0, h, 0 };
-			Circle(top, { r, 0, 0 }, { 0, 0, r }, color, world);
-			Circle(bottom, { r, 0, 0 }, { 0, 0, r }, color, world);
-			for (const Vector3f& side : { Vector3f{ r, 0, 0 }, Vector3f{ -r, 0, 0 }, Vector3f{ 0, 0, r }, Vector3f{ 0, 0, -r } })
-				Line(top + side, bottom + side, color, world);
-			constexpr float kPi = 3.14159265f;
-			Circle(top, { r, 0, 0 }, { 0, r, 0 }, color, world, 0.f, kPi);
-			Circle(top, { 0, 0, r }, { 0, r, 0 }, color, world, 0.f, kPi);
-			Circle(bottom, { r, 0, 0 }, { 0, -r, 0 }, color, world, 0.f, kPi);
-			Circle(bottom, { 0, 0, r }, { 0, -r, 0 }, color, world, 0.f, kPi);
+			Capsule(o, collider->radius, collider->halfHeight, color, world);
 			break;
-		}
 		default:
 			break;
 		}

@@ -45,6 +45,8 @@ namespace
 
 		void SetLocation(const Vector3f& location) override
 		{
+			if (const GameWorld::Impl::SceneCharacterObject* character = FindCharacter())
+				myWorld.physics.SetCharacterPosition(character->id, { location.x, location.y, location.z });
 			if (const GameWorld::Impl::ScenePhysicsObject* object = FindBody())
 			{
 				// A simulated body is the truth; the next physics sync would undo a model-only move.
@@ -81,6 +83,26 @@ namespace
 		Vector3f GetForward() const override { return myWorld.models[myInstance].GetTransform().GetForward(); }
 		Vector3f GetRight() const override { return myWorld.models[myInstance].GetTransform().GetRight(); }
 		Vector3f GetUp() const override { return myWorld.models[myInstance].GetTransform().GetUp(); }
+
+		bool HasCharacter() const override { return FindCharacter() != nullptr; }
+
+		void MoveCharacter(const Vector3f& velocity) override
+		{
+			if (const GameWorld::Impl::SceneCharacterObject* character = FindCharacter())
+				myWorld.physics.SetCharacterMove(character->id, { velocity.x, 0.f, velocity.z });
+		}
+
+		void JumpCharacter(float speed) override
+		{
+			if (const GameWorld::Impl::SceneCharacterObject* character = FindCharacter())
+				myWorld.physics.CharacterJump(character->id, speed);
+		}
+
+		bool IsCharacterOnGround() const override
+		{
+			const GameWorld::Impl::SceneCharacterObject* character = FindCharacter();
+			return character && myWorld.physics.IsCharacterOnGround(character->id);
+		}
 
 		bool HasCamera() const override { return FindCamera() >= 0; }
 
@@ -171,6 +193,16 @@ namespace
 		}
 
 	private:
+		const GameWorld::Impl::SceneCharacterObject* FindCharacter() const
+		{
+			if (!myWorld.physicsActive)
+				return nullptr;
+			for (const GameWorld::Impl::SceneCharacterObject& character : myWorld.sceneCharacters)
+				if (character.instance == myInstance && character.id.IsValid())
+					return &character;
+			return nullptr;
+		}
+
 		int FindCamera() const
 		{
 			for (size_t i = 0; i < myWorld.sceneCameras.size(); ++i)
@@ -377,4 +409,29 @@ void GameWorld::Impl::UpdateSceneCamera()
 	camRot = { c.pitch, yaw, 0.f };
 	camera.GetTransform().SetRotation(camRot);
 	camera.GetTransform().SetPosition(camPos);
+}
+
+void GameWorld::Impl::RegisterSceneCharacter(const GameScene::SceneEntry& entry, const Matrix4x4f& worldTransform, size_t instanceIndex)
+{
+	if (!entry.character.has)
+		return;
+
+	SceneCharacterObject object;
+	object.instance = instanceIndex;
+	object.startTransform = worldTransform;
+	const Vector3f feet = worldTransform.GetPosition();
+	object.desc.position = { feet.x, feet.y, feet.z };
+	object.desc.radius = entry.character.radius;
+	object.desc.height = entry.character.height;
+	object.desc.stepHeight = entry.character.stepHeight;
+	object.desc.maxSlopeDegrees = entry.character.maxSlope;
+	object.desc.mass = entry.character.mass;
+	sceneCharacters.push_back(object);
+
+	// A scene with a character is a game: the world runs from the start instead of waiting
+	// for Start in the Physics tab.
+	if (!physics.Init())
+		return;
+	physicsAutoStart = true;
+	physicsIncludeBall = false;
 }

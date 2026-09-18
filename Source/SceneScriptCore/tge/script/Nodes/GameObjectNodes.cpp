@@ -218,6 +218,70 @@ public:
 	}
 };
 
+class CharacterMoveNode : public ScriptNodeBase
+{
+	ScriptPinId myInPin, myVelocityPin, myOutPin;
+
+public:
+	void Init(const ScriptCreationContext& context) override
+	{
+		myInPin = AddPin(context, ScriptPinRole::Input, ScriptLinkType::Flow, "Move");
+		myVelocityPin = AddVector3Input(context, "Velocity (cm/s)");
+		myOutPin = AddPin(context, ScriptPinRole::Output, ScriptLinkType::Flow, "Out");
+	}
+
+	ScriptNodeResult Execute(ScriptExecutionContext& context, ScriptPinId) const override
+	{
+		if (GameScriptContext* game = GetGameContext(context))
+			game->MoveCharacter(*context.ReadInputPin(myVelocityPin).Get<Vector3f>());
+		context.TriggerOutputPin(myOutPin);
+		return ScriptNodeResult::Finished;
+	}
+};
+
+class CharacterJumpNode : public ScriptNodeBase
+{
+	ScriptPinId myInPin, mySpeedPin, myOutPin;
+
+public:
+	void Init(const ScriptCreationContext& context) override
+	{
+		myInPin = AddPin(context, ScriptPinRole::Input, ScriptLinkType::Flow, "Jump");
+		ScriptPin speed = {};
+		speed.type = ScriptLinkType::Property;
+		speed.role = ScriptPinRole::Input;
+		speed.dataType = GetPropertyType<float>();
+		speed.name = StringRegistry::RegisterOrGetString("Speed (cm/s)");
+		speed.node = context.GetNodeId();
+		speed.defaultValue = Property::Create<float>(450.f);
+		mySpeedPin = context.FindOrCreatePin(speed);
+		myOutPin = AddPin(context, ScriptPinRole::Output, ScriptLinkType::Flow, "Out");
+	}
+
+	ScriptNodeResult Execute(ScriptExecutionContext& context, ScriptPinId) const override
+	{
+		if (GameScriptContext* game = GetGameContext(context))
+			game->JumpCharacter(*context.ReadInputPin(mySpeedPin).Get<float>());
+		context.TriggerOutputPin(myOutPin);
+		return ScriptNodeResult::Finished;
+	}
+};
+
+class IsOnGroundNode : public ScriptNodeBase
+{
+public:
+	void Init(const ScriptCreationContext& context) override
+	{
+		AddPin(context, ScriptPinRole::Output, ScriptLinkType::Property, "On Ground", GetPropertyType<bool>());
+	}
+
+	Property ReadPin(ScriptExecutionContext& context, ScriptPinId) const override
+	{
+		const GameScriptContext* game = GetGameContext(context);
+		return Property::Create<bool>(game && game->IsCharacterOnGround());
+	}
+};
+
 class AddImpulseNode : public ScriptNodeBase
 {
 	ScriptPinId myInPin, myImpulsePin, myOutPin;
@@ -438,6 +502,9 @@ void Tga::RegisterGameObjectNodes()
 	ScriptNodeTypeRegistry::RegisterType<SetCameraFovNode>("Camera/Set Field Of View", "Horizontal field of view in degrees");
 	ScriptNodeTypeRegistry::RegisterType<GetCameraPitchNode>("Camera/Get Camera Pitch", "Current pitch in degrees");
 	ScriptNodeTypeRegistry::RegisterType<GetCameraForwardNode>("Camera/Get Camera Forward", "The direction the camera looks, pitch included");
+	ScriptNodeTypeRegistry::RegisterType<CharacterMoveNode>("Character/Move", "Sets the sideways speed the character walks at (cm/s) until changed. Needs a Character component");
+	ScriptNodeTypeRegistry::RegisterType<CharacterJumpNode>("Character/Jump", "Jumps if the character stands on the ground. Speed is the launch speed in cm/s");
+	ScriptNodeTypeRegistry::RegisterType<IsOnGroundNode>("Character/Is On Ground", "True while the character stands on walkable ground");
 	ScriptNodeTypeRegistry::RegisterType<AddImpulseNode>("Object/Add Impulse", "Gives the object's physics body a push, in kg m/s. Needs a Rigidbody and a running simulation");
 	ScriptNodeTypeRegistry::RegisterType<GetVelocityNode>("Object/Get Velocity", "The object's physics velocity (cm/s). Zero without a simulated Rigidbody");
 	ScriptNodeTypeRegistry::RegisterType<SetVelocityNode<false>>("Object/Set Velocity", "Sets the object's physics velocity (cm/s)");

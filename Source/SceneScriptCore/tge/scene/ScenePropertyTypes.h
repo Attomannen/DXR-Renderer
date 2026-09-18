@@ -116,6 +116,17 @@ namespace Tga
 		bool activeOnStart = true;
 	};
 
+	// A walking character: a capsule that steps, slides and climbs slopes (not a rigid body).
+	// The object's origin is its feet. Scripts drive it with Move and Jump.
+	struct SceneCharacter
+	{
+		float radius = 35.f;          // cm
+		float height = 170.f;         // cm, feet to top of head
+		float stepHeight = 40.f;      // cm, the tallest step it walks up
+		float maxSlope = 50.f;        // degrees; steeper ground is not walkable
+		float mass = 80.f;            // kg, for pushing bodies
+	};
+
 	struct SceneSprite
 	{
 		StringId textures[4];
@@ -138,6 +149,7 @@ namespace Tga
 	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<SceneCollider>)
 	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<SceneRigidBody>)
 	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<SceneCamera>)
+	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<SceneCharacter>)
 	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<SceneReference>)
 	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<AnimationClipReference>)
 	DECLARE_PROPERTY_TYPE(PoseAndMotion)

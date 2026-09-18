@@ -25,6 +25,13 @@ namespace Tga
 		// True when the object has a physics body that is currently simulated.
 		virtual bool HasPhysicsBody() const = 0;
 		virtual void AddImpulse(const Vector3f& impulse) = 0;
+		// The object's Character component (a walking capsule). Move sets the wanted sideways
+		// velocity in cm/s (up/down is ignored) and keeps it until changed.
+		virtual bool HasCharacter() const = 0;
+		virtual void MoveCharacter(const Vector3f& velocity) = 0;
+		virtual void JumpCharacter(float speed) = 0;
+		virtual bool IsCharacterOnGround() const = 0;
+
 		// The object's Camera component. While a camera is active the game looks through
 		// it instead of the free-fly camera. Pitch is degrees, positive looks down.
 		virtual bool HasCamera() const = 0;

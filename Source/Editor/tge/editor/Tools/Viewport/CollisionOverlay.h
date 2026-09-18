@@ -36,6 +36,7 @@ namespace Tga
 
 		void Line(const Vector3f& a, const Vector3f& b, unsigned int color, const Matrix4x4f& world);
 		void Box(const Vector3f& center, const Vector3f& half, unsigned int color, const Matrix4x4f& world);
+		void Capsule(const Vector3f& center, float radius, float halfHeight, unsigned int color, const Matrix4x4f& world);
 		void Circle(const Vector3f& center, const Vector3f& axisU, const Vector3f& axisV, unsigned int color, const Matrix4x4f& world, float arcStart = 0.f, float arcEnd = 6.2831853f);
 
 		ImDrawList* myDraw = nullptr;

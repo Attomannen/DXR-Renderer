@@ -96,6 +96,25 @@ namespace Tga
 		uint64_t userData = 0;                       // handed back by GetUserData, e.g. an object id
 	};
 
+	// A character that walks: a capsule swept through the world (Jolt's CharacterVirtual), not a
+	// rigid body. It climbs steps, slides along walls, stays on slopes up to a limit and is
+	// carried by gravity. The position is the feet.
+	struct PhysicsCharacterId
+	{
+		uint32_t value = 0xFFFFFFFFu;
+		bool IsValid() const { return value != 0xFFFFFFFFu; }
+	};
+
+	struct PhysicsCharacterDesc
+	{
+		PhysicsVec3 position;              // feet, cm
+		float radius = 35.f;               // cm
+		float height = 170.f;              // cm, feet to top of head
+		float maxSlopeDegrees = 50.f;      // steeper ground is not walkable
+		float stepHeight = 40.f;           // cm, the tallest step it walks up
+		float mass = 80.f;                 // kg, for pushing bodies
+	};
+
 	// Wireframe of the collision near a point, for drawing. Every shape type comes out as
 	// triangle edges, so a mesh shows its real triangles and a sphere its tessellation.
 	struct PhysicsDebugLines
@@ -157,6 +176,16 @@ namespace Tga
 		PhysicsVec3 GetLinearVelocity(PhysicsBodyId body) const;
 
 		uint32_t GetBodyCount() const;
+
+		PhysicsCharacterId CreateCharacter(const PhysicsCharacterDesc& desc);
+		void DestroyCharacter(PhysicsCharacterId character);
+		// Wanted sideways speed in cm/s (y is ignored). Stays in effect until changed.
+		void SetCharacterMove(PhysicsCharacterId character, const PhysicsVec3& velocity);
+		// Up speed in cm/s; only when standing on the ground.
+		void CharacterJump(PhysicsCharacterId character, float speed);
+		void SetCharacterPosition(PhysicsCharacterId character, const PhysicsVec3& feet);
+		bool GetCharacterPosition(PhysicsCharacterId character, PhysicsVec3& outFeet) const;
+		bool IsCharacterOnGround(PhysicsCharacterId character) const;
 
 		// Appends the collision edges of every body within radius (cm) of center.
 		void CollectDebugLines(const PhysicsVec3& center, float radius, size_t maxLines, PhysicsDebugLines& out) const;

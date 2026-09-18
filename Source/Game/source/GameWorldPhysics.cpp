@@ -41,6 +41,7 @@ void GameWorld::Impl::ClearScenePhysics()
 	if (physicsActive)
 		ResetPhysicsTest();
 	physics.Shutdown();
+	sceneCharacters.clear();
 	scenePhysicsObjects.clear();
 	scenePhysicsShapes.clear();
 	scenePhysicsStaticCount = 0;
@@ -239,6 +240,9 @@ void GameWorld::Impl::StartPhysicsTest()
 		if (object.dynamic)
 			object.body = physics.CreateBody(object.desc);
 
+	for (SceneCharacterObject& character : sceneCharacters)
+		character.id = physics.CreateCharacter(character.desc);
+
 	if (physicsIncludeBall && debugBallValid)
 	{
 		// Start from where the sphere is drawn right now.
@@ -310,6 +314,15 @@ void GameWorld::Impl::ResetPhysicsTest()
 			models[object.instance].SetTransform(object.startTransform);
 	}
 
+	for (SceneCharacterObject& character : sceneCharacters)
+	{
+		if (character.id.IsValid())
+			physics.DestroyCharacter(character.id);
+		character.id = {};
+		if (character.instance < models.size())
+			models[character.instance].SetTransform(character.startTransform);
+	}
+
 	if (physicsBall.IsValid())
 	{
 		physics.DestroyBody(physicsBall);
@@ -327,7 +340,7 @@ void GameWorld::Impl::ResetPhysicsTest()
 
 void GameWorld::Impl::UpdatePhysicsTest(float deltaSeconds)
 {
-	if (physicsAutoStart && !scenePhysicsObjects.empty())
+	if (physicsAutoStart && (!scenePhysicsObjects.empty() || !sceneCharacters.empty()))
 	{
 		physicsAutoStart = false;
 		physicsIncludeBall = false;
@@ -352,11 +365,28 @@ void GameWorld::Impl::UpdatePhysicsTest(float deltaSeconds)
 		models[object.instance].SetTransform(xf);
 	}
 
+	for (const SceneCharacterObject& character : sceneCharacters)
+	{
+		PhysicsVec3 feet;
+		if (!character.id.IsValid() || character.instance >= models.size() || !physics.GetCharacterPosition(character.id, feet))
+			continue;
+		// Only the position comes from physics; the script owns which way it faces.
+		Matrix4x4f transform = models[character.instance].GetTransform();
+		transform.SetPosition({ feet.x, feet.y, feet.z });
+		models[character.instance].SetTransform(transform);
+	}
+
 	physicsLogTimer += deltaSeconds;
 	if (physicsLogTimer >= 1.f && physicsLogCount < 8)
 	{
 		physicsLogTimer = 0.f;
 		++physicsLogCount;
+		for (const SceneCharacterObject& character : sceneCharacters)
+		{
+			PhysicsVec3 feet;
+			if (physics.GetCharacterPosition(character.id, feet))
+				INFO_PRINT("physics: character at %.1f, %.1f, %.1f (%s)", feet.x, feet.y, feet.z, physics.IsCharacterOnGround(character.id) ? "on ground" : "in air");
+		}
 		for (const ScenePhysicsObject& object : scenePhysicsObjects)
 			if (object.dynamic && physics.GetTransform(object.body, position, rotation))
 			{

@@ -167,6 +167,7 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 	ClearScenePhysics();
 	ClearSceneScripts();
 	SetSceneCameraActive(-1);
+	sceneCharacters.clear();
 	sceneCameras.clear();
 
 	ModelFactory& mf = ModelFactory::GetInstance();
@@ -303,6 +304,7 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 			RegisterScenePhysics(e, model, xf, models.size() - 1);
 			RegisterSceneScripts(e, models.size() - 1);
 			RegisterSceneCamera(e, models.size() - 1);
+			RegisterSceneCharacter(e, xf, models.size() - 1);
 
 			std::vector<int> op, tr;
 			for (int m = 0; m < meshCount; ++m)
