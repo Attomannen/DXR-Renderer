@@ -98,7 +98,7 @@ namespace Tga::rhi
 		// Structured lighting data is normally updated once, but the local-shadow
 		// pass patches light slots and submits a second version.  As with CBVs,
 		// each version needs its own DX12 resource until the frame's fence retires.
-		static constexpr uint32_t kDx12FramesInFlight = 2; // keep in sync with Dx12Device
+		static constexpr uint32_t kDx12FramesInFlight = 3; // must equal Dx12Device::kFramesInFlight
 		static constexpr uint32_t kUpdatesPerFrame = 4;
 		static constexpr uint32_t kDx12SlotCount = kDx12FramesInFlight * kUpdatesPerFrame;
 		std::array<BufferHandle, kDx12SlotCount> myBuffers = {};

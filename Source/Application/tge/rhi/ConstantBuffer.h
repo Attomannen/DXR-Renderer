@@ -83,11 +83,11 @@ namespace Tga::rhi
 		}
 
 	private:
-		// DX12 currently records two fence-paced frames.  Keep this in sync with
+		// DX12 records three fence-paced frames.  Keep this in sync with
 		// Dx12Device::kFramesInFlight.  Thirty-two updates per constant-buffer
 		// object/frame covers multi-pass effects without ever rewriting a root-CBV
 		// address already recorded into the command list.
-		static constexpr uint32_t kDx12FramesInFlight = 2;
+		static constexpr uint32_t kDx12FramesInFlight = 3;   // must equal Dx12Device::kFramesInFlight: with 2, frames 0 and 2 shared a slot and the CPU overwrote constants the GPU was still reading
 		static constexpr uint32_t kUpdatesPerFrame = 32;
 		static constexpr uint32_t kDx12SlotCount = kDx12FramesInFlight * kUpdatesPerFrame;
 		std::array<BufferHandle, kDx12SlotCount> myBuffers = {};
