@@ -197,7 +197,7 @@ namespace
 	static_assert(sizeof(SkyAtmosphereConstants) == 128);
 
 	// b12. Layout must match SkyCubemapFaceCb in SkyCubemapPS.hlsl.
-	struct alignas(16) SkyCubemapFaceCb { uint32_t faceIndex; float pad[3]; };
+	struct alignas(16) SkyCubemapFaceCb { uint32_t faceIndex; float nightSkyIntensity; float pad[2]; };
 	static_assert(sizeof(SkyCubemapFaceCb) == 16);
 
 	inline Tga::Vector3f Lerp(const Tga::Vector3f& a, const Tga::Vector3f& b, float t)

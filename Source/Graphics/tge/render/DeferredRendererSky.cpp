@@ -167,7 +167,7 @@ void DeferredRenderer::RenderSkyCubemap(rhi::SrvHandle aNightSkyCubeSrv)
 
 	for (uint32_t face = 0; face < 6; ++face)
 	{
-		SkyCubemapFaceCb faceCb{ face, {0,0,0} };
+		SkyCubemapFaceCb faceCb{ face, std::max(0.f, myTunables.nightSkyIntensity), {0,0} };
 		mySkyCubemapFaceCb.Update(ctx, faceCb);
 		mySkyCubemapFaceCb.Bind(ctx, rhi::ShaderStage::Pixel, 12);
 		SetTargets(ctx, { mySkyCubemapFaceRtv[face] }, {}, { kSkyCubemapRes, kSkyCubemapRes });

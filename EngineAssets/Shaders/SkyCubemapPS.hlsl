@@ -12,7 +12,8 @@
 cbuffer SkyCubemapFaceCb : register(b12)
 {
 	uint gFaceIndex;
-	float3 _cubeFacePad;
+	float gNightSkyIntensity;
+	float2 _cubeFacePad;
 };
 
 Texture2D<float4> SkyViewLut : register(t2);
@@ -56,7 +57,7 @@ float4 main(FsIn input) : SV_TARGET
 
 	// Night sky: fades in as the sun drops toward and below the horizon, so
 	// stars never pop against a still-lit blue sky.
-	float nightBlend = saturate(-gSunDirToLight.y * 4.0f + 0.15f);
+	float nightBlend = saturate(-gSunDirToLight.y * 4.0f + 0.15f) * gNightSkyIntensity;
 	if (nightBlend > 0.0f)
 		sky += NightSkyCube.SampleLevel(CubeSampler, dir, 0).rgb * nightBlend;
 

@@ -291,7 +291,13 @@ namespace Tga
 			float groundAlbedo = 0.3f;
 			// Blend strength of the authored "night sky" cubemap (stars) as the sun
 			// drops toward and below the horizon; 0 disables the night overlay.
-			float nightSkyIntensity = 1.f;
+			// Low by design: the selected cubemap (by default "horizonCubeMap", the
+			// same asset used as the daytime fallback elsewhere) is authored at
+			// roughly daylight brightness, not calibrated as a dim starfield -- at
+			// 1.0 it was washing the correctly-dark physical sky back out to a
+			// bright white wall at night. 1.0 still means "this cubemap at its own
+			// authored brightness", for anyone who swaps in an actual night asset.
+			float nightSkyIntensity = 0.05f;
 
 			// --- post FX (bloom + exposure) ---
 			bool  bloomEnabled    = true;
