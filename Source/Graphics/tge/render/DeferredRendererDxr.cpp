@@ -350,7 +350,25 @@ void DeferredRenderer::RenderDxrLighting()
 	// edit, fall back to the fixed grid for one frame: rejecting history while
 	// still jittering would blend a just-moved shadow against no valid old
 	// sample, which reads as a visibly jumping sample.
-	myTaaJitter = {0,0};
+	//
+	// DLSS asks for its phase count to scale with the upsample ratio: the more
+	// display pixels one rendered pixel has to cover, the more distinct phases
+	// it needs before the sequence repeats. 8 at 1:1 is NVIDIA's own baseline.
+	if (myTunables.taaJitter && taaActive && !lightingChanged)
+	{
+		uint32_t phaseCount = 16u;   // native resolve: the documented 16-sample Halton
+		if (dlssActive)
+		{
+			const float ratio = myDxrRenderResolution.x != 0u
+				? float(myResolution.x) / float(myDxrRenderResolution.x) : 1.f;
+			phaseCount = std::clamp((uint32_t)std::lround(8.f * ratio * ratio), 8u, 64u);
+		}
+		// 1-based: index 0 is 0 in every base, which would spend one phase of
+		// the sequence sampling the un-jittered grid we are trying to escape.
+		const uint32_t phase = (myTaaFrameIndex % phaseCount) + 1u;
+		myTaaJitter = { RadicalInverse(phase, 2u) - 0.5f, RadicalInverse(phase, 3u) - 0.5f };
+	}
+	else myTaaJitter = {0,0};
 
 	{
 		DxrLightingConstants c{};
