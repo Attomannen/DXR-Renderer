@@ -118,11 +118,14 @@ void ApplyWorldOverrides(GameWorld::Impl& s)
 	s.wantPostFx    = EnvInt("BENCH_POSTFX", 1) != 0;
 	s.wantLocalShadows = EnvInt("BENCH_LOCAL_SHADOWS", 1) != 0;
 	s.wantSSR       = EnvInt("BENCH_SSR", 1) != 0;
-	s.sunPitch = EnvFloat("BENCH_SUN_PITCH", s.sunPitch);
-	s.sunYaw = EnvFloat("BENCH_SUN_YAW", s.sunYaw);
-	if (const char* v = std::getenv("BENCH_SUN_INTENSITY")) s.sunIlluminanceLux = std::max(0.f,(float)atof(v)) * 100000.f;
-	if (const char* v = std::getenv("BENCH_SUN_LUX")) s.sunIlluminanceLux = std::max(0.f,(float)atof(v));
-	if (const char* v = std::getenv("BENCH_SUN_KELVIN")) { s.sunTemperatureK = (float)atof(v); s.sunUseTemperature = true; }
+	// Remembered, not just applied: LoadSceneContent reads the scene's .tgs
+	// lighting afterwards, and re-applies these on top so an explicit override
+	// is not silently discarded. See ApplySunOverrides.
+	if (const char* v = std::getenv("BENCH_SUN_PITCH")) { s.sunPitch = (float)atof(v); s.benchSunPitch = s.sunPitch; s.sunPitchOverridden = true; }
+	if (const char* v = std::getenv("BENCH_SUN_YAW")) { s.sunYaw = (float)atof(v); s.benchSunYaw = s.sunYaw; s.sunYawOverridden = true; }
+	if (const char* v = std::getenv("BENCH_SUN_INTENSITY")) { s.sunIlluminanceLux = std::max(0.f,(float)atof(v)) * 100000.f; s.benchSunLux = s.sunIlluminanceLux; s.sunLuxOverridden = true; }
+	if (const char* v = std::getenv("BENCH_SUN_LUX")) { s.sunIlluminanceLux = std::max(0.f,(float)atof(v)); s.benchSunLux = s.sunIlluminanceLux; s.sunLuxOverridden = true; }
+	if (const char* v = std::getenv("BENCH_SUN_KELVIN")) { s.sunTemperatureK = (float)atof(v); s.benchSunKelvin = s.sunTemperatureK; s.sunUseTemperature = true; s.sunKelvinOverridden = true; }
 	s.screenshotPath = EnvStr("BENCH_SCREENSHOT", "");
 	s.shotFrame = EnvInt("BENCH_SHOT_FRAME", 0);
 	s.camOrbitHeight = EnvFloat("BENCH_ORBIT_HEIGHT", -1.f);

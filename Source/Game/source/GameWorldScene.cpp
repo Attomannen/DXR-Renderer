@@ -103,6 +103,17 @@ bool GameWorld::Impl::LoadLights(const std::string& file, float sceneRadius, flo
 	return true;
 }
 
+// Re-applies the BENCH_SUN_* values the scene's lighting block just clobbered.
+// Only the ones actually given on the command line: an unset override must
+// leave the scene's authored value alone.
+void GameWorld::Impl::ApplySunOverrides()
+{
+	if (sunPitchOverridden)  sunPitch = benchSunPitch;
+	if (sunYawOverridden)    sunYaw = benchSunYaw;
+	if (sunLuxOverridden)    sunIlluminanceLux = benchSunLux;
+	if (sunKelvinOverridden) { sunTemperatureK = benchSunKelvin; sunUseTemperature = true; }
+}
+
 bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 {
 	// Every mesh/texture upload below shares GPU submissions.
@@ -140,6 +151,11 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 			}
 		} catch (const std::exception& e) { ERROR_PRINT("Scene lighting: %s", e.what()); }
 	}
+	// An explicitly set BENCH_SUN_* wins over the scene's own lighting. It is
+	// applied in BenchConfig, before the scene file is read, so the scene used
+	// to silently overwrite it and a run asking for a different sun angle or a
+	// night illuminance quietly rendered the scene's daylight instead.
+	ApplySunOverrides();
 
 	models.clear();
 	opaqueMeshes.clear();
@@ -199,6 +215,9 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 		std::vector<bool> authoredMasked(meshCount, false);
 		std::vector<bool> authoredMaterial(meshCount, false);
 		std::vector<MaterialDef> materials(meshCount);
+		// Which entry of e.materials each mesh actually resolved to. The
+		// positional index is only a fallback; see the name match below.
+		std::vector<int> resolvedSlot(meshCount, -1);
 		// Resolve each mesh's material by NAME, not by slot order.
 		//
 		// A .tgo is a positional list, which silently assumed the exporter's
@@ -235,8 +254,9 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 					n = n.substr(0, dot);
 				}
 			}
-			if (slot < 0 || e.materials[slot].empty()) continue;
+			if (slot < 0 || slot >= (int)e.materials.size() || e.materials[slot].empty()) continue;
 			if (!LoadTgmat(fs::path(Settings::GameAssetRoot()) / e.materials[slot], materials[m])) continue;
+			resolvedSlot[m] = slot;
 			authoredMaterial[m] = true;
 			authoredTransparent[m] = materials[m].IsTransparent();
 			authoredMasked[m] = materials[m].IsMasked();
@@ -251,10 +271,21 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 			ModelInstance mi;
 			mi.Init(model);
 
-			for (int m = 0; m < meshCount && m < (int)e.materials.size(); ++m)
+			// Bounded by meshCount alone. It used to also stop at
+			// e.materials.size(), which silently left every mesh past the end of
+			// the list untextured even though the name match above had already
+			// resolved it -- the list is a pool to match names against, not a
+			// per-mesh array.
+			for (int m = 0; m < meshCount; ++m)
 			{
 				if (!authoredMaterial[m]) continue;
-				ApplySceneMaterial(mi, m, e.materials[m], materials[m]);
+				// The RESOLVED entry, not the positional one. ApplySceneMaterial
+				// uses this path as the key it registers the material under, so
+				// passing e.materials[m] here named each mesh's material after
+				// whatever happened to sit at its own index: two meshes sharing a
+				// material got two records, and two meshes whose indices collided
+				// on one path shared a record built from the first one's textures.
+				ApplySceneMaterial(mi, m, e.materials[resolvedSlot[m]], materials[m]);
 			}
 
 			const int gx = i % side, gz = i / side;

@@ -313,6 +313,12 @@ struct GameWorld::Impl
 	float camBobCm = 300.f;    // BENCH_BOB: half-amplitude of the vertical bob, cm
 	int   camBobHoldFrames = 200; // BENCH_BOB_HOLD: frames held still (history converges, first screenshot) before the bob starts
 	float camBobPitch = -35.f; // BENCH_BOB_PITCH: degrees added to the saved pitch (negative = up, matching the orbit camera)
+	// Set when the matching BENCH_SUN_* env var was present, so the scene's
+	// own .tgs lighting does not overwrite an explicit request.
+	float benchSunPitch = 0.f, benchSunYaw = 0.f, benchSunLux = 0.f, benchSunKelvin = 0.f;
+	bool sunPitchOverridden = false, sunYawOverridden = false;
+	bool sunLuxOverridden = false, sunKelvinOverridden = false;
+	void ApplySunOverrides();
 	float camOrbitHeight = -1.f;  // BENCH_ORBIT_HEIGHT: fraction of sceneExtents.y; <0 = oscillate
 	bool  orbitRoom = false;   // BENCH_CAM=room: orbit the scene centre even with a saved camera
 
