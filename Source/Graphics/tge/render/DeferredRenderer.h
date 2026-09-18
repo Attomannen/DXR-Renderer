@@ -305,13 +305,15 @@ namespace Tga
 			float cloudDensity = 1.f;           // extinction multiplier
 			float cloudBaseAltitude = 1500.f;   // meters; realistic cumulus base
 			float cloudTopAltitude = 3000.f;    // meters
-			// Meters per shape-noise tile. Seen from cloud altitude a 6 km tile
-			// put several repeats inside the visible deck; 12 km pushes the
-			// repeat past the ~40 km aerial fade. Feature sizes below this
-			// (erosion, curl, coverage, vertical period) are pinned in meters
-			// in CloudsCommon.hlsli, so this widens the repeat without
-			// scaling the clouds themselves up.
-			float cloudScale = 12000.f;
+			// Meters per shape-noise tile, i.e. both the repeat distance and the
+			// size of a cloud cell. A 6 km tile put several repeats inside the
+			// deck as seen from cloud altitude; 12 km hid the repeat but grew
+			// the cells into broad stratocumulus lanes. 9 km keeps cells close
+			// to their old size while pushing the repeat to the edge of the
+			// ~40 km aerial fade. Feature sizes below this (erosion, curl,
+			// coverage, vertical period) are pinned in meters in
+			// CloudsCommon.hlsli, so this knob only moves the repeat.
+			float cloudScale = 9000.f;
 			float cloudSpeed[2] = { 40.f, 15.f };  // wind, m/s (world X, Z)
 			int   cloudLightSteps = 6;          // self-shadow light-march samples
 			float cloudDetailStrength = 0.6f;   // erosion-noise contribution, 0 = smooth blobs
