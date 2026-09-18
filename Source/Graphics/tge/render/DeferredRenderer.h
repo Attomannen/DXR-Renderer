@@ -268,7 +268,11 @@ namespace Tga
 			int volumetricSteps = 32;
 			int volumetricResolution = 1;   // volume march at 1/(2^n) of the fog target: 0 full, 1 half, 2 quarter
 			bool sunDiskEnabled = true;
-			float sunDiskAngularRadius = 0.0093f; // radians; ~0.53 degrees, the real sun
+			// Radians. The real sun's angular RADIUS is ~0.267 degrees (its full
+			// disk, i.e. diameter, is the commonly-quoted ~0.53 degrees / 32
+			// arcminutes -- this field is the half-angle from the disk's center,
+			// so it wants the smaller number).
+			float sunDiskAngularRadius = 0.00465f; // ~0.267 degrees, the real sun
 			float sunDiskIntensity = 24.f;        // HDR, shaped by the existing exposure/bloom path
 			int atmosphereDebugView = 0; // beauty, transmittance, sunlight
 
@@ -312,8 +316,13 @@ namespace Tga
 			bool  preExposure     = true;
 			// > 0: scale the environment map so its sky hemisphere averages this
 			// luminance in cd/m² (clear day ~8 000, overcast ~2 000, night ~0.01).
-			// 0 keeps the legacy relative "IBL scale".
-			float skyLuminanceNits = 8000.0f;
+			// 0 keeps the legacy relative "IBL scale". Defaults to 0 (off) because
+			// proceduralSkyEnabled's sky is already physically correct in absolute
+			// terms -- rescaling it to a fixed target here would flatten its own
+			// day/night brightness swing back to a constant. This is for the
+			// static/authored-cubemap case (proceduralSkyEnabled = false), where
+			// the source texture has no inherent absolute brightness of its own.
+			float skyLuminanceNits = 0.0f;
 
 			// --- screen-space reflections ---
 			bool  ssrEnabled        = true;

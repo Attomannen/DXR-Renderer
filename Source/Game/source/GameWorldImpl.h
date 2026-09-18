@@ -149,7 +149,12 @@ struct GameWorld::Impl
 			: Vector3f{ sunColor[0], sunColor[1], sunColor[2] };
 	}
 	float SunIntensity() const { return sunIlluminanceLux / 100000.0f; }
-	float ambientColor[3] = { 0.35f, 0.42f, 0.55f };
+	// Neutral by default: the procedural sky (DeferredRenderer::Tunables::
+	// proceduralSkyEnabled) already produces physically correct sky color and
+	// brightness, and this multiplies straight on top of it (EvaluateAmbiance's
+	// AmbientLightColor.rgb *) -- a tinted default here would silently
+	// re-color/dim an otherwise-correct sky. Still a free artistic override.
+	float ambientColor[3] = { 1.0f, 1.0f, 1.0f };
 	float ambientScale = 1.0f;   // BENCH_AMBIENT env; scales the ambient/IBL term
 	int   cubemapIdx = 0;        // panel Cubemap combo
 
