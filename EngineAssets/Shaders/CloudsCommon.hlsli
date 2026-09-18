@@ -181,11 +181,13 @@ float SampleCloudDensity(Texture3D<float4> shapeNoise, Texture3D<float> detailNo
 
 	float2 wind = gCloudSpeed * gTime;
 	float3 shapeUvw = (worldPosMeters + float3(wind.x, 0.0f, wind.y)) / max(1.0f, gCloudScale);
-	// Vertical period half the horizontal one: with one 6 km tile
-	// spanning a 1.5 km layer, density hardly changed with height, every
-	// column was a flat-topped plateau and, seen obliquely, the deck was a
-	// stack of terraces.
-	shapeUvw.y *= 2.0f;
+	// Vertical period pinned to 3 km against a 1.5 km layer: with the tile's
+	// own period spanning the layer, density hardly changed with height,
+	// every column was a flat-topped plateau and, seen obliquely, the deck
+	// was a stack of terraces. This factor tracks gCloudScale -- everything
+	// below is in tile units, so widening the tile alone would scale the
+	// whole cloud field up rather than just push its repeat further out.
+	shapeUvw.y *= max(1.0f, gCloudScale / 3000.0f);
 	uint sw, sh, sd; shapeNoise.GetDimensions(sw, sh, sd);
 	float texelMeters = max(1.0f, gCloudScale) / max(1u, sw);
 	// Capped at mip 2 (32^3 effective): coarser mips of a Worley volume are
@@ -195,7 +197,7 @@ float SampleCloudDensity(Texture3D<float4> shapeNoise, Texture3D<float> detailNo
 	float3 shape = shapeNoise.SampleLevel(samp, frac(shapeUvw), shapeMip).rgb;
 	// Second read of the same volume through a rotated, irrationally scaled
 	// domain: the two tilings never line up, so no cloud ever repeats exactly
-	// and the 6 km period stops being readable across a 100 km deck.
+	// and the tile period stops being readable across a 100 km deck.
 	const float kCa = 0.8480f, kSa = 0.5299f;   // cos/sin 32 degrees
 	float3 alt = shapeUvw / 1.6180f;
 	float3 altUvw = float3(alt.x * kCa - alt.z * kSa + 0.417f, alt.y + 0.29f, alt.x * kSa + alt.z * kCa + 0.733f);
@@ -213,9 +215,13 @@ float SampleCloudDensity(Texture3D<float4> shapeNoise, Texture3D<float> detailNo
 	base = saturate(base - (1.0f - shape.b) * 0.15f);
 
 	// Large-scale coverage variation: one extra tap of the same shape volume
-	// at 1/8 frequency (a ~50 km tile) so the deck has open and dense
-	// regions instead of the 6 km tile visibly repeating toward the horizon.
-	float large = shapeNoise.SampleLevel(samp, frac(shapeUvw * 0.125f + float3(0.37f, 0.11f, 0.73f)), 0).r;
+	// at a ~48 km tile so the deck has open and dense regions instead of the
+	// shape tile visibly repeating toward the horizon. Held at a fixed size
+	// in meters: the aerial fade hides the deck past ~40 km, so a coverage
+	// period much larger than that reads as one open half and one dense half
+	// rather than as variety.
+	float largeFreq = min(1.0f, gCloudScale / 48000.0f);
+	float large = shapeNoise.SampleLevel(samp, frac(shapeUvw * largeFreq + float3(0.37f, 0.11f, 0.73f)), 0).r;
 	float coverage = saturate(gCloudCoverage * lerp(0.55f, 1.45f, large));
 	// Coverage-as-threshold: only noise above (1-coverage) survives, remapped
 	// back to [0,1] -- the standard cheap way to make "coverage" read as an
@@ -237,11 +243,24 @@ float SampleCloudDensity(Texture3D<float4> shapeNoise, Texture3D<float> detailNo
 		// still reads as round/blobby -- swirling the sample position is
 		// what turns that into actual wispy, turbulent structure at the
 		// cloud's boundary instead of a slightly-fuzzier sphere.
-		float2 curl = CloudsCurl2D(shapeUvw * 0.5f);
-		float3 warpedUvw = shapeUvw + float3(curl.x, 0.0f, curl.y) * 0.25f;
-		float detailMip = max(0.0f, shapeMip + 2.0f);   // 4x finer than the shape volume
-		float detail = detailNoise.SampleLevel(samp, frac(warpedUvw * 4.0f), detailMip).r;
-		float fineDetail = detailNoise.SampleLevel(samp, frac(warpedUvw * 9.0f + 0.37f), detailMip + 1.17f).r;
+		// Erosion frequencies are pinned to a size in meters rather than to
+		// the shape tile: wisps and billows are a property of clouds, not of
+		// how far away we pushed the repeat, so widening gCloudScale must not
+		// inflate them. kDetailTile is the coarse erosion period in meters.
+		const float kDetailTile = 1500.0f;
+		float detailFreq = max(1.0f, gCloudScale / kDetailTile);
+		float2 curl = CloudsCurl2D(shapeUvw * detailFreq * 0.125f);
+		// 1.5 km of swirl, also in meters rather than in tile units.
+		float3 warpedUvw = shapeUvw + float3(curl.x, 0.0f, curl.y) * (1500.0f / max(1.0f, gCloudScale));
+		float detailMip = max(0.0f, shapeMip + log2(detailFreq));
+		// shapeUvw.y already carries the shape volume's vertical squeeze;
+		// undo the part of it that scales with the tile so the erosion keeps
+		// a 750 m vertical period through a 1500 m layer, i.e. billows stay
+		// about half the layer's height whatever gCloudScale is.
+		float3 detailUvw = warpedUvw * detailFreq;
+		detailUvw.y *= 4.0f / detailFreq;
+		float detail = detailNoise.SampleLevel(samp, frac(detailUvw), detailMip).r;
+		float fineDetail = detailNoise.SampleLevel(samp, frac(detailUvw * 2.25f + 0.37f), detailMip + 1.17f).r;
 		float erosion = detail * 0.7f + fineDetail * 0.3f;
 		// "If you invert the Worley noise at the base of the clouds you get
 		// nice whispy shapes" (Schneider/HZD) -- near the cloud's own base
