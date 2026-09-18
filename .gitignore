@@ -41,3 +41,6 @@ Dependencies/
 **/*.local/
 **/_local/
 **/_placeholder/
+
+# Too big for git (32 MB); the other EngineAssets textures are tracked
+EngineAssets/Textures/horizonCubeMap.dds
