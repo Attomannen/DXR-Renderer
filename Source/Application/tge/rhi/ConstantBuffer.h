@@ -24,8 +24,10 @@ namespace Tga::rhi
 			bd.debugName = aDebugName;
 			myDevice   = &aDevice;
 			mySlotCount = aDevice.GetBackend() == Backend::DX12 ? kDx12SlotCount : 1;
-			for (uint32_t i = 0; i < mySlotCount; ++i)
-				myBuffers[i] = aDevice.CreateBuffer(bd);
+			// Only the first slot is created here; the rest are created on first
+			// use. See AcquireSlot.
+			myDebugName = aDebugName;
+			myBuffers[0] = aDevice.CreateBuffer(bd);
 			myActiveBuffer = myBuffers[0];
 			myCapacity = aByteSize;
 			myStage    = aStage;
@@ -46,6 +48,7 @@ namespace Tga::rhi
 			myCapacity = 0;
 			myLastFrame = ~0u;
 			myUpdatesThisFrame = 0;
+			myDebugName = nullptr;
 		}
 
 		bool IsValid() const { return myActiveBuffer.IsValid(); }
@@ -68,7 +71,7 @@ namespace Tga::rhi
 			const uint32_t update = mySlotCount > 1
 				? (myUpdatesThisFrame < kUpdatesPerFrame ? myUpdatesThisFrame++ : kUpdatesPerFrame - 1)
 				: 0;
-			myActiveBuffer = myBuffers[mySlotCount > 1 ? frameBase + update : 0];
+			myActiveBuffer = AcquireSlot(mySlotCount > 1 ? frameBase + update : 0);
 			aCtx.UpdateBuffer(myActiveBuffer, aData, aSize < myCapacity ? aSize : myCapacity);
 		}
 		template <class T>
@@ -82,6 +85,30 @@ namespace Tga::rhi
 			aCtx.SetConstantBuffer(aStage, aSlot, myActiveBuffer);
 		}
 
+		// Create a ring slot the first time it is actually asked for.
+		//
+		// The ring is sized for the worst case -- thirty-two updates in a frame,
+		// three frames deep -- but almost every constant buffer updates once per
+		// frame and so only ever touches three of its ninety-six slots. Creating
+		// all of them up front cost 291 ms across ~2350 CreateCommittedResource
+		// calls at startup, for a few hundred kilobytes of constants: the calls
+		// themselves, not the memory, were the expense.
+		//
+		// Allocating on demand is safe mid-frame because these are upload-heap
+		// buffers with no initial data, so nothing is enqueued on a command list
+		// to create one.
+		BufferHandle AcquireSlot(uint32_t aIndex) const
+		{
+			if (myBuffers[aIndex].IsValid()) return myBuffers[aIndex];
+			BufferDesc bd = {};
+			bd.byteSize  = myCapacity;
+			bd.usage     = BufferUsage::Constant;
+			bd.memory    = MemoryType::Upload;
+			bd.debugName = myDebugName;
+			myBuffers[aIndex] = myDevice->CreateBuffer(bd);
+			return myBuffers[aIndex];
+		}
+
 	private:
 		// DX12 records three fence-paced frames.  Keep this in sync with
 		// Dx12Device::kFramesInFlight.  Thirty-two updates per constant-buffer
@@ -90,7 +117,7 @@ namespace Tga::rhi
 		static constexpr uint32_t kDx12FramesInFlight = 3;   // must equal Dx12Device::kFramesInFlight: with 2, frames 0 and 2 shared a slot and the CPU overwrote constants the GPU was still reading
 		static constexpr uint32_t kUpdatesPerFrame = 32;
 		static constexpr uint32_t kDx12SlotCount = kDx12FramesInFlight * kUpdatesPerFrame;
-		std::array<BufferHandle, kDx12SlotCount> myBuffers = {};
+		mutable std::array<BufferHandle, kDx12SlotCount> myBuffers = {};
 		IDevice*     myDevice = nullptr;
 		mutable BufferHandle myActiveBuffer;
 		mutable uint32_t myLastFrame = ~0u;
@@ -99,5 +126,6 @@ namespace Tga::rhi
 		uint32_t     myCapacity = 0;
 		ShaderStage  myStage = ShaderStage::AllGraphics;
 		uint32_t     mySlot  = 0;
+		const char*  myDebugName = nullptr;
 	};
 }

@@ -225,16 +225,23 @@ namespace Tga::rhi::dx12
 		(void)enableDebugLayer;
 		(void)enableGpuValidation;
 		TGA_CPU_SCOPE("Factory + adapter + D3D12CreateDevice");
-		HRESULT hr = CreateDXGIFactory2(dxgiFlags, IID_PPV_ARGS(myFactory.GetAddressOf()));
+		HRESULT hr;
+		{ TGA_CPU_SCOPE("CreateDXGIFactory2");
+		hr = CreateDXGIFactory2(dxgiFlags, IID_PPV_ARGS(myFactory.GetAddressOf())); }
 		assert(SUCCEEDED(hr)); (void)hr;
 
 		ComPtr<IDXGIAdapter1> adapter;
-		for (UINT i = 0; myFactory->EnumAdapterByGpuPreference(i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(adapter.ReleaseAndGetAddressOf())) != DXGI_ERROR_NOT_FOUND; ++i)
+		for (UINT i = 0;; ++i)
 		{
+			{ TGA_CPU_SCOPE("EnumAdapterByGpuPreference");
+			if (myFactory->EnumAdapterByGpuPreference(i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(adapter.ReleaseAndGetAddressOf())) == DXGI_ERROR_NOT_FOUND) break; }
 			DXGI_ADAPTER_DESC1 desc;
 			adapter->GetDesc1(&desc);
 			if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
-			if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(myDevice.GetAddressOf()))))
+			bool created;
+			{ TGA_CPU_SCOPE("D3D12CreateDevice");
+			created = SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(myDevice.GetAddressOf()))); }
+			if (created)
 			{
 				INFO_PRINT("Dx12Device: using adapter %ls", desc.Description);
 				adapter.As(&myAdapter);
