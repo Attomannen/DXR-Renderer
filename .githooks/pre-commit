@@ -1,0 +1,18 @@
+#!/bin/sh
+# Blocks accidentally staged big files (game assets, cooked textures, SDK drops).
+# Git LFS files are fine: what is committed for them is a tiny pointer.
+# Limit in MB via MAX_FILE_MB (default 5). Bypass once with: ALLOW_LARGE=1 git commit ...
+limit=$(( ${MAX_FILE_MB:-5} * 1024 * 1024 ))
+[ -n "$ALLOW_LARGE" ] && exit 0
+bad=0
+for f in $(git diff --cached --name-only --diff-filter=AM); do
+	size=$(git cat-file -s ":$f" 2>/dev/null) || continue
+	if [ "$size" -gt "$limit" ]; then
+		echo "pre-commit: $f is $(( size / 1024 / 1024 )) MB (limit $(( limit / 1024 / 1024 )) MB)"
+		bad=1
+	fi
+done
+if [ $bad -ne 0 ]; then
+	echo "Put it in a git-ignored place (see .gitignore), track it with Git LFS, or set ALLOW_LARGE=1."
+	exit 1
+fi

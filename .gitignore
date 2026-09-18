@@ -28,3 +28,16 @@ Source/Examples/
 Bin/*.png
 *_bench.json
 bench_report.json
+
+# Editor/runtime state
+imgui.ini
+
+# SDK drops fetched separately (contains its own git repository)
+Dependencies/
+
+# Anything that is not engine source but lives next to it: name the folder like this and it
+# is ignored wherever it is. Use for placeholder art, test scenes, captured data, big
+# downloads. (Source/Game/data/ above is the same idea for the sample game.)
+**/*.local/
+**/_local/
+**/_placeholder/
