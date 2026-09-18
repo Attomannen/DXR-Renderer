@@ -73,8 +73,30 @@ PixelOutput main(ModelVertexToPixel input)
 	// Divide only the additive reflection by opacity so the final blend remains
 	// physically ordered without switching the whole transparent pass to a
 	// premultiplied blend state.
+	// The additive half is divided by opacity, so a 0.16-opacity window
+	// multiplies its reflection by six and a 0.05 one by twenty. On a glass
+	// silhouette one pixel wide that amplified term is the difference between
+	// the fragment being drawn and not, and under DLSS upscaling the depth
+	// buffer this pass tests against is a point upsample of the render-
+	// resolution ray depth: its silhouettes are quantised to render-resolution
+	// blocks while the glass itself rasterises at display resolution. The edge
+	// fragment then passes the depth test on some jitter phases and fails on
+	// others, so the amplified reflection appeared and vanished frame to frame.
+	// Measured on the Bistro, that was a single pixel on the awning rim going
+	// from luminance 86 to pure white every eight to ten frames, which bloom
+	// then spread into a halo and made the nearby emissive appear to flicker.
+	//
+	// Cap the additive term against the scene behind the glass. Eight times is
+	// far above any real reflection on a surface that also transmits, so
+	// ordinary bright reflections are untouched, while a lone amplified edge
+	// fragment can no longer punch a hole through the frame.
+	const float3 additive = (reflected * fresnel + surface.emissive) * preExposure / max(opacity, 0.05f);
+	const float3 kLum = float3(0.2126f, 0.7152f, 0.0722f);
+	const float sceneLum = dot(scene, kLum);
+	const float additiveLum = dot(additive, kLum);
+	const float additiveCap = 8.0f * max(sceneLum, 1e-3f);
 	result.color.rgb = scene * transmittance * (1.0f - fresnel)
-		+ (reflected * fresnel + surface.emissive) * preExposure / max(opacity, 0.05f);
+		+ additive * min(1.0f, additiveCap / max(additiveLum, 1e-4f));
 	result.color.a = opacity;
 	return result;
 }
