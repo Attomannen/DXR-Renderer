@@ -590,14 +590,23 @@ void AssetBrowser::DrawBreadcrumbs()
 {
 	const fs::path root = fs::absolute(Tga::Settings::GameAssetRoot());
 
+	// The folder tree builds its paths from directory listings while the root comes from the
+	// settings, so the same folder can differ in slashes or case. Compare the folders themselves.
+	std::error_code error;
 	std::vector<fs::path> chain;
+	bool reachedRoot = false;
 	for (fs::path path = _current_path;; path = path.parent_path())
 	{
 		chain.push_back(path);
-		if (path == root || path == path.parent_path())
+		if (fs::equivalent(path, root, error))
+		{
+			reachedRoot = true;
+			break;
+		}
+		if (path == path.parent_path())
 			break;
 	}
-	if (chain.back() != root)
+	if (!reachedRoot)
 	{
 		// Somewhere outside the game folder: start again at the root.
 		_current_path = root;
