@@ -135,7 +135,7 @@ bool DeferredRenderer::CreateDxrLightingTargets(Vector2ui aResolution)
 
 	myDxrLightingSrv = dev->CreateSrv(myDxrLightingTex, rhi::SrvDesc{});
 	myDxrLightingUav = dev->CreateUav(myDxrLightingTex, rhi::UavDesc{});
-	const rhi::Format temporalFormats[] = { rhi::Format::R16G16_Float, rhi::Format::R32_Float, rhi::Format::R32G32_Float, rhi::Format::R16G16B16A16_Float, rhi::Format::R16G16B16A16_Float, rhi::Format::R16G16B16A16_Float, rhi::Format::R16G16_Float };
+	const rhi::Format temporalFormats[] = { rhi::Format::R16G16B16A16_Float, rhi::Format::R32_Float, rhi::Format::R32G32_Float, rhi::Format::R16G16B16A16_Float, rhi::Format::R16G16B16A16_Float, rhi::Format::R16G16B16A16_Float, rhi::Format::R16G16_Float };
 	const char* temporalNames[] = { "MotionVectorsPixels", "TemporalDeviceDepth", "MotionValidity", "TemporalSurfaceGuide", "DlssDiffuseAlbedo", "DlssSpecularAlbedo", "ResolveMotionVectors" };
 	for (size_t i = 0; i < myTemporalTex.size(); ++i) {
 		if (myTemporalUav[i].IsValid()) dev->Destroy(myTemporalUav[i]);
@@ -273,7 +273,7 @@ void DeferredRenderer::EnsureReservoirs()
 	rhi::IDevice* dev = DX11::Rhi();
 	const uint32_t count = std::max(1u, myDxrRenderResolution.x * myDxrRenderResolution.y);
 	for (int i = 0; i < 2; ++i)
-		myReservoirBuffer[i].Create(*dev, 48, count, true, false, i == 0 ? "RestirReservoirA" : "RestirReservoirB");
+		myReservoirBuffer[i].Create(*dev, 64, count, true, false, i == 0 ? "RestirReservoirA" : "RestirReservoirB");
 	myReservoirResolution = myDxrRenderResolution;
 	myReservoirIndex = 0;
 }
@@ -437,6 +437,7 @@ void DeferredRenderer::RenderDxrLighting()
 		const Matrix4x4f worldToClip = myWorldToView * myViewToProj;
 		memcpy(c.gWorldToClip.m, worldToClip.GetDataPtr(), sizeof(c.gWorldToClip.m));
 		memcpy(c.gPreviousWorldToClip.m, myPreviousWorldToClip.GetDataPtr(), sizeof(c.gPreviousWorldToClip.m));
+		memcpy(c.gWorldToView.m, myWorldToView.GetDataPtr(), sizeof(c.gWorldToView.m));
 		c.gTemporalHistoryValid = (myTemporalHistoryValid && !lightingChanged) ? 1u : 0u;
 		c.gSpecularAaStrength = myTunables.specularAaEnabled ? myTunables.specularAaStrength : 0.f;
 		c.gReflectionFrameIndex = myDxrFrameIndex++;
@@ -545,9 +546,10 @@ void DeferredRenderer::DenoiseDxrDiffuse(rhi::ICommandContext& ctx)
 		const float fps = 1.f / std::max(Application::GetInstance()->GetDeltaTime(), 1.f / 240.f);
 		const uint32_t maxFrames = denoiser == rhi::dx12::NrdWrapper::Denoiser::Reblur ? nrd::REBLUR_MAX_HISTORY_FRAME_NUM : 255u;
 		// Quantised so a fluctuating frame rate doesn't re-upload settings every frame.
-		const uint32_t frames = nrd::GetMaxAccumulatedFrameNum(std::max(myTunables.nrdHistorySeconds, 0.01f), fps);
+		// Below ~0.2 s the denoiser is effectively off and 1-spp noise reaches bloom.
+		const uint32_t frames = nrd::GetMaxAccumulatedFrameNum(std::max(myTunables.nrdHistorySeconds, 0.2f), fps);
 		config.historyFrames = std::clamp((frames + 2u) / 4u * 4u, 2u, maxFrames);
-		config.fastHistoryFrames = uint32_t(std::clamp(myTunables.nrdFastHistoryFrames, 1, int(config.historyFrames)));
+		config.fastHistoryFrames = uint32_t(std::clamp(myTunables.nrdFastHistoryFrames, 3, int(config.historyFrames)));
 		config.hitDistanceA = kNrdHitDistanceA;
 		config.antilag = myTunables.nrdAntilag;
 		myNrd->Configure(config);
@@ -571,7 +573,8 @@ void DeferredRenderer::DenoiseDxrDiffuse(rhi::ICommandContext& ctx)
 	// IN_MV holds pixel deltas; NRD wants UV deltas.
 	settings.motionVectorScale[0] = 1.f / float(myDxrRenderResolution.x);
 	settings.motionVectorScale[1] = 1.f / float(myDxrRenderResolution.y);
-	settings.motionVectorScale[2] = 0.f;
+	settings.motionVectorScale[2] = myTunables.nrdMotion25D ? 1.f : 0.f;   // z already in metres
+	settings.disocclusionThreshold = myTunables.nrdDisocclusionThreshold;
 	settings.isMotionVectorInWorldSpace = false;
 	settings.cameraJitter[0] = myTaaJitter.x;
 	settings.cameraJitter[1] = myTaaJitter.y;

@@ -176,7 +176,9 @@ void ApplyRendererOverrides(DeferredRenderer::Tunables& tun)
 	tun.nrdDenoiser = std::clamp(EnvInt("BENCH_NRD_DENOISER", tun.nrdDenoiser), 0, 1);
 	tun.nrdValidation = EnvInt("BENCH_NRD_VALIDATION", 0) != 0;
 	tun.nrdAntilag = EnvInt("BENCH_NRD_ANTILAG", tun.nrdAntilag ? 1 : 0) != 0;
-	if (const char* v = std::getenv("BENCH_NRD_HISTORY")) tun.nrdHistorySeconds = std::max(0.01f, (float)atof(v));
+	if (const char* v = std::getenv("BENCH_NRD_HISTORY")) tun.nrdHistorySeconds = std::max(0.2f, (float)atof(v));
+	if (const char* v = std::getenv("BENCH_NRD_DISOCC")) tun.nrdDisocclusionThreshold = std::clamp((float)atof(v), 0.001f, 1.f);
+	tun.nrdMotion25D = EnvInt("BENCH_NRD_MV25", tun.nrdMotion25D ? 1 : 0) != 0;
 	tun.dxrSunShadowSamples = std::clamp(EnvInt("BENCH_SUN_SHADOW_SAMPLES", tun.dxrSunShadowSamples), 1, 4);
 	tun.volumetricResolution = std::clamp(EnvInt("BENCH_FOG_RESOLUTION", tun.volumetricResolution), 0, 3);
 	tun.preExposure = EnvInt("BENCH_PRE_EXPOSURE", tun.preExposure ? 1 : 0) != 0;

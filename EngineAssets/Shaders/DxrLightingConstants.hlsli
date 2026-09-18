@@ -79,6 +79,9 @@ DXR_CBUFFER_BEGIN(DxrLightingConstants, b0)
 	// Emissive geometry sampled as area lights: RIS candidates per pixel, 0 = off.
 	uint   gEmissiveLightSamples;
 	uint   _emissivePad0, _emissivePad1, _emissivePad2;
+	// NRD view Z must be the Z of the same world-to-view NRD is given, not a
+	// dot with the camera forward: the two disagree under camera translation.
+	DXR_ROW_MAJOR float4x4 gWorldToView;
 DXR_CBUFFER_END
 
 #ifdef __cplusplus

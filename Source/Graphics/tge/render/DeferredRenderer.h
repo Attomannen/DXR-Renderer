@@ -419,6 +419,8 @@ namespace Tga
 			int nrdFastHistoryFrames = 6;      // responsive history used to clamp the long one
 			bool nrdAntilag = true;            // reset history where lighting changes quickly
 			bool nrdValidation = false;        // NRD's debug overlay (motion, depth, normals, history)
+			float nrdDisocclusionThreshold = 0.01f; // NRD relative plane-distance threshold (test knob)
+			bool nrdMotion25D = false;         // feed NRD viewZprev - viewZ in motion.z (2.5D)
 			// Sun shadow rays per pixel (1-4); fewer rays rotate per frame and
 			// rely on the temporal resolve for the soft penumbra.
 			int dxrSunShadowSamples = 4;

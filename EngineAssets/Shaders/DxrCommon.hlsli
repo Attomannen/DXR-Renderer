@@ -158,8 +158,35 @@ struct LightReservoir
 {
 	float3 lightPoint;   float W;        // unbiased contribution weight
 	float3 radiance;     uint  M;        // candidates this reservoir represents
-	float3 lightNormal;  float _pad;
+	float3 lightNormal;  uint  packedSurfaceNormal;   // octahedral, 2 x f16: the surface this reservoir was built for
+	float3 surfacePos;   float _pad;
 };
+
+uint PackReservoirNormal(float3 n)
+{
+	n /= max(abs(n.x) + abs(n.y) + abs(n.z), 1e-6f);
+	const float2 sgn = float2(n.x >= 0.0f ? 1.0f : -1.0f, n.y >= 0.0f ? 1.0f : -1.0f);
+	float2 e = n.z >= 0.0f ? n.xy : (1.0f - abs(n.yx)) * sgn;
+	return f32tof16(e.x) | (f32tof16(e.y) << 16);
+}
+float3 UnpackReservoirNormal(uint p)
+{
+	float2 e = float2(f16tof32(p & 0xFFFFu), f16tof32(p >> 16));
+	float3 n = float3(e, 1.0f - abs(e.x) - abs(e.y));
+	if (n.z < 0.0f) n.xy = (1.0f - abs(n.yx)) * float2(n.x >= 0.0f ? 1.0f : -1.0f, n.y >= 0.0f ? 1.0f : -1.0f);
+	return normalize(n);
+}
+
+// A neighbour's reservoir is only reusable if it was built for a surface that
+// could plausibly see the same lights: same-facing, and on the same plane.
+bool ReservoirSurfaceMatches(LightReservoir r, float3 pos, float3 n)
+{
+	const float3 rn = UnpackReservoirNormal(r.packedSurfaceNormal);
+	if (dot(rn, n) < 0.9f) return false;
+	const float3 d = r.surfacePos - pos;
+	const float dist = max(length(pos - r.surfacePos), 1.0f);
+	return abs(dot(d, n)) < 0.02f * dist + 2.0f;   // plane distance, cm: 2% of separation + 2 cm
+}
 StructuredBuffer<LightReservoir> gPrevReservoirs : register(t9);
 RWStructuredBuffer<LightReservoir> gReservoirs : register(u12);
 
@@ -1037,7 +1064,7 @@ void SampleEmissiveDirect(HitSurface hs, float3 viewDir, uint2 pixel, uint frame
 		// Cap the history's influence. Without this a reservoir keeps compounding
 		// its own confidence and stops responding to the scene, and any error it
 		// picked up at a disocclusion never washes out.
-		const uint prevM = min(prev.M, candidates * 20u);
+		const uint prevM = ReservoirSurfaceMatches(prev, hs.worldPosition, hs.worldNormal) ? min(prev.M, candidates * 8u) : 0u;
 		if (prevM > 0u && dot(prev.radiance, kLum) > 0.0f && prev.W > 0.0f)
 		{
 			float geom = 0.0f;
@@ -1082,8 +1109,9 @@ void SampleEmissiveDirect(HitSurface hs, float3 viewDir, uint2 pixel, uint frame
 			if (tap.x < 0 || tap.y < 0 || tap.x >= (int)screenSize.x || tap.y >= (int)screenSize.y) continue;
 
 			const LightReservoir n = gPrevReservoirs[tap.y * screenSize.x + tap.x];
-			const uint nM = min(n.M, candidates * 20u);
+			const uint nM = min(n.M, candidates * 8u);
 			if (nM == 0u || n.W <= 0.0f || dot(n.radiance, kLum) <= 0.0f) continue;
+			if (!ReservoirSurfaceMatches(n, hs.worldPosition, hs.worldNormal)) continue;
 
 			float geom = 0.0f;
 			RESTIR_TARGET(n.lightPoint, n.lightNormal, n.radiance, geom);
@@ -1124,8 +1152,10 @@ void SampleEmissiveDirect(HitSurface hs, float3 viewDir, uint2 pixel, uint frame
 	out_.lightPoint = chosenPoint;
 	out_.W = visibility > 0.0f ? W : 0.0f;
 	out_.radiance = chosenRadiance;
-	out_.M = min(sampleCount, candidates * 20u);
+	out_.M = min(sampleCount, candidates * 8u);
 	out_.lightNormal = chosenNormal;
+	out_.packedSurfaceNormal = PackReservoirNormal(hs.worldNormal);
+	out_.surfacePos = hs.worldPosition;
 	gReservoirs[pixelIndex] = out_;
 
 	if (visibility <= 0.0f) return;

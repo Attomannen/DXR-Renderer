@@ -17,7 +17,7 @@
 #include "Exposure.hlsli"
 
 RWTexture2D<float4> gOutput : register(u0);
-RWTexture2D<float2> gMotionVectors : register(u1);
+RWTexture2D<float4> gMotionVectors : register(u1); // xy pixel motion, z = viewZprev - viewZ (m) for NRD 2.5D
 RWTexture2D<float> gTemporalDepth : register(u2);
 RWTexture2D<float2> gMotionValidity : register(u3); // valid transform, expected previous depth
 // Signed world normal + perceptual roughness.  This is shared by native TAA
@@ -55,10 +55,11 @@ void WriteTemporal(uint2 pixel, float4 currentClip, float4 previousClip, bool ob
 	// from the pixel centre instead mixed this frame's jitter into every vector,
 	// which DLSS and NRD read as the whole image moving: visible bouncing.)
 	const float2 motion = valid ? ClipToPixel(previousClip) - ClipToPixel(currentClip) : float2(0,0);
-	gMotionVectors[pixel] = all(isfinite(motion)) ? clamp(motion, -65504.0f, 65504.0f) : float2(0,0);
+	const float dz = valid && currentClip.w > 0.0f ? (previousClip.w - currentClip.w) * 0.01f : 0.0f;
+	gMotionVectors[pixel] = float4(all(isfinite(motion)) ? clamp(motion, -65504.0f, 65504.0f) : float2(0,0), all(isfinite(dz)) ? dz : 0.0f, 0.0f);
 	// Default the resolve motion to the surface motion; specular-dominated
 	// pixels overwrite it at the end of main() with the virtual image's motion.
-	gResolveMotion[pixel] = gMotionVectors[pixel];
+	gResolveMotion[pixel] = gMotionVectors[pixel].xy;
 	gMotionValidity[pixel] = float2(valid && all(isfinite(motion)) ? 1.0f : 0.0f, previousClip.w > 0 ? saturate(previousClip.z / previousClip.w) : 1.0f);
 	gTemporalDepth[pixel] = currentClip.w > 0.0f ? saturate(currentClip.z / currentClip.w) : 1.0f;
 }
@@ -282,7 +283,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
 		// exactly -- gEnvironmentTint is the GI-tuned scale (see SkyRadiance's
 		// comment) and must not dim what the player actually sees as sky.
 		gOutput[dtid.xy] = PreExposed(float4(SkyRadiance(dir, gEnvironmentMip, gSkyDisplayScale.xxx), 1.f));
-		if (gLightingView == 7u) gOutput[dtid.xy] = PreExposed(float4(saturate(0.5f + gMotionVectors[dtid.xy] / 32.0f), gMotionValidity[dtid.xy].x, 1));
+		if (gLightingView == 7u) gOutput[dtid.xy] = PreExposed(float4(saturate(0.5f + gMotionVectors[dtid.xy].xy / 32.0f), gMotionValidity[dtid.xy].x, 1));
 		if (gLightingView == 8u) gOutput[dtid.xy] = PreExposed(float4(0,0,0,1));
 		if (gLightingView == 9u) gOutput[dtid.xy] = PreExposed(float4(0,0,0,1));
 		return;
@@ -404,7 +405,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
 	{
 		// Reproject with the surface motion this pass already wrote: the
 		// reservoir belongs to the surface, so it follows the surface.
-		const float2 motion = gMotionVectors[dtid.xy];
+		const float2 motion = gMotionVectors[dtid.xy].xy;
 		const int2 previousPixel = int2(round(float2(dtid.xy) + motion));
 		const bool historyValid = gTemporalHistoryValid != 0u && gMotionValidity[dtid.xy].x > 0.5f;
 		SampleEmissiveDirect(hs, viewDir, dtid.xy, gReflectionFrameIndex, gEmissiveLightSamples,
@@ -421,7 +422,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
 		gDiffuseAlbedo[dtid.xy].a = hs.ao;
 		float3 radiance = indirectDiffuse / max(demodulator, 0.01f);
 		radiance = all(isfinite(radiance)) ? clamp(radiance, 0.0f, 65504.0f) : 0.0f;
-		const float nrdViewZ = dot(hitPos - gCameraOrigin, gCameraForward);
+		const float nrdViewZ = mul(float4(hitPos, 1), gWorldToView).z;   // same matrix NRD reconstructs with
 		if (diffuseCell) gNrdDiffuse[SignalTexel(dtid.xy)] = PackNrdSignal(radiance * PreExposure(), aoHitDistance, nrdViewZ, 1.0f);
 		gNrdViewZ[dtid.xy] = nrdViewZ * kNrdMetersPerUnit;
 		gNrdNormalRoughness[dtid.xy] = PackNrdNormalRoughness(hs.worldNormal, hs.roughness);
@@ -533,7 +534,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
 		// lobe has no single one, and its blur hides the error anyway.
 		const float smoothness = 1.0f - smoothstep(0.0f, max(gReflectionRoughnessCutoff, 1e-3f), hs.roughness);
 		const float w = saturate(dominance * smoothness);
-		const float2 blended = lerp(gMotionVectors[dtid.xy], virtualMotion, w);
+		const float2 blended = lerp(gMotionVectors[dtid.xy].xy, virtualMotion, w);
 		if (all(isfinite(blended))) gResolveMotion[dtid.xy] = clamp(blended, -65504.0f, 65504.0f);
 	}
 	if (gNrdEnabled != 0u && gLightingView == 0u)
@@ -557,7 +558,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
 	if (gLightingView == 4u) color = hs.albedo;
 	if (gLightingView == 5u) color = float3(hs.ao, hs.roughness, hs.metalness);
 	if (gLightingView == 6u) color = lerp(float3(0,0.05f,0.8f), float3(1,0.15f,0), saturate(hs.textureMip / 8.0f));
-	if (gLightingView == 7u) color = float3(saturate(0.5f + gMotionVectors[dtid.xy] / 32.0f), gMotionValidity[dtid.xy].x);
+	if (gLightingView == 7u) color = float3(saturate(0.5f + gMotionVectors[dtid.xy].xy / 32.0f), gMotionValidity[dtid.xy].x);
 	if (gLightingView == 8u) color = (1.0f - gTemporalDepth[dtid.xy]).xxx;
 	if (gLightingView == 9u) color = float3(saturate(hs.roughnessAdjustment*8.0f),hs.roughness,0);
 	// Reject invalid math without clipping legitimate HDR radiance.

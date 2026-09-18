@@ -162,7 +162,7 @@ namespace
 	static_assert(offsetof(DxrLightingConstants, gBrdfLutValid) == 176);
 	static_assert(offsetof(DxrLightingConstants, gWorldToClip) == 208);
 	static_assert(offsetof(DxrLightingConstants, gSpecularAaStrength) == 340);
-	static_assert(sizeof(DxrLightingConstants) == 384);   // +16: emissive light sampling
+	static_assert(sizeof(DxrLightingConstants) == 448);   // +16 emissive light sampling, +64 gWorldToView
 	struct alignas(16) TaaCb
 	{
 		uint32_t width, height, historyValid, debugView;
