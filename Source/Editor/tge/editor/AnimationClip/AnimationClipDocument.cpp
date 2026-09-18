@@ -410,15 +410,11 @@ void AnimationClipDocument::DrawPropertyPanel()
 			PropertyEditor::PropertyLabel();
 			ImGui::Text("Animation Source");
 			PropertyEditor::PropertyValue();
-			ImGui::Text(modifiedClip.animationSourcePath.GetString());
-			if (ImGui::Button("Set From Content Browser##Animation Model"))
 			{
-				StringId newValue = Editor::GetEditor()->GetContentBrowser().GetSelectedAsset();
-				std::string stringWithExtension = newValue.GetString();
-				std::string::size_type pos = stringWithExtension.find(".fbx");
-				if (pos != std::string::npos)
+				StringId assetValue = modifiedClip.animationSourcePath;
+				if (PropertyEditor::AssetField("##animationSourcePath", assetValue, { ".fbx" }))
 				{
-					modifiedClip.animationSourcePath = newValue;
+					modifiedClip.animationSourcePath = assetValue;
 					hasModifications = true;
 				}
 			}
@@ -426,15 +422,11 @@ void AnimationClipDocument::DrawPropertyPanel()
 			PropertyEditor::PropertyLabel();
 			ImGui::Text("Preview Model");
 			PropertyEditor::PropertyValue();
-			ImGui::Text(modifiedClip.previewModelPath.GetString());
-			if (ImGui::Button("Set From Content Browser##Preview Model"))
 			{
-				StringId newValue = Editor::GetEditor()->GetContentBrowser().GetSelectedAsset();
-				std::string stringWithExtension = newValue.GetString();
-				std::string::size_type pos = stringWithExtension.find(".fbx");
-				if (pos != std::string::npos)
+				StringId assetValue = modifiedClip.previewModelPath;
+				if (PropertyEditor::AssetField("##previewModelPath", assetValue, { ".fbx" }))
 				{
-					modifiedClip.previewModelPath = newValue;
+					modifiedClip.previewModelPath = assetValue;
 					hasModifications = true;
 				}
 			}

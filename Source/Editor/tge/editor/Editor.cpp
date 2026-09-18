@@ -16,6 +16,7 @@
 #include <tge/graphics/DX11.h>
 #include <tge/settings/settings.h>
 #include <tge/imgui/ImGuiInterface.h>
+#include <tge/imgui/ImGuiPropertyEditor.h>
 #include <tge/scene/SceneSerialize.h>
 
 #include <tge/script/ScriptRuntimeInstance.h>
@@ -62,9 +63,9 @@ static std::string locTextureCookStatus;
 
 using namespace Tga;
 
-StringId GetSelectionFromContentBrowser()
+static void ListProjectAssets(std::span<const char* const> extensions, std::vector<std::string>& out)
 {
-	return Editor::GetEditor()->GetContentBrowser().GetSelectedAsset();
+	Editor::GetEditor()->GetContentBrowser().ListAssets(extensions, out);
 }
 
 Editor* locEditor;
@@ -141,7 +142,7 @@ void Tga::Editor::Init(const EditorConfiguration& aEditorConfiguration, std::uni
 
 	RegisterExampleNodes();
 
-	RegisterContentBrowserGetSelectionFunction(GetSelectionFromContentBrowser);
+	Tga::PropertyEditor::RegisterAssetListFunction(ListProjectAssets);
 
 	// Defaults to setting the game project to default, perhaps not optimal, and could lead to problems if we move things around
 	// but I believe that right now the use-case is that we are going to couple the editor to the game-project. And at this time

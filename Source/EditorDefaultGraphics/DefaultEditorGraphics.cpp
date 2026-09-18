@@ -340,18 +340,6 @@ void Tga::DefaultObjectDefinitionEditorGraphics::DrawVisualPreviewSettings()
 				myPreviewSettings.previewPixelShaderPath = "shaders/DebugEmissiveModelShaderPS"_tgaid;
 				UpdatePreviewShaders();
 			}
-			if (ImGui::Button("Set From Content Browser"))
-			{
-				StringId newValue = Editor::GetEditor()->GetContentBrowser().GetSelectedAsset();
-				std::string stringWithExtension = newValue.GetString();
-				std::string::size_type pos = stringWithExtension.find(".hlsl");
-				if (pos != std::string::npos)
-				{
-					std::string withoutPath = stringWithExtension.substr(0, pos);
-					myPreviewSettings.previewPixelShaderPath = StringRegistry::RegisterOrGetString(withoutPath);
-					UpdatePreviewShaders();
-				}
-			}
 			PropertyEditor::PropertyLabel();
 			ImGui::Text("Directional Light Yaw");
 			PropertyEditor::PropertyValue();
@@ -387,19 +375,20 @@ void Tga::DefaultObjectDefinitionEditorGraphics::DrawVisualPreviewSettings()
 			PropertyEditor::PropertyLabel();
 			ImGui::Text("Ambient Cube Map");
 			PropertyEditor::PropertyValue();
-			ImGui::Text(myPreviewSettings.cubeMapPath.GetString());
-
-			if (ImGui::Button("Set From Content Browser"))
 			{
-				StringId newValue = Editor::GetEditor()->GetContentBrowser().GetSelectedAsset();
-				std::string stringWithExtension = newValue.GetString();
-				std::string::size_type pos = stringWithExtension.find(".dds");
-				if (pos != std::string::npos)
+				StringId cubeMap = myPreviewSettings.cubeMapPath;
+				if (PropertyEditor::AssetField("##CubeMap", cubeMap, { ".dds" }, "None (Cubemap)"))
 				{
-					myPreviewSettings.cubeMapPath = StringRegistry::RegisterOrGetString(stringWithExtension);
-
-					myPreviewSettings.ambientLight.type = AmbientLightType::Custom;
-					myPreviewSettings.ambientLight.cubemap = GraphicsEngine::GetInstance()->GetTextureManager().GetTexture(myPreviewSettings.cubeMapPath.GetString());
+					myPreviewSettings.cubeMapPath = cubeMap;
+					if (cubeMap.IsEmpty())
+					{
+						myPreviewSettings.ambientLight.type = AmbientLightType::Uniform;
+					}
+					else
+					{
+						myPreviewSettings.ambientLight.type = AmbientLightType::Custom;
+						myPreviewSettings.ambientLight.cubemap = GraphicsEngine::GetInstance()->GetTextureManager().GetTexture(cubeMap.GetString());
+					}
 				}
 			}
 
@@ -1057,26 +1046,26 @@ void DefaultMaterialEditorGraphics::DrawPreviewSettings()
 	}
 
 	{
-	InspectorSection environment("Environment", true, "Assign a DDS cubemap from Content Browser or use uniform ambient light.");
+	InspectorSection environment("Environment", true, "Pick a DDS cubemap, or drop one here, or use uniform ambient light.");
 	if (environment.IsOpen() && BeginInspectorPropertyTable("MaterialPreviewEnvironment"))
 	{
 		InspectorPropertyLabel("Cube Map"); InspectorPropertyValue();
-		if (ImGui::Button(myCubeMapPath.IsEmpty() ? "None (Cubemap)" : myCubeMapPath.GetString(), ImVec2(-58.f, 0.f)))
 		{
-			std::string sel = Editor::GetEditor()->GetContentBrowser().GetSelectedAsset().GetString();
-			if (sel.ends_with(".dds"))
+			StringId cubeMap = myCubeMapPath;
+			if (PropertyEditor::AssetField("##EnvironmentCubeMap", cubeMap, { ".dds" }, "None (Cubemap)"))
 			{
-				myCubeMapPath = StringRegistry::RegisterOrGetString(sel);
-				myAmbient.type = AmbientLightType::Custom;
-				myAmbient.cubemap = GraphicsEngine::GetInstance()->GetTextureManager().GetTexture(myCubeMapPath.GetString());
+				myCubeMapPath = cubeMap;
+				if (cubeMap.IsEmpty())
+				{
+					myAmbient.type = AmbientLightType::Uniform;
+					myAmbient.cubemap = nullptr;
+				}
+				else
+				{
+					myAmbient.type = AmbientLightType::Custom;
+					myAmbient.cubemap = GraphicsEngine::GetInstance()->GetTextureManager().GetTexture(myCubeMapPath.GetString());
+				}
 			}
-		}
-		ImGui::SameLine();
-		if (InspectorResetButton("X", "Clear the cubemap and return to uniform ambient light."))
-		{
-			myCubeMapPath = {};
-			myAmbient.type = AmbientLightType::Uniform;
-			myAmbient.cubemap = nullptr;
 		}
 		EndInspectorPropertyTable();
 	}

@@ -13,8 +13,6 @@ namespace Tga
 {
 	// todo: move and rename as assetProperties or something, potentially restructure asset callback so itcan be used in more places
 
-	void RegisterContentBrowserGetSelectionFunction(StringId(*aGetFunction)());
-
 	struct SceneModelMeshInfo
 	{
 		int meshCount = 0;

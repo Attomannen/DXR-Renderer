@@ -335,7 +335,7 @@ void MaterialDocument::DrawProperties()
 	}
 
 	{
-	Tga::InspectorSection texturesSection("Texture Maps", true, "Drop a cooked DDS texture here, or select one in the Content Browser and use the picker.");
+	Tga::InspectorSection texturesSection("Texture Maps", true, "Pick a cooked DDS texture from the list, or drop one here.");
 	if (texturesSection.IsOpen() && Tga::BeginInspectorPropertyTable("TextureProperties"))
 	{
 	const char* slotNames[4] = { "Base Colour (_BC)", "Normal (_N)", "ORM (_ORM)", "Emissive (_E / _FX)" };
@@ -343,24 +343,12 @@ void MaterialDocument::DrawProperties()
 	{
 		ImGui::PushID(i);
 		Tga::InspectorPropertyLabel(slotNames[i]); Tga::InspectorPropertyValue();
-		const char* assetName = myMaterial.maps[i].empty() ? "None (Texture)" : myMaterial.maps[i].c_str();
-		if (ImGui::Button(assetName, ImVec2(-58, 0)))
+		StringId texture = myMaterial.maps[i].empty() ? StringId() : StringRegistry::RegisterOrGetString(myMaterial.maps[i]);
+		if (PropertyEditor::AssetField("##texture", texture, { ".dds" }, "None (Texture)"))
 		{
-			std::string sel = Editor::GetEditor()->GetContentBrowser().GetSelectedAsset().GetString();
-			if (sel.ends_with(".dds")) { myMaterial.maps[i] = sel; changed = true; }
+			myMaterial.maps[i] = texture.IsEmpty() ? std::string() : std::string(texture.GetString());
+			changed = true;
 		}
-		if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("Assign the selected DDS from Content Browser, or drop one here.");
-		if (ImGui::BeginDragDropTarget())
-		{
-			if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(".dds"))
-			{
-				myMaterial.maps[i] = std::string((const char*)p->Data);
-				changed = true;
-			}
-			ImGui::EndDragDropTarget();
-		}
-		ImGui::SameLine();
-		if (Tga::InspectorResetButton("X", "Clear this texture assignment")) { myMaterial.maps[i].clear(); changed = true; }
 		ImGui::PopID();
 	}
 		Tga::EndInspectorPropertyTable();
@@ -598,14 +586,13 @@ void MaterialDocument::DrawGraphNode(MaterialGraphNS::Node& node)
 	{
 	case NodeKind::TextureSample:
 	{
-		const char* label = node.texturePath.empty() ? "None (Texture)" : node.texturePath.c_str();
-		if (ImGui::Button(label))
+		StringId texture = node.texturePath.empty() ? StringId() : StringRegistry::RegisterOrGetString(node.texturePath);
+		ImGui::SetNextItemWidth(220.f);
+		if (PropertyEditor::AssetField("##nodetexture", texture, { ".dds" }, "None (Texture)"))
 		{
-			std::string sel = Editor::GetEditor()->GetContentBrowser().GetSelectedAsset().GetString();
-			if (sel.ends_with(".dds")) { node.texturePath = sel; changed = true; }
+			node.texturePath = texture.IsEmpty() ? std::string() : std::string(texture.GetString());
+			changed = true;
 		}
-		if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-			ImGui::SetTooltip("Select a DDS in the Content Browser, then click to assign it.");
 		break;
 	}
 	case NodeKind::ConstantScalar:

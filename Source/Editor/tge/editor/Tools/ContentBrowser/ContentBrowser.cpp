@@ -160,6 +160,27 @@ StringId ContentBrowser::GetSelectedAsset()
 	return StringRegistry::RegisterOrGetString(mySelectedPath.string());
 }
 
+void ContentBrowser::ListAssets(std::span<const char* const> extensions, std::vector<std::string>& out) const
+{
+	const fs::path root = fs::absolute(Tga::Settings::GameAssetRoot());
+	std::lock_guard guard(myCache->isAccessingCache);
+	for (const auto& [directory, cache] : myCache->activeCache)
+	{
+		for (const fs::path& file : cache.files)
+		{
+			const std::string extension = file.extension().string();
+			for (const char* wanted : extensions)
+			{
+				if (extension == wanted)
+				{
+					out.push_back(fs::relative(file, root).string());
+					break;
+				}
+			}
+		}
+	}
+}
+
 fs::path ContentBrowser::GetCurrentFolder() const
 {
 	return _current_path;

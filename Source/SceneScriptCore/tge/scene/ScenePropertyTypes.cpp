@@ -8,7 +8,6 @@
 
 using namespace Tga;
 
-StringId(*locContentBrowserGetSelectionFunction)();
 GetModelMeshInfoFunction locGetModelMeshInfoFunction = nullptr;
 GetModelCollisionInfoFunction locGetModelCollisionInfoFunction = nullptr;
 
@@ -20,11 +19,6 @@ namespace
 
 namespace Tga
 {
-	void RegisterContentBrowserGetSelectionFunction(StringId(*aGetFunction)())
-	{
-		locContentBrowserGetSelectionFunction = aGetFunction;
-	};
-
 	void RegisterGetModelMeshInfoFunction(GetModelMeshInfoFunction aGetFunction)
 	{
 		locGetModelMeshInfoFunction = aGetFunction;
@@ -149,18 +143,14 @@ namespace Tga
 		ImGui::Unindent();
 		PropertyEditor::PropertyValue(true);
 
-		ImGui::Text(model.path.IsEmpty() ? "None" : model.path.GetString());
-		if(ImGui::BeginDragDropTarget())
 		{
-			if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(".fbx")) 
+			StringId assetValue = model.path;
+			if (PropertyEditor::AssetField("##asset", assetValue, { ".fbx" }))
 			{
 				makeEditable();
-
-				const char* dropped = static_cast<const char*>(payload->Data);
-				editableModel->path = StringRegistry::RegisterOrGetString(dropped);
+				editableModel->path = assetValue;
 				hasBeenEdited = true;
 			}
-			ImGui::EndDragDropTarget();
 		}
 
 		PropertyEditor::PropertyLabel(true);
@@ -187,37 +177,6 @@ namespace Tga
 				ImGui::SetTooltip("Collision built from this model's geometry.\nAuto: static objects get an exact triangle mesh, objects with a Rigidbody get a convex hull.");
 		}
 
-		PropertyEditor::PropertyLabel(true);
-		PropertyEditor::PropertyValue(true);
-
-		if (locContentBrowserGetSelectionFunction)
-		{
-			if (ImGui::Button("Set From Content Browser"))
-			{
-				// todo: validation
-				StringId newValue = locContentBrowserGetSelectionFunction();
-				if (newValue != model.path)
-				{
-					makeEditable();
-
-					editableModel->path = newValue;
-					hasBeenEdited = true;
-				}
-			}
-			ImGui::SameLine();
-		}
-
-		if (ImGui::Button("Clear"))
-		{
-			if (!model.path.IsEmpty())
-			{
-				makeEditable();
-
-				editableModel->path = {};
-				hasBeenEdited = true;
-			}
-		}
-
 		if (!model.path.IsEmpty() && locGetModelMeshInfoFunction)
 		{
 			SceneModelMeshInfo meshInfo;
@@ -229,50 +188,15 @@ namespace Tga
 					ImGui::Text("Material");
 					PropertyEditor::PropertyValue(true);
 
-					ImGui::Text(model.materials[meshIndex].IsEmpty() ? "None (.tgmat)" : model.materials[meshIndex].GetString());
-					if (ImGui::BeginDragDropTarget())
 					{
-						if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(".tgmat"))
-						{
-							makeEditable();
-
-							const char* dropped = static_cast<const char*>(payload->Data);
-							editableModel->materials[meshIndex] = StringRegistry::RegisterOrGetString(dropped);
-							hasBeenEdited = true;
-						}
-						ImGui::EndDragDropTarget();
-					}
-
-					PropertyEditor::PropertyLabel(true);
-					PropertyEditor::PropertyValue(true);
-
-					if (locContentBrowserGetSelectionFunction)
-					{
-						if (ImGui::Button("Set From Content Browser"))
-						{
-							// todo: validation
-							StringId newValue = locContentBrowserGetSelectionFunction();
-							if (newValue != model.materials[meshIndex] && newValue.GetString()[0] != '\0' && std::filesystem::path(newValue.GetString()).extension() == ".tgmat")
-							{
-								makeEditable();
-
-								editableModel->materials[meshIndex] = newValue;
-								hasBeenEdited = true;
-							}
-						}
-						ImGui::SameLine();
-					}
-
-					if (ImGui::Button("Clear"))
-					{
-						if (!model.materials[meshIndex].IsEmpty())
-						{
-							makeEditable();
-
-							editableModel->materials[meshIndex] = {};
-							hasBeenEdited = true;
-						}
-					}
+			StringId assetValue = model.materials[meshIndex];
+			if (PropertyEditor::AssetField("##asset", assetValue, { ".tgmat" }))
+			{
+				makeEditable();
+				editableModel->materials[meshIndex] = assetValue;
+				hasBeenEdited = true;
+			}
+		}
 
 				};
 
@@ -759,50 +683,15 @@ namespace Tga
 				ImGui::Text(label);
 				PropertyEditor::PropertyValue(true);
 
-				ImGui::Text(sprite.textures[textureIndex].IsEmpty() ? "None" : sprite.textures[textureIndex].GetString());
-				if (ImGui::BeginDragDropTarget())
 				{
-					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(".dds"))
-					{
-						makeEditable();
-
-						const char* dropped = static_cast<const char*>(payload->Data);
-						editableSprite->textures[textureIndex] = StringRegistry::RegisterOrGetString(dropped);
-						hasBeenEdited = true;
-					}
-					ImGui::EndDragDropTarget();
-				}
-
-				PropertyEditor::PropertyLabel(true);
-				PropertyEditor::PropertyValue(true);
-
-				if (locContentBrowserGetSelectionFunction)
-				{
-					if (ImGui::Button("Set From Content Browser"))
-					{
-						// todo: validation
-						StringId newValue = locContentBrowserGetSelectionFunction();
-						if (newValue != sprite.textures[textureIndex])
-						{
-							makeEditable();
-
-							editableSprite->textures[textureIndex] = newValue;
-							hasBeenEdited = true;
-						}
-					}
-					ImGui::SameLine();
-				}
-
-				if (ImGui::Button("Clear"))
-				{
-					if (!sprite.textures[textureIndex].IsEmpty())
-					{
-						makeEditable();
-
-						editableSprite->textures[textureIndex] = {};
-						hasBeenEdited = true;
-					}
-				}
+			StringId assetValue = sprite.textures[textureIndex];
+			if (PropertyEditor::AssetField("##asset", assetValue, { ".dds" }))
+			{
+				makeEditable();
+				editableSprite->textures[textureIndex] = assetValue;
+				hasBeenEdited = true;
+			}
+		}
 
 				ImGui::PopID();
 			};
@@ -910,47 +799,12 @@ namespace Tga
 		ImGui::Unindent();
 		PropertyEditor::PropertyValue(true);
 
-		ImGui::Text(sceneReference.path.IsEmpty() ? "None" : sceneReference.path.GetString());
-		if (ImGui::BeginDragDropTarget())
 		{
-			if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(".tgs"))
+			StringId assetValue = sceneReference.path;
+			if (PropertyEditor::AssetField("##asset", assetValue, { ".tgs" }))
 			{
 				makeEditable();
-
-				const char* dropped = static_cast<const char*>(payload->Data);
-				editableSceneReference->path = StringRegistry::RegisterOrGetString(dropped);
-				hasBeenEdited = true;
-			}
-			ImGui::EndDragDropTarget();
-		}
-
-		PropertyEditor::PropertyLabel(true);
-		PropertyEditor::PropertyValue(true);
-
-		if (locContentBrowserGetSelectionFunction)
-		{
-			if (ImGui::Button("Set From Content Browser"))
-			{
-				// todo: validation
-				StringId newValue = locContentBrowserGetSelectionFunction();
-				if (newValue != sceneReference.path)
-				{
-					makeEditable();
-
-					editableSceneReference->path = newValue;
-					hasBeenEdited = true;
-				}
-			}
-			ImGui::SameLine();
-		}
-
-		if (ImGui::Button("Clear"))
-		{
-			if (!sceneReference.path.IsEmpty())
-			{
-				makeEditable();
-
-				editableSceneReference->path = {};
+				editableSceneReference->path = assetValue;
 				hasBeenEdited = true;
 			}
 		}
@@ -1016,47 +870,12 @@ namespace Tga
 		ImGui::Unindent();
 		PropertyEditor::PropertyValue(true);
 
-		ImGui::Text(clipReference.path.IsEmpty() ? "None" : clipReference.path.GetString());
-		if (ImGui::BeginDragDropTarget())
 		{
-			if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(".tgac"))
+			StringId assetValue = clipReference.path;
+			if (PropertyEditor::AssetField("##asset", assetValue, { ".tgac" }))
 			{
 				makeEditable();
-
-				const char* dropped = static_cast<const char*>(payload->Data);
-				editableClipReference->path = StringRegistry::RegisterOrGetString(dropped);
-				hasBeenEdited = true;
-			}
-			ImGui::EndDragDropTarget();
-		}
-
-		PropertyEditor::PropertyLabel(true);
-		PropertyEditor::PropertyValue(true);
-
-		if (locContentBrowserGetSelectionFunction)
-		{
-			if (ImGui::Button("Set From Content Browser"))
-			{
-				// todo: validation
-				StringId newValue = locContentBrowserGetSelectionFunction();
-				if (newValue != clipReference.path)
-				{
-					makeEditable();
-
-					editableClipReference->path = newValue;
-					hasBeenEdited = true;
-				}
-			}
-			ImGui::SameLine();
-		}
-
-		if (ImGui::Button("Clear"))
-		{
-			if (!clipReference.path.IsEmpty())
-			{
-				makeEditable();
-
-				editableClipReference->path = {};
+				editableClipReference->path = assetValue;
 				hasBeenEdited = true;
 			}
 		}

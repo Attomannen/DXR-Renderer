@@ -4,6 +4,9 @@
 #include <tge/editor/Import/FbxConvert.h>
 #include <tge/stringRegistry/StringRegistry.h>
 #include <filesystem>
+#include <span>
+#include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -20,6 +23,8 @@ namespace Tga
 		virtual void Draw();
 		void SetPath(const std::string_view &);
 		StringId GetSelectedAsset();
+		// Every asset with one of these extensions, as paths relative to the asset root.
+		void ListAssets(std::span<const char* const> extensions, std::vector<std::string>& out) const;
 		// File > New Level: asks for a name in the Content Browser's current folder.
 		void RequestNewLevel();
 		fs::path GetCurrentFolder() const;
