@@ -181,6 +181,7 @@ void ApplyRendererOverrides(DeferredRenderer::Tunables& tun)
 	tun.volumetricResolution = std::clamp(EnvInt("BENCH_FOG_RESOLUTION", tun.volumetricResolution), 0, 3);
 	tun.preExposure = EnvInt("BENCH_PRE_EXPOSURE", tun.preExposure ? 1 : 0) != 0;
 	if (const char* v = std::getenv("BENCH_SKY_NITS")) tun.skyLuminanceNits = std::max(0.f, (float)atof(v));
+	tun.proceduralSkyEnabled = EnvInt("BENCH_SKY_PROCEDURAL", tun.proceduralSkyEnabled ? 1 : 0) != 0;
 	tun.exposureComp = EnvFloat("BENCH_EV_COMP", tun.exposureComp);
 	if (const char* v = std::getenv("BENCH_APERTURE")) tun.cameraAperture = std::max(0.5f, (float)atof(v));
 	if (const char* v = std::getenv("BENCH_SHUTTER")) tun.cameraShutter = std::max(1e-6f, (float)atof(v));

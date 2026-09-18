@@ -114,13 +114,27 @@ void main(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
 		// Radiance at the triangle's UV centroid. One sample per triangle is
 		// enough for a light list: it decides importance and the emitted colour,
 		// while the shading itself still samples the map at the hit point.
-		float3 radiance = tint;
-		if (textured && mat.emissiveSrv != 0u)
+		//
+		// Decoded through MaterialEmissive, the same function the shading hit
+		// uses, NOT by reading the map's .rgb. That shortcut is only correct
+		// for the Unreal-style RGB convention; under the legacy _FX packing
+		// (r = mask, g = strength) it reads the strength channel as "green"
+		// AND ignores the mask, so every triangle of the material becomes a
+		// green emitter. Sponza's stone shares one masked emissive map, which
+		// is exactly how the whole courtyard turned green.
+		float4 emissiveTexel = 0.0f;
+		float3 baseColor = mat.params.baseColorFactor;
+		if (textured)
 		{
 			const float2 uvCentre = (uv[0] + uv[1] + uv[2]) / 3.0f;
 			// A high mip is the cheap stand-in for "average over the triangle".
-			radiance *= gRaySceneTex[NonUniformResourceIndex(mat.emissiveSrv)].SampleLevel(gMaterialSampler, uvCentre, 4.0f).rgb;
+			if (mat.emissiveSrv != 0u)
+				emissiveTexel = gRaySceneTex[NonUniformResourceIndex(mat.emissiveSrv)].SampleLevel(gMaterialSampler, uvCentre, 4.0f);
+			// The legacy path tints by the surface's own base colour.
+			if ((mat.params.flags & MATERIAL_FLAG_EMISSIVE_RGB) == 0u && mat.albedoSrv != 0u)
+				baseColor *= gRaySceneTex[NonUniformResourceIndex(mat.albedoSrv)].SampleLevel(gMaterialSampler, uvCentre, 4.0f).rgb;
 		}
+		const float3 radiance = MaterialEmissive(mat.params, baseColor, emissiveTexel);
 
 		// Scene units are centimetres; power in metre units keeps the numbers in
 		// a range where a float32 threshold is meaningful.

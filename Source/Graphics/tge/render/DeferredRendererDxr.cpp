@@ -59,8 +59,8 @@ void DeferredRenderer::MeasureEnvironment(rhi::ICommandContext& ctx)
 		if (dev->ReadBackFloatPixel4(myEnvAverageTex, 0, 0, v) && v[3] == v[3])
 		{
 			myEnvAverageLuminance = std::max(v[3], 1e-8f);
-			INFO_PRINT("DeferredRenderer: environment sky averages %.4g units (%.0f cd/m2 as authored)",
-				myEnvAverageLuminance, myEnvAverageLuminance * Photometry::kNitsPerUnit);
+			INFO_PRINT("DeferredRenderer: environment sky averages %.4g units (%.0f cd/m2 as authored)  rgb=(%.4g, %.4g, %.4g)",
+				myEnvAverageLuminance, myEnvAverageLuminance * Photometry::kNitsPerUnit, v[0], v[1], v[2]);
 		}
 		myEnvAverageMeasured = myEnvAveragePending;
 		myEnvAveragePending = {};
