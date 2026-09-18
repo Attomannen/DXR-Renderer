@@ -142,7 +142,7 @@ void ApplyRendererOverrides(DeferredRenderer::Tunables& tun)
 	tun.volumetricSteps = std::clamp(EnvInt("BENCH_VOLUMETRIC_STEPS", tun.volumetricSteps), 8, 64);
 	tun.atmosphereDebugView = EnvInt("BENCH_ATMOSPHERE_VIEW", 0);
 	tun.taaEnabled = EnvInt("BENCH_TAA", 1) != 0;
-	tun.taaJitter = EnvInt("BENCH_TAA_JITTER", 1) != 0;
+	tun.taaJitter = EnvInt("BENCH_TAA_JITTER", tun.taaJitter ? 1 : 0) != 0;
 	// BENCH_DXR_DENOISER=1 turns on DLSS Ray Reconstruction, which replaces
 	// the native temporal resolve with a real ray denoiser. Mirrors what the
 	// ImGui checkbox does: RR runs as a 1:1 DLAA-shaped pass, not upscaling.
