@@ -168,11 +168,15 @@ float CloudHeightGradient(float heightFraction, float growth)
 // step, or the pixel's angular size at that distance). Selects a noise mip so
 // far, coarse samples read a pre-averaged field instead of aliasing the 6 km
 // tile into moire rows toward the horizon. 0 = full detail.
+// heightMeters: altitude of the sample above the (curved) sea level, when the
+// caller marches a spherical shell (CloudsVolumeCS); < -1e8 = use worldPos.y,
+// i.e. the flat approximation the cheap consumers still use.
 float SampleCloudDensity(Texture3D<float4> shapeNoise, Texture3D<float> detailNoise, SamplerState samp,
-                          float3 worldPosMeters, bool aCheap, float footprintMeters = 0.0f)
+                          float3 worldPosMeters, bool aCheap, float footprintMeters = 0.0f, float heightMeters = -1e9f)
 {
 	if (gCloudsEnabled == 0 || gCloudTopAltitude <= gCloudBaseAltitude) return 0.0f;
-	float heightFraction = (worldPosMeters.y - gCloudBaseAltitude) / (gCloudTopAltitude - gCloudBaseAltitude);
+	float altitude = heightMeters > -1e8f ? heightMeters : worldPosMeters.y;
+	float heightFraction = (altitude - gCloudBaseAltitude) / (gCloudTopAltitude - gCloudBaseAltitude);
 	if (heightFraction <= 0.0f || heightFraction >= 1.0f) return 0.0f;
 
 	float2 wind = gCloudSpeed * gTime;

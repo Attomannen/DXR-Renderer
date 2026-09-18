@@ -354,7 +354,11 @@ void DeferredRenderer::RenderDxrLighting()
 	// DLSS asks for its phase count to scale with the upsample ratio: the more
 	// display pixels one rendered pixel has to cover, the more distinct phases
 	// it needs before the sequence repeats. 8 at 1:1 is NVIDIA's own baseline.
-	if (myTunables.taaJitter && taaActive && !lightingChanged)
+	// DLSS, DLAA and Ray Reconstruction require the jitter; the tunable only
+	// decides the native TAA + NRD path, where it costs edge detail for no
+	// accumulation gain (its supposed history damage was the frames-in-flight
+	// constant-buffer tearing, fixed since).
+	if ((myTunables.taaJitter || dlssActive) && taaActive && !lightingChanged)
 	{
 		uint32_t phaseCount = 16u;   // native resolve: the documented 16-sample Halton
 		if (dlssActive)

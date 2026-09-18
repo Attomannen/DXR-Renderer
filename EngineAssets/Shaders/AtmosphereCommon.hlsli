@@ -12,7 +12,18 @@ cbuffer AtmosphereParams : register(b8)
     uint FogVolumeEnabled, FogDebugView; float2 FogJitter;
 	float FogSunDiskAngularRadius, FogSunDiskIntensity;
 	uint FogSunDiskEnabled; float FogPreExposed;
+	float3 FogCamRight; float FogTanHalfFovY;
+	float3 FogCamUp; float FogAspect;
+	float3 FogCamForward; float _fogPad0;
 };
+// View direction through a pixel from the camera basis. FogWorld() at a
+// depth near 1 is numerically unusable for directions: see the comment on
+// FogCamRight above.
+float3 FogViewDir(float2 uv)
+{
+	float2 ndc = float2(uv.x * 2.0f - 1.0f, 1.0f - uv.y * 2.0f);
+	return normalize(FogCamForward + FogCamRight * (ndc.x * FogAspect * FogTanHalfFovY) + FogCamUp * (ndc.y * FogTanHalfFovY));
+}
 Texture2D<float> FogDepth : register(t4);
 float3 FogWorld(float2 uv, float depth)
 {

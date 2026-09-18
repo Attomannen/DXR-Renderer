@@ -393,31 +393,10 @@ namespace Tga
 			bool specularAaEnabled = true;
 			float specularAaStrength = 0.25f;
 			bool taaEnabled = true;
-			// Sub-pixel Halton offset on the primary rays. Off = a fixed sample
-			// grid, which resolves temporally but recovers no geometric detail
-			// and starves DLSS of the phases it expects.
-			//
-			// Default OFF, which costs real image detail, because with NRD on it
-			// currently costs more than it buys. Measured on the Bistro street
-			// camera, FROZEN, reading NRD's own DIFF FRAMES validation tile
-			// (brighter = less history accumulated):
-			//     jitter off                R  2.8 G  2.5 B  8.2
-			//     jitter constant (.25,.25) R  3.1 G  3.3 B  6.1
-			//     jitter Halton             R 38.8 G 20.1 B 29.3
-			// A constant sub-pixel offset is free; it is the offset CHANGING
-			// each frame that makes NRD reject history across the whole image,
-			// which reads as everything shimmering in every upscaler mode, since
-			// they all consume NRD's output.
-			//
-			// NRD's inputs already satisfy its documented contract (non-jittered
-			// MVs and matrices, cameraJitter/Prev supplied), and its own
-			// compensation -- widening the disocclusion threshold by
-			// (1 + jitterDelta)/height -- is far too small to cover a full pixel
-			// of movement. Feeding it the geometric normal instead of the
-			// normal-mapped one as its guide recovers part of it (38.8 -> 27.4,
-			// its README warns about exactly this), so the rest is viewZ moving
-			// sub-pixel under the guide. Turn this back on once that is solved,
-			// or when running with NRD off, where it is a pure win.
+			// Sub-pixel camera jitter. Always applied under DLSS / DLAA / Ray
+			// Reconstruction, which need it. This switch governs only the native
+			// TAA + NRD path, where jitter buys no accumulation and costs about a
+			// third of the edge contrast through the denoiser, so it is off.
 			bool taaJitter = false;
 			// NVIDIA RTX path.  DLAA runs at native resolution and replaces the
 			// custom temporal resolve only when Streamline reports it available.

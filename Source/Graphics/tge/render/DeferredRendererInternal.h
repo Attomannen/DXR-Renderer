@@ -127,8 +127,14 @@ namespace
 		uint32_t width, height, steps, affectSky;
 		uint32_t volumeEnabled, debugView; float jitter[2];
 		float sunDiskAngularRadius, sunDiskIntensity; uint32_t sunDiskEnabled; float preExposed;
+		// Camera basis for view rays: FogWorld() at depth 0.99999 sits at the
+		// far plane of a 1 km non-linear depth range and its divide cancels
+		// catastrophically, quantising directions (see CloudsConstants.hlsli).
+		float camRight[3], tanHalfFovY;
+		float camUp[3], aspect;
+		float camForward[3], _pad0;
 	};
-	static_assert(sizeof(AtmosphereCb) == 192);
+	static_assert(sizeof(AtmosphereCb) == 240);
 
 	// b10. Layout must match PostFxParams in PostFxCommon.hlsli.
 	struct PostFxCb

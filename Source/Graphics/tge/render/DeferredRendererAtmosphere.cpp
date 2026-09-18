@@ -71,7 +71,11 @@ bool DeferredRenderer::RenderAtmosphere(bool beforeTemporal, bool aRenderResolut
 	const Vector2ui extent = aRenderResolution ? myDxrRenderResolution : myResolution;
 	const bool targetsValid = aRenderResolution ? myAtmosphereRender.IsValid() : myAtmosphereHdr.GetSrv().IsValid();
 	// Diagnostic images must remain unmodified. Fog has no temporal history of its own.
-	if (!t.fogEnabled || (t.fogDensity <= 0.f && t.atmosphereDebugView == 0) || !myAtmospherePs || !myAtmosphereCb.IsValid() || !targetsValid
+	// The clouds are dispatched and composited by this pass too, so fog being
+	// off must not skip it: fog is simply run at zero density.
+	const bool fogWanted = t.fogEnabled && (t.fogDensity > 0.f || t.atmosphereDebugView != 0);
+	const bool cloudsWanted = t.cloudsEnabled && myCloudsVolumeCS && (IsDxrRenderer() || IsDxrFullscreen());
+	if ((!fogWanted && !cloudsWanted) || !myAtmospherePs || !myAtmosphereCb.IsValid() || !targetsValid
 		|| (IsDxrFullscreen() && t.dxrLightingView != 0)
 		|| (myTaaWasEnabled && t.taaDebugView != 0)) return false;
 	auto* dev = DX11::Rhi(); auto& ctx = dev->GetContext();
@@ -89,7 +93,7 @@ bool DeferredRenderer::RenderAtmosphere(bool beforeTemporal, bool aRenderResolut
 	const rhi::SrvHandle volumeSrv = aRenderResolution ? myAtmosphereRender.volumeSrv : myVolumeSrv;
 	const bool rayVolume = rayDepth && myVolumeRTCS && dev->BindRaytracingSceneForCompute();
 	const ComputeShader* volume = rayDepth ? myVolumeRTCS : myVolumeCS;
-	const bool volumeActive = t.volumetricEnabled && t.volumetricStrength > 0 && t.fogDensity > 0 && volume
+	const bool volumeActive = fogWanted && t.volumetricEnabled && t.volumetricStrength > 0 && t.fogDensity > 0 && volume
 		&& t.dxrSunIntensity * (t.dxrSunTint[0] + t.dxrSunTint[1] + t.dxrSunTint[2]) > 0.f
 		&& volumeUav.IsValid() && (rayDepth ? rayVolume : (IsShadows() && myAtmosphereShadowCameraCb.IsValid()));
 	AtmosphereCb cb{};
@@ -104,7 +108,7 @@ bool DeferredRenderer::RenderAtmosphere(bool beforeTemporal, bool aRenderResolut
 		cb.sunRadiance[i]=std::max(0.f,t.dxrSunTint[i]*t.dxrSunIntensity);
 		cb.fogColor[i]=std::max(0.f,t.fogColor[i]) * SkyBrightnessScale();
 	}
-	cb.density=std::clamp(t.fogDensity,0.f,0.05f);
+	cb.density=fogWanted ? std::clamp(t.fogDensity,0.f,0.05f) : 0.f;
 	cb.heightFalloff=std::clamp(t.fogHeightFalloff,0.f,0.2f);
 	cb.baseHeight=t.fogBaseHeight; cb.startDistance=std::max(0.f,t.fogStartDistance);
 	cb.maxDistance=std::clamp(t.fogMaxDistance,1.f,1000.f);
@@ -115,6 +119,15 @@ bool DeferredRenderer::RenderAtmosphere(bool beforeTemporal, bool aRenderResolut
 	cb.steps=uint32_t(std::clamp(t.volumetricSteps,8,64));
 	cb.affectSky=t.fogAffectSky ? 1u:0u;
 	cb.volumeEnabled=volumeActive ? 1u:0u; cb.debugView=uint32_t(t.atmosphereDebugView);
+	{
+		const Vector3f r = myCameraTransform.GetRight(), u = myCameraTransform.GetUp(), f = myCameraTransform.GetForward();
+		cb.camRight[0]=r.x; cb.camRight[1]=r.y; cb.camRight[2]=r.z;
+		cb.camUp[0]=u.x; cb.camUp[1]=u.y; cb.camUp[2]=u.z;
+		cb.camForward[0]=f.x; cb.camForward[1]=f.y; cb.camForward[2]=f.z;
+		const float m22 = myViewToProj.GetDataPtr()[5];
+		cb.tanHalfFovY = m22 != 0.f ? 1.f / m22 : 1.f;
+		cb.aspect = extent.y != 0 ? (float)extent.x / (float)extent.y : 1.f;
+	}
 	cb.sunDiskAngularRadius=std::clamp(t.sunDiskAngularRadius, 0.001f, 0.08f);
 	cb.sunDiskIntensity=std::max(0.f,t.sunDiskIntensity);
 	cb.sunDiskEnabled=t.sunDiskEnabled ? 1u : 0u;

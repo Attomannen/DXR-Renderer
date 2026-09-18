@@ -80,23 +80,47 @@ void main(uint3 tid : SV_DispatchThreadID)
 	// True camera position, not the sky LUT's dead-zoned gCameraHeight.
 	float3 origin = FogCamera * 0.01f;
 
-	float invDy = abs(dir.y) > 1e-5f ? 1.0f / dir.y : 0.0f;
-	float tEnter, tExit;
-	if (abs(dir.y) > 1e-5f)
+	// Spherical shell on a planet of radius gBottomRadius (the sky LUTs' own),
+	// centred under the camera: the deck curves down and away toward the
+	// horizon instead of stretching flat to infinity. Heights along the ray
+	// use the parabolic form h(t) = h0 + t dy + t^2 (1 - dy^2) / (2 (R + h0)),
+	// exact enough for the 140 km march and free of the catastrophic
+	// cancellation the exact sqrt form has against R^2.
+	const float R = gBottomRadius;
+	const float h0 = origin.y;
+	float tEnter = 0.0f, tExit = -1.0f;
 	{
-		float t0 = (gCloudBaseAltitude - origin.y) * invDy;
-		float t1 = (gCloudTopAltitude - origin.y) * invDy;
-		tEnter = max(0.0f, min(t0, t1));
-		tExit = max(t0, t1);
+		// Ray vs the sphere at altitude h1, from altitude h0, dir.y = dy:
+		// t^2 + 2 t (R+h0) dy + (h0-h1)(2R+h0+h1) = 0
+		const float b = (R + h0) * dir.y;
+		const float cBase = (h0 - gCloudBaseAltitude) * (2.0f * R + h0 + gCloudBaseAltitude);
+		const float cTop  = (h0 - gCloudTopAltitude)  * (2.0f * R + h0 + gCloudTopAltitude);
+		const float dBase = b * b - cBase, dTop = b * b - cTop;
+		if (h0 < gCloudBaseAltitude)
+		{
+			// Below the deck: enter through the base sphere's far root, leave through the top's.
+			if (dBase >= 0.0f && dTop >= 0.0f) { tEnter = -b + sqrt(dBase); tExit = -b + sqrt(dTop); }
+		}
+		else if (h0 > gCloudTopAltitude)
+		{
+			// Above the deck: enter through the top sphere's near root; leave at
+			// the base sphere's near root if the ray dips into it, else the top's far root.
+			if (dTop >= 0.0f)
+			{
+				const float sTop = sqrt(dTop);
+				tEnter = -b - sTop;
+				if (tEnter < 0.0f) tEnter = 0.0f;
+				tExit = (dBase >= 0.0f && (-b - sqrt(dBase)) > 0.0f) ? (-b - sqrt(dBase)) : (-b + sTop);
+			}
+		}
+		else
+		{
+			// Inside the deck.
+			tEnter = 0.0f;
+			tExit = (dBase >= 0.0f && (-b - sqrt(dBase)) > 0.0f) ? (-b - sqrt(dBase)) : (dTop >= 0.0f ? -b + sqrt(dTop) : -1.0f);
+		}
 	}
-	else if (origin.y >= gCloudBaseAltitude && origin.y <= gCloudTopAltitude)
-	{
-		tEnter = 0.0f; tExit = kMaxMarchDistance;
-	}
-	else
-	{
-		tEnter = 0.0f; tExit = -1.0f;
-	}
+	const float curvatureK = (1.0f - dir.y * dir.y) / (2.0f * (R + h0));
 
 	if (tExit <= tEnter)
 	{
@@ -170,19 +194,21 @@ void main(uint3 tid : SV_DispatchThreadID)
 	float t = tEnter;
 	[loop] for (int i = 0; i < kPrimarySteps; ++i)
 	{
-		float3 samplePos = origin + dir * (t + jitter * stepLength);
+		const float ts = t + jitter * stepLength;
+		float3 samplePos = origin + dir * ts;
+		const float sampleAltitude = h0 + ts * dir.y + ts * ts * curvatureK;
 		// Pixel footprint only. Driving the mip from the step length as well
 		// read the volume at ~190 m texels through a 1.5 km layer, which from
 		// above showed as horizontal slabs.
 		float footprint = (t + 0.5f * stepLength) * pixelAngle;
-		float density = SampleCloudDensity(CloudShapeNoise, CloudDetailNoise, CloudsLinearSampler, samplePos, false, footprint);
+		float density = SampleCloudDensity(CloudShapeNoise, CloudDetailNoise, CloudsLinearSampler, samplePos, false, footprint, sampleAltitude);
 		if (density > 0.001f)
 		{
 			float sunOpticalDepth = 0.0f;
 			// March toward the sun only as far as the shell's top: the old
 			// fixed shell-thickness stride from a sample near the top ran
 			// most of its steps above the clouds, sampling nothing.
-			float toTop = gSunDirToLight.y > 0.02f ? (gCloudTopAltitude - samplePos.y) / gSunDirToLight.y : (gCloudTopAltitude - gCloudBaseAltitude);
+			float toTop = gSunDirToLight.y > 0.02f ? (gCloudTopAltitude - sampleAltitude) / gSunDirToLight.y : (gCloudTopAltitude - gCloudBaseAltitude);
 			float lightStepLen = clamp(toTop, 50.0f, 4.0f * (gCloudTopAltitude - gCloudBaseAltitude)) / max(1u, gCloudLightSteps);
 			[loop] for (uint l = 0; l < gCloudLightSteps; ++l)
 			{
@@ -190,7 +216,7 @@ void main(uint3 tid : SV_DispatchThreadID)
 				// Same footprint as the view sample: mipping the sun march by its
 				// own 250 m stride read the volume at mip 2, and every self-shadow
 				// became a rectangle (the "boxy clouds when the sun moves" bug).
-				sunOpticalDepth += SampleCloudDensity(CloudShapeNoise, CloudDetailNoise, CloudsLinearSampler, lightPos, true, footprint) * lightStepLen;
+				sunOpticalDepth += SampleCloudDensity(CloudShapeNoise, CloudDetailNoise, CloudsLinearSampler, lightPos, true, footprint, sampleAltitude + (l + 0.5f) * lightStepLen * gSunDirToLight.y) * lightStepLen;
 			}
 			// Multi-scattering approximation (Wrenninge, "Oz: The Great and
 			// Volumetric", SIGGRAPH 2010; adopted by Frostbite for clouds --
@@ -215,7 +241,7 @@ void main(uint3 tid : SV_DispatchThreadID)
 				msAtten *= 0.5f; msOd *= 0.5f; msPhaseMix = saturate(msPhaseMix + 0.5f);
 			}
 			// Ambient: the shell's underside sees far less sky than its top.
-			float3 litColor = gSunIlluminance * sunLit + ambient * lerp(0.35f, 1.0f, saturate((samplePos.y - gCloudBaseAltitude) / max(1.0f, gCloudTopAltitude - gCloudBaseAltitude)));
+			float3 litColor = gSunIlluminance * sunLit + ambient * lerp(0.35f, 1.0f, saturate((sampleAltitude - gCloudBaseAltitude) / max(1.0f, gCloudTopAltitude - gCloudBaseAltitude)));
 
 			float segExtinction = density * stepLength * kExtinction;
 			float segTransmittance = exp(-segExtinction);

@@ -55,7 +55,7 @@ float4 main(FsIn input) : SV_TARGET
 	// together. Keep it behind geometry by evaluating only sky-depth pixels.
 	if (FogSunDiskEnabled != 0u && depth >= 0.999999)
 	{
-		const float3 viewDir = normalize(FogWorld(input.uv, 0.99999) - FogCamera);
+		const float3 viewDir = FogViewDir(input.uv);
 		const float cosAngle = dot(viewDir, FogSunDirection);
 		const float innerCos = cos(FogSunDiskAngularRadius);
 		const float outerCos = cos(FogSunDiskAngularRadius * 2.5f);
