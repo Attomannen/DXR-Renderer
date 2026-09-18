@@ -1245,16 +1245,21 @@ namespace Tga::rhi::dx12
 		// Invalidate before every possible early return so a zero-instance frame
 		// cannot trace the last populated contents of this slot.
 		frame.sceneValid = false;
+		myRayInstanceCount = 0;
 		if (!instances || count == 0) return;
+		myRayInstanceCount = count;
 		struct GeometryLookupGpu
 		{
 			uint32_t vertexSrv, indexSrv, materialIndex, vertexStride;
 			uint32_t positionOffset, normalOffset, uv0Offset, tangentOffset;
-			uint32_t binormalOffset, vertexFormat, _pad1, _pad2;
+			uint32_t binormalOffset, vertexFormat, indexCount, _pad2;
 			float previousTransform[12];
 			uint32_t motionHistoryValid, _motionPad[3];
+			// Current world transform, so a compute pass can place this
+			// instance's triangles in world space without the TLAS.
+			float transform[12];
 		};
-		static_assert(sizeof(GeometryLookupGpu) == 112);
+		static_assert(sizeof(GeometryLookupGpu) == 160);
 		if (!frame.geometryLookup || frame.geometryLookupCapacity < count)
 		{
 			const uint32_t capacity = std::max(count, frame.geometryLookupCapacity ? frame.geometryLookupCapacity * 2 : 64u);
@@ -1269,7 +1274,8 @@ namespace Tga::rhi::dx12
 		for (uint32_t i = 0; i < count; ++i) {
 			lookup[i] = { instances[i].vertexSrv, instances[i].indexSrv, instances[i].materialIndex, instances[i].vertexStride,
 				instances[i].positionOffset, instances[i].normalOffset, instances[i].uv0Offset, instances[i].tangentOffset,
-				instances[i].binormalOffset, instances[i].vertexFormat, 0, 0 };
+				instances[i].binormalOffset, instances[i].vertexFormat, instances[i].indexCount, 0 };
+			memcpy(lookup[i].transform, instances[i].transform, sizeof(lookup[i].transform));
 			memcpy(lookup[i].previousTransform, instances[i].previousTransform, sizeof(lookup[i].previousTransform));
 			lookup[i].motionHistoryValid = instances[i].motionHistoryValid;
 		}

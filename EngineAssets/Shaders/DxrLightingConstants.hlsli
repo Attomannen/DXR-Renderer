@@ -76,6 +76,9 @@ DXR_CBUFFER_BEGIN(DxrLightingConstants, b0)
 	uint   gNrdEnabled;
 	float2 gJitter;                     // sample offset from the pixel centre, pixels
 	float2 gPreviousJitter;
+	// Emissive geometry sampled as area lights: RIS candidates per pixel, 0 = off.
+	uint   gEmissiveLightSamples;
+	uint   _emissivePad0, _emissivePad1, _emissivePad2;
 DXR_CBUFFER_END
 
 #ifdef __cplusplus

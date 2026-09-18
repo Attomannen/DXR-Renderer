@@ -225,6 +225,11 @@ bool DeferredRenderer::CreateDxrBrdfLut()
 	myDxrBrdfLutSrv = dev->CreateSrv(myDxrBrdfLutTex, {});
 	myDxrBrdfLutUav = dev->CreateUav(myDxrBrdfLutTex, {});
 	myDxrBrdfLutCb.Create(*dev, 16, rhi::ShaderStage::Compute, 0, "DxrBrdfLutCb");
+	// Emissive light list: one record per emitting triangle in the scene.
+	// 64 bytes: four float4-sized rows (see EmissiveLight in DxrCommon.hlsli).
+	myEmissiveLightBuffer.Create(*dev, 64, kMaxEmissiveLights, true, false, "EmissiveLights");
+	myEmissiveCountBuffer.Create(*dev, 4, 1, true, false, "EmissiveLightCount");
+	myEmissiveGatherCb.Create(*dev, 16, rhi::ShaderStage::Compute, 0, "EmissiveGatherCb");
 	if (!myDxrBrdfLutTex.IsValid() || !myDxrBrdfLutSrv.IsValid() || !myDxrBrdfLutUav.IsValid() || !myDxrBrdfLutCb.IsValid())
 		return false;
 
@@ -256,6 +261,41 @@ void DeferredRenderer::RenderDxrSunShadows()
 	ctx.Dispatch((myResolution.x+7)/8,(myResolution.y+7)/8,1); ctx.SetUnorderedAccess(0,{}); ctx.SetComputePipeline({});
 }
 
+// Build the emissive-triangle light list. Only when the ray scene changes: the
+// list is a property of the geometry, not of the frame, and walking every
+// triangle in Bistro every frame would cost far more than the lights are worth.
+void DeferredRenderer::GatherEmissiveLights(rhi::ICommandContext& ctx)
+{
+	rhi::IDevice* dev = DX11::Rhi();
+	if (!myEmissiveGatherCS || !myEmissiveLightBuffer.Srv().IsValid()) return;
+	const uint32_t instances = dev->GetRaytracingInstanceCount();
+	if (instances == 0 || instances == myEmissiveGatheredFor) return;
+	myEmissiveGatheredFor = instances;
+
+	TGA_PROFILE_SCOPE(myProfiler, "Emissive light gather");
+	struct GatherCb { uint32_t maxLights; float minPower; uint32_t pad0, pad1; }
+		cb{ kMaxEmissiveLights, 1e-6f, 0, 0 };
+	myEmissiveGatherCb.Update(ctx, cb);
+
+	rhi::ComputePipelineDesc pd{};
+	pd.cs = myEmissiveGatherCS->module;
+	ctx.SetComputePipeline(dev->CreateComputePipeline(pd));
+	myEmissiveGatherCb.Bind(ctx);
+	ctx.SetShaderResource(rhi::ShaderStage::Compute, 0, RayTracingMaterialTable::Upload(*dev, ctx));
+	ctx.SetSampler(rhi::ShaderStage::Compute, 0, myDxrMaterialSampler);
+	// The counter lives in DEFAULT memory (it is a UAV), so it cannot be written
+	// with UpdateBuffer. A float clear writes an all-zero bit pattern, which is
+	// integer zero just the same.
+	const float zero[4] = { 0.f, 0.f, 0.f, 0.f };
+	ctx.ClearUnorderedAccessFloat(myEmissiveCountBuffer.Uav(), zero);
+	ctx.SetUnorderedAccess(0, myEmissiveLightBuffer.Uav());
+	ctx.SetUnorderedAccess(1, myEmissiveCountBuffer.Uav());
+	ctx.Dispatch(instances, 1, 1);
+	ctx.SetUnorderedAccess(0, {});
+	ctx.SetUnorderedAccess(1, {});
+	ctx.SetComputePipeline({});
+}
+
 void DeferredRenderer::RenderDxrLighting()
 {
 	if (!IsDxrLighting()) return;
@@ -265,6 +305,7 @@ void DeferredRenderer::RenderDxrLighting()
 	// See GiProjectProbeRT: a begin-frame root bind can predate this frame's
 	// TLAS build, and an empty scene must never trace the previous frame.
 	if (!dev->BindRaytracingSceneForCompute()) { ResetTemporalHistory(); return; }
+	GatherEmissiveLights(ctx);
 	MeasureEnvironment(ctx);
 	EnsureExposureHistory();
 	const bool dlssActive = IsDxrRenderer() && (myTunables.dlssMode > 0 || myTunables.dlaaEnabled || myTunables.rayReconstructionEnabled) && StreamlineDLSS::Get().IsAvailable() && myTunables.dxrLightingView == 0;
@@ -357,6 +398,7 @@ void DeferredRenderer::RenderDxrLighting()
 		c.gNrdHitDistA = kNrdHitDistanceA;
 		c.gTextureFiltering = myTunables.dxrTextureFiltering ? 1u : 0u;
 		c.gReflectionSamples = uint32_t(std::clamp(myTunables.dxrReflectionSamples, 1, 8));
+		c.gEmissiveLightSamples = uint32_t(std::clamp(myTunables.emissiveLightSamples, 0, 32));
 		c.gAoSamples = uint32_t(std::clamp(myTunables.dxrAoSamples, 1, 8));
 		const Matrix4x4f worldToClip = myWorldToView * myViewToProj;
 		memcpy(c.gWorldToClip.m, worldToClip.GetDataPtr(), sizeof(c.gWorldToClip.m));
@@ -388,6 +430,8 @@ void DeferredRenderer::RenderDxrLighting()
 	ctx.SetShaderResource(rhi::ShaderStage::Compute, 4, myDxrBrdfLutSrv);
 	ctx.SetShaderResource(rhi::ShaderStage::Compute, 5, myGiVisibilityBuffer.Srv());
 	ctx.SetShaderResource(rhi::ShaderStage::Compute, 6, myExposure[myExposureSrc].GetSrv());
+	ctx.SetShaderResource(rhi::ShaderStage::Compute, 7, myEmissiveLightBuffer.Srv());
+	ctx.SetShaderResource(rhi::ShaderStage::Compute, 8, myEmissiveCountBuffer.Srv());
 	ctx.SetSampler(rhi::ShaderStage::Compute, 0, myDxrMaterialSampler);
 	myGiVolumeCb.Bind(ctx, rhi::ShaderStage::Compute, 13);
 	ctx.SetUnorderedAccess(0, myDxrLightingUav);

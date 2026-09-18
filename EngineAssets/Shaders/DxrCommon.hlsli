@@ -80,10 +80,14 @@ struct RayGeometryLookup
 	uint tangentOffset;
 	uint binormalOffset;
 	uint vertexFormat;           // 0 full Vertex, 1 compact MeshVertex
-	uint _pad1, _pad2;
+	uint indexCount;             // lets a compute pass walk this instance's triangles
+	uint _pad2;
 	float4 previousTransform0, previousTransform1, previousTransform2;
 	uint motionHistoryValid;
 	uint3 _motionPad;
+	// Current world transform (row-major 3x4), so emissive geometry can be
+	// placed in world space without going through the TLAS.
+	float4 transform0, transform1, transform2;
 };
 
 // snorm16 stored in the low 16 bits of v.
@@ -131,6 +135,20 @@ struct RayMaterialRecord
 	uint3 _recordPad;
 };
 StructuredBuffer<RayMaterialRecord> gMaterials : register(t0);
+
+// Emissive geometry as area lights, built by EmissiveLightGatherCS. Art like
+// Bistro has no punctual lights at all, so without this the lamps and signs are
+// visible but illuminate nothing.
+struct EmissiveLight
+{
+	float3 p0;   float area;
+	float3 e0;   uint  instanceId;
+	float3 e1;   uint  primitiveIndex;
+	float3 radiance;
+	float  power;
+};
+StructuredBuffer<EmissiveLight> gEmissiveLights : register(t7);
+StructuredBuffer<uint> gEmissiveLightCount : register(t8);
 
 // DeferredRenderer's own point/spot light list -- same layout as GpuLight in
 // DeferredLightingPS.hlsl (kept in sync manually; the raster and DXR paths
@@ -888,6 +906,113 @@ HitSurface DecodeHit(RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES> q, float cone
 // dxrSunIntensity, and dxrAmbientIntensity) -- exposed in the DXR ImGui
 // panel rather than baked in here, so they're one place to tune instead of
 // a shader edit + recompile.
+// Cheap per-pixel hash. Lives here rather than in the lighting shader because
+// the samplers below need it too.
+float Hash01(uint2 p, uint salt)
+{
+	uint h = p.x * 1664525u + p.y * 1013904223u + salt * 747796405u + 1013904223u;
+	h ^= h >> 16; h *= 2246822519u; h ^= h >> 13;
+	return (float)(h & 0x00ffffffu) / 16777216.0f;
+}
+
+// Resampled importance sampling over the emissive light list.
+//
+// Evaluating every emissive triangle per pixel is hopeless -- Bistro has tens of
+// thousands -- and picking one uniformly is nearly as bad, because almost all of
+// them are irrelevant to any given shading point. RIS draws a few cheap
+// candidates, weights them by how much they would actually contribute if
+// unshadowed, keeps ONE in a reservoir, and pays for a single shadow ray. The
+// reservoir's weight then makes that one sample an unbiased estimate of the
+// whole list.
+//
+// This is the sampling half of ReSTIR. Temporal and spatial reuse -- the "R" --
+// build on exactly this reservoir, so they can be added without changing the
+// shading below.
+float3 SampleEmissiveDirect(HitSurface hs, float3 viewDir, uint2 pixel, uint frameIndex, uint candidates)
+{
+	const uint lightCount = gEmissiveLightCount[0];
+	if (lightCount == 0u || candidates == 0u) return 0.0f;
+	const uint usable = min(lightCount, 65536u);
+
+	float weightSum = 0.0f;
+	float chosenTarget = 0.0f;
+	float3 chosenRadiance = 0.0f;
+	float3 chosenPoint = 0.0f;
+	uint chosenInstance = 0u, chosenPrimitive = 0u;
+
+	for (uint c = 0; c < candidates; ++c)
+	{
+		const uint seed = frameIndex * 9781u + c * 6271u;
+		const float r0 = Hash01(pixel + uint2(c * 31u, c * 17u), seed);
+		const float r1 = Hash01(pixel + uint2(c * 13u + 7u, c * 29u + 3u), seed + 1u);
+		const float r2 = Hash01(pixel + uint2(c * 53u + 11u, c * 41u + 5u), seed + 2u);
+
+		const EmissiveLight light = gEmissiveLights[min((uint)(r0 * usable), usable - 1u)];
+
+		// Uniform point on the triangle.
+		float su = r1, sv = r2;
+		if (su + sv > 1.0f) { su = 1.0f - su; sv = 1.0f - sv; }
+		const float3 lightPoint = light.p0 + light.e0 * su + light.e1 * sv;
+
+		const float3 toLight = lightPoint - hs.worldPosition;
+		const float distSq = max(dot(toLight, toLight), 1e-4f);
+		const float dist = sqrt(distSq);
+		const float3 l = toLight / dist;
+		const float nDotL = dot(hs.worldNormal, l);
+		if (nDotL <= 0.0f) continue;
+
+		// Emitter-side cosine: a lamp's triangle only lights what it faces.
+		const float3 lightNormal = normalize(cross(light.e0, light.e1));
+		const float lDotN = abs(dot(lightNormal, -l));
+		if (lDotN <= 0.0f) continue;
+
+		// Geometry term in AREA measure, without the triangle's area: the area
+		// belongs in the source pdf below, not in the target.
+		const float geometry = (nDotL * lDotN) / distSq;
+		const float target = dot(light.radiance, float3(0.2126f, 0.7152f, 0.0722f)) * geometry;
+		if (target <= 0.0f) continue;
+
+		// RIS weight is target / source pdf. Candidates are drawn uniformly over
+		// the list and uniformly over the chosen triangle, so the source pdf is
+		// 1 / (lightCount * area) -- and leaving that factor out (as a first
+		// version of this did) makes the whole term ~N times too dark, which
+		// with tens of thousands of emissive triangles is invisible rather than
+		// merely wrong.
+		const float weight = target * (float)usable * light.area;
+		weightSum += weight;
+		if (Hash01(pixel + uint2(c * 71u, c * 97u), seed + 3u) * weightSum <= weight)
+		{
+			chosenTarget = target;
+			chosenRadiance = light.radiance;
+			chosenPoint = lightPoint;
+			chosenInstance = light.instanceId;
+			chosenPrimitive = light.primitiveIndex;
+		}
+	}
+
+	if (chosenTarget <= 0.0f || weightSum <= 0.0f) return 0.0f;
+
+	// One shadow ray for the whole list.
+	const float3 toChosen = chosenPoint - hs.worldPosition;
+	const float chosenDist = length(toChosen);
+	const float3 l = toChosen / max(chosenDist, 1e-4f);
+	// Stop short of the emitter so its own triangle does not occlude it.
+	const float visibility = TraceShadowRay(hs.shadowPosition, l, chosenDist * 0.999f, hs.instanceId, hs.primitiveIndex);
+	if (visibility <= 0.0f) return 0.0f;
+
+	const float nDotL = saturate(dot(hs.worldNormal, l));
+	float3 kd;
+	const float3 specular = CookTorrance(hs.worldNormal, viewDir, l, hs.albedo, hs.roughness, hs.metalness, kd);
+	const float3 brdf = kd * hs.albedo / 3.14159265f + specular;
+
+	// The RIS estimator is f(x)/p^(x) times the mean weight. Both the geometry
+	// term and the luminance cancel out of f/p^, leaving just the BRDF and the
+	// emitter's colour -- all the geometry is carried by the accumulated weight.
+	const float3 lum = float3(0.2126f, 0.7152f, 0.0722f);
+	const float3 fOverTarget = chosenRadiance / max(dot(chosenRadiance, lum), 1e-6f);
+	return brdf * fOverTarget * (weightSum / (float)candidates) * visibility;
+}
+
 float3 ShadeDirect(HitSurface hs, float3 shadowOrigin, float3 viewDir, float3 sunDirToLight, uint lightCount,
                     float3 sunRadiance, float ambientIntensity, uint sunSamples = 4u, float sunRotation = 0.0f)
 {

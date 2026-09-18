@@ -136,6 +136,7 @@ namespace Tga::rhi
 		uint32_t vertexFormat = 0;   // 0 full Vertex, 1 compact MeshVertex (Model::VertexFormat)
 		float transform[12] = {}; // row-major 3x4, matches D3D12 instance layout
 		float previousTransform[12] = {};
+		uint32_t indexCount = 0;         // lets a compute pass walk this instance's triangles
 		uint32_t motionHistoryValid = 0; // previous rendered rigid transform exists
 		uint32_t instanceId = 0;
 		uint8_t instanceMask = 0xFF;

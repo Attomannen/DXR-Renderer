@@ -143,6 +143,7 @@ bool DeferredRenderer::Init(Vector2ui aResolution)
 		}
 		myDxrLightingCS = DX11::LoadComputeShaderDxil("Shaders/DxrLightingCS");
 		myDxrBrdfLutCS = DX11::LoadComputeShaderDxil("Shaders/DxrBrdfLutCS");
+		myEmissiveGatherCS = DX11::LoadComputeShaderDxil("Shaders/EmissiveLightGatherCS");
 		if (!myDxrLightingCS)
 		{
 			ERROR_PRINT("DeferredRenderer: DxrLightingCS failed to load; DXR lighting pass disabled");
@@ -318,6 +319,19 @@ bool DeferredRenderer::Init(Vector2ui aResolution)
 	myAtmosphereShadowCameraCb.Create(*DX11::Rhi(), 64, rhi::ShaderStage::Compute, 7, "AtmosphereShadowCameraCb");
 	if (!myAtmospherePs || !myAtmosphereCb.IsValid() || !CreateAtmosphereTargets(aResolution))
 		myTunables.fogEnabled = false;
+
+	mySkyTransmittanceLutCS = DX11::LoadComputeShader("Shaders/SkyTransmittanceLutCS");
+	mySkyMultiScatterLutCS  = DX11::LoadComputeShader("Shaders/SkyMultiScatterLutCS");
+	mySkyViewLutCS          = DX11::LoadComputeShader("Shaders/SkyViewLutCS");
+	mySkyCubemapPs          = DX11::LoadPixelShader("Shaders/SkyCubemapPS");
+	mySkyConstantsCb.Create(*DX11::Rhi(), sizeof(SkyAtmosphereConstants), rhi::ShaderStage::Compute, 11, "SkyAtmosphereConstants");
+	mySkyCubemapFaceCb.Create(*DX11::Rhi(), sizeof(SkyCubemapFaceCb), rhi::ShaderStage::Pixel, 12, "SkyCubemapFaceCb");
+	if (!mySkyTransmittanceLutCS || !mySkyMultiScatterLutCS || !mySkyViewLutCS || !mySkyCubemapPs ||
+	    !mySkyConstantsCb.IsValid() || !mySkyCubemapFaceCb.IsValid() || !CreateSkyTargets())
+	{
+		ERROR_PRINT("DeferredRenderer: procedural sky shaders/targets failed; falling back to the authored cubemap.");
+		myTunables.proceduralSkyEnabled = false;
+	}
 
 	myReady = true;
 	INFO_PRINT("DeferredRenderer: %ux%u G-buffer ready", aResolution.x, aResolution.y);

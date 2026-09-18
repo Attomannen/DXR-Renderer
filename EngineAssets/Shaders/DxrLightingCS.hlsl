@@ -135,12 +135,6 @@ float4 PreExposed(float4 radiance)
 	return float4(radiance.rgb * PreExposure(), radiance.a);
 }
 
-float Hash01(uint2 p, uint salt)
-{
-	uint h = p.x * 1664525u + p.y * 1013904223u + salt * 747796405u + 1013904223u;
-	h ^= h >> 16; h *= 2246822519u; h ^= h >> 13;
-	return (float)(h & 0x00ffffffu) / 16777216.0f;
-}
 
 float TraceAmbientOcclusion(float3 position, float3 normal, uint sourceInstanceId, uint sourcePrimitiveIndex, uint2 pixel, uint frameIndex, out float hitDistance)
 {
@@ -313,6 +307,18 @@ void main(uint3 dtid : SV_DispatchThreadID)
 	// These views bypass lighting and TAA to isolate visibility from normals.
 	if (gLightingView != 0u)
 		WriteNrdMiss(dtid.xy);
+	if (gLightingView >= 17u && gLightingView <= 18u)
+	{
+		// 17: emissive light list size, raw (not pre-exposed) so it can be read
+		//     straight off a screenshot. 18: the emissive direct term alone.
+		float3 d = 0.0f;
+		if (gLightingView == 17u) d = float3(gEmissiveLightCount[0] / 65536.0f, gEmissiveLightCount[0] > 0u ? 1.0f : 0.0f, 0.0f);
+		// viewDir is not in scope this early in main(); it is just the direction
+		// back to the camera.
+		else d = SampleEmissiveDirect(hs, normalize(gCameraOrigin - hs.worldPosition), dtid.xy, gReflectionFrameIndex, max(gEmissiveLightSamples, 1u));
+		gOutput[dtid.xy] = float4(d, 1);
+		return;
+	}
 	if (gLightingView >= 10u && gLightingView <= 14u)
 	{
 		float3 diagnostic = 0.0f;
@@ -403,6 +409,10 @@ void main(uint3 dtid : SV_DispatchThreadID)
 	{
 		color += indirectDiffuse;
 	}
+	// Emissive geometry sampled as area lights (RIS + one shadow ray). This is
+	// what makes a lamp light the pavement instead of merely glowing.
+	if (gEnableDirectLighting != 0u)
+		color += SampleEmissiveDirect(hs, viewDir, dtid.xy, gReflectionFrameIndex, gEmissiveLightSamples);
 	if (gEnableDirectLighting != 0u)
 		color += ShadeDirect(hs, shadowOrigin, viewDir, gSunDirToLight, gLightCount, gSunRadiance, gAmbientIntensity, clamp(gSunShadowSamples, 1u, 4u),
 			gSunShadowSamples < 4u ? frac(float(gReflectionFrameIndex) * 0.618034f) : 0.0f);

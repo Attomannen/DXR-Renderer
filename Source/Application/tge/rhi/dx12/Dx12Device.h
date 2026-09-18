@@ -150,6 +150,7 @@ namespace Tga::rhi::dx12
 		ICommandContext& BeginFrame() override;
 		void             EndFrame(bool vsync) override;
 		bool             IsRecording() const override { return myListOpen; }
+		uint32_t         GetRaytracingInstanceCount() const override { return myRayInstanceCount; }
 		ICommandContext& GetContext() override;
 
 		TimestampQueryHandle CreateTimestampQuery() override;
@@ -413,6 +414,7 @@ namespace Tga::rhi::dx12
 		// discard: whatever init recorded should carry through to frame 1).
 		bool myFirstFrame = true;
 		bool myListOpen = false;   // see IDevice::IsRecording
+		uint32_t myRayInstanceCount = 0;
 
 		// One-off upload command list, reused synchronously by UploadBufferData/
 		// UploadTextureData (separate from the main per-frame list/allocator).

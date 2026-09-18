@@ -111,6 +111,10 @@ namespace Tga::rhi
 		// the first BeginFrame during engine init).
 		virtual ICommandContext& GetContext() = 0;
 
+		// How many instances the current TLAS was built from. A compute pass that
+		// walks the scene's geometry dispatches one group per instance.
+		virtual uint32_t GetRaytracingInstanceCount() const { return 0; }
+
 		// Is a command list open for recording right now? DX12 closes and submits
 		// its list in EndFrame, so anything recorded after that (the post-present
 		// resize path used to) goes into a closed list -- tolerated by older

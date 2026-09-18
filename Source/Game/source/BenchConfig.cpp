@@ -132,6 +132,8 @@ void ApplyRendererOverrides(DeferredRenderer::Tunables& tun)
 	tun.shadowShowCascades = EnvInt("BENCH_SHADOW_VIZ", 0) != 0;
 	tun.bloomEnabled = EnvInt("BENCH_BLOOM", 1) != 0;
 	tun.bloomIntensity = EnvFloat("BENCH_BLOOM_INTENSITY", tun.bloomIntensity);
+	// BENCH_EMISSIVE_SAMPLES=0 turns emissive area lights off, to A/B them.
+	tun.emissiveLightSamples = std::clamp(EnvInt("BENCH_EMISSIVE_SAMPLES", tun.emissiveLightSamples), 0, 32);
 	tun.dxrLightingView = EnvInt("BENCH_LIGHTING_VIEW", 0);
 	tun.dxrTextureFiltering = EnvInt("BENCH_RAY_TEXTURE_FILTER", 1) != 0;
 	tun.fogEnabled = EnvInt("BENCH_FOG", 1) != 0;

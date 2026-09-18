@@ -362,6 +362,7 @@ static void CollectRayInstances(const Tga::ModelInstance& anInstance, const Tga:
 		desc.tangentOffset = mesh.rayGeometry.tangentOffset;
 		desc.binormalOffset = mesh.rayGeometry.binormalOffset;
 		desc.vertexFormat = (uint32_t)mesh.rayGeometry.vertexFormat;
+		desc.indexCount = mesh.numberOfIndices;
 		for (uint32_t row = 0; row < 3; ++row)
 			for (uint32_t col = 0; col < 4; ++col)
 			{

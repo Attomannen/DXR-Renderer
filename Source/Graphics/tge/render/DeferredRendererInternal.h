@@ -25,6 +25,7 @@
 #include <tge/math/Photometry.h>
 #include <tge/render/GpuProfiler.h>
 #include "../../../../EngineAssets/Shaders/DxrLightingConstants.hlsli"
+#include "../../../../EngineAssets/Shaders/SkyAtmosphereConstants.hlsli"
 #include <tge/graphics/Camera.h>
 #include <tge/shaders/ModelShader.h>
 #include <tge/render/RenderGraph.h>
@@ -161,7 +162,7 @@ namespace
 	static_assert(offsetof(DxrLightingConstants, gBrdfLutValid) == 176);
 	static_assert(offsetof(DxrLightingConstants, gWorldToClip) == 208);
 	static_assert(offsetof(DxrLightingConstants, gSpecularAaStrength) == 340);
-	static_assert(sizeof(DxrLightingConstants) == 368);
+	static_assert(sizeof(DxrLightingConstants) == 384);   // +16: emissive light sampling
 	struct alignas(16) TaaCb
 	{
 		uint32_t width, height, historyValid, debugView;
@@ -186,6 +187,18 @@ namespace
 	static_assert(offsetof(GiTraceCb, textureFiltering) == 12);
 	static_assert(offsetof(GiTraceCb, specularAaStrength) == 28);
 	static_assert(sizeof(GiTraceCb) == 80);
+
+	// b11, shared by every sky-LUT compute pass; the layout lives in the
+	// shared header so the C++ side and all four consuming shaders agree.
+	using SkyAtmosphereConstants = Tga::SkyShared::SkyAtmosphereConstants;
+	static_assert(offsetof(SkyAtmosphereConstants, gRayleighScattering) == 32);
+	static_assert(offsetof(SkyAtmosphereConstants, gOzoneAbsorption) == 80);
+	static_assert(offsetof(SkyAtmosphereConstants, gSkyViewLutWidth) == 112);
+	static_assert(sizeof(SkyAtmosphereConstants) == 128);
+
+	// b12. Layout must match SkyCubemapFaceCb in SkyCubemapPS.hlsl.
+	struct alignas(16) SkyCubemapFaceCb { uint32_t faceIndex; float pad[3]; };
+	static_assert(sizeof(SkyCubemapFaceCb) == 16);
 
 	inline Tga::Vector3f Lerp(const Tga::Vector3f& a, const Tga::Vector3f& b, float t)
 	{

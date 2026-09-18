@@ -141,6 +141,21 @@ namespace Tga
 		// the inline DXR GI pass.  It is intentionally not a replacement for the
 		// final resolve's primary IBL.
 		void SetGiEnvironment(rhi::SrvHandle aSrv, const Vector3f& aTint, bool aEnabled);
+
+		// Procedural sky (see DeferredRendererSky.cpp): recomputes the LUTs and
+		// re-renders the base sky cubemap only when the sun direction or an
+		// atmosphere tunable actually changed since the last call -- cheap to
+		// call every frame. aSunDirToLight and aSunIlluminance use the same
+		// convention as SetShadowLight / the DXR sun tunables (normalised
+		// ground->sun direction; tint*intensity radiance). aNightSkyCubeSrv is
+		// the authored cubemap blended in as stars once the sun sets (empty =
+		// none). Returns true the frame it actually regenerated (callers use
+		// that to know when to re-run GeneratePrefilteredCubemap on the result).
+		bool UpdateProceduralSky(const Vector3f& aSunDirToLight, const Vector3f& aSunIlluminance,
+		                         float aCameraHeightCm, rhi::SrvHandle aNightSkyCubeSrv);
+		rhi::SrvHandle GetProceduralSkyCubemapSrv() const { return mySkyCubemapSrv; }
+		uint32_t GetProceduralSkyCubemapResolution() const { return kSkyCubemapRes; }
+
 		// GPU profiler that sub-pass scopes report into (null: CPU timing only).
 		void SetProfiler(GpuProfiler* aProfiler) { myProfiler = aProfiler; }
 		// Average luminance (scene units) of the environment's sky hemisphere,
@@ -257,6 +272,23 @@ namespace Tga
 			float sunDiskIntensity = 24.f;        // HDR, shaped by the existing exposure/bloom path
 			int atmosphereDebugView = 0; // beauty, transmittance, sunlight
 
+			// --- procedural sky: physically based Rayleigh/Mie/ozone atmosphere
+			// (Hillaire 2020, the technique Unreal Engine ships), driven by the
+			// current sun direction. When enabled its output replaces the static
+			// fallback cubemap as the source for raster ambient/IBL, DXR's
+			// environment, and GI's environment tint -- see DeferredRendererSky.cpp.
+			bool proceduralSkyEnabled = true;
+			// Extra haze density (multiplies the Mie scattering coefficient), the
+			// same role turbidity plays in Preetham/Hosek-Wilkie: ~2 is a clear
+			// day, higher values wash out the sky toward white/grey.
+			float atmosphereTurbidity = 2.f;
+			// Diffuse reflectance of the ground plane the multi-scatter LUT bounces
+			// light off; only visibly matters near the horizon and at twilight.
+			float groundAlbedo = 0.3f;
+			// Blend strength of the authored "night sky" cubemap (stars) as the sun
+			// drops toward and below the horizon; 0 disables the night overlay.
+			float nightSkyIntensity = 1.f;
+
 			// --- post FX (bloom + exposure) ---
 			bool  bloomEnabled    = true;
 			float bloomThreshold  = 2.0f;    // HDR luma where bloom starts
@@ -318,6 +350,10 @@ namespace Tga
 			// the first dial to turn when the frame is too slow.
 			int dxrAoSamples = 2;
 			bool dxrTextureFiltering = true;
+			// Emissive geometry as area lights. RIS candidates per pixel; 0 off.
+			// Art without punctual lights (Bistro) gets all its local light from
+			// this, but it only shows where the sun is not drowning it out.
+			int emissiveLightSamples = 8;
 			int dxrReflectionSamples = 4; // stochastic GGX rays/pixel; the shader scales this
 			                             // down with roughness, so raising it is close to free
 			bool specularAaEnabled = true;
@@ -407,6 +443,7 @@ namespace Tga
 		bool CreateLocalShadowAtlas();
 		bool CreateDxrLightingTargets(Vector2ui aResolution);
 		bool CreateDxrBrdfLut();
+		void GatherEmissiveLights(rhi::ICommandContext& ctx);
 		void RenderDxrLighting();
 		void ResolveDxrLightingToHdr();
 		// One fogged-HDR target plus its half-resolution sun-shaft volume.
@@ -443,6 +480,38 @@ namespace Tga
 		// Render-resolution fog outputs; only allocated while DLSS renders the
 		// ray pass below display resolution.
 		AtmosphereTargetSet myAtmosphereRender;
+
+		// --- procedural sky (DeferredRendererSky.cpp) ---
+		static constexpr uint32_t kTransmittanceLutW = 256, kTransmittanceLutH = 64;
+		static constexpr uint32_t kMultiScatterLutRes = 32;
+		static constexpr uint32_t kSkyViewLutW = 192, kSkyViewLutH = 108;
+		static constexpr uint32_t kSkyCubemapRes = 128;
+		bool CreateSkyTargets();
+		void ReleaseSkyTargets();
+		void DispatchSkyViewLut();   // always: cheap, tracks the sun every frame it's dirty
+		void DispatchSkyFixedLuts(); // transmittance + multi-scatter: only on tunable changes
+		void RenderSkyCubemap(rhi::SrvHandle aNightSkyCubeSrv);
+		const ComputeShader* mySkyTransmittanceLutCS = nullptr;
+		const ComputeShader* mySkyMultiScatterLutCS = nullptr;
+		const ComputeShader* mySkyViewLutCS = nullptr;
+		const PixelShader* mySkyCubemapPs = nullptr;
+		rhi::ConstantBuffer mySkyConstantsCb;      // b11, shared by all sky-LUT passes
+		rhi::ConstantBuffer mySkyCubemapFaceCb;    // b12, SkyCubemapPS only
+		rhi::TextureHandle myTransmittanceLutTex; rhi::SrvHandle myTransmittanceLutSrv; rhi::UavHandle myTransmittanceLutUav;
+		rhi::TextureHandle myMultiScatterLutTex; rhi::SrvHandle myMultiScatterLutSrv; rhi::UavHandle myMultiScatterLutUav;
+		rhi::TextureHandle mySkyViewLutTex; rhi::SrvHandle mySkyViewLutSrv; rhi::UavHandle mySkyViewLutUav;
+		rhi::TextureHandle mySkyCubemapTex; rhi::SrvHandle mySkyCubemapSrv;
+		rhi::RtvHandle mySkyCubemapFaceRtv[6];
+		rhi::SamplerHandle mySkyLutSampler, mySkyCubeSampler;
+		// Dirty tracking: the fixed LUTs only depend on atmosphere tunables
+		// (turbidity/ground albedo), not the sun direction, so they're cached
+		// separately from the sky-view LUT + cubemap, which track the sun.
+		bool mySkyFixedLutsValid = false;
+		float myLastSkyTurbidity = -1.f, myLastSkyGroundAlbedo = -1.f;
+		Vector3f myLastSkySunDir{ 0.f, 0.f, 0.f };
+		Vector3f myLastSkySunIlluminance{ -1.f, -1.f, -1.f };
+		float myLastSkyCameraHeight = -1e9f;
+
 		void RenderLocalShadows(const std::function<void(const Camera&)>& aDrawShadowCasters);
 		bool CreatePostFxTargets(Vector2ui aResolution);
 		void PostFxFullscreen(const PixelShader* aPs, RenderTarget& aDst, Vector2ui aDstSize,
@@ -506,6 +575,16 @@ namespace Tga
 		rhi::SrvHandle myDlaaSrv;
 		rhi::UavHandle myDlaaUav;
 		const ComputeShader* myDxrBrdfLutCS = nullptr;
+		// Emissive geometry as area lights. Art like Bistro has no punctual
+		// lights at all -- every lamp and sign is an emissive mesh -- so without
+		// this list nothing samples them and a lamp glows without lighting
+		// anything. Rebuilt only when the ray scene changes.
+		const ComputeShader* myEmissiveGatherCS = nullptr;
+		rhi::StructuredBuffer myEmissiveLightBuffer;
+		rhi::StructuredBuffer myEmissiveCountBuffer;
+		rhi::ConstantBuffer myEmissiveGatherCb;
+		uint32_t myEmissiveGatheredFor = 0xffffffffu;   // instance count the list was built from
+		static constexpr uint32_t kMaxEmissiveLights = 65536;
 		rhi::TextureHandle myDxrBrdfLutTex;              // 256² RG16F split-sum BRDF integration
 		rhi::SrvHandle myDxrBrdfLutSrv;
 		rhi::UavHandle myDxrBrdfLutUav;
