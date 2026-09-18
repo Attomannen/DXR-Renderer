@@ -290,6 +290,26 @@ void GameWorld::Render()
 		lighting.dxrSunTint[0] = s.dirLight.color.r;
 		lighting.dxrSunTint[1] = s.dirLight.color.g;
 		lighting.dxrSunTint[2] = s.dirLight.color.b;
+
+		// Procedural sky: physically-based ambient/IBL tied to the sun (see
+		// DeferredRendererSky.cpp). Cheap to call every frame -- it only
+		// actually re-marches the LUTs/cubemap when the sun moved or an
+		// atmosphere tunable changed, and reports that back so the prefilter
+		// (shared with the reflection probe's own capture path) only reruns
+		// then too.
+		if (lighting.proceduralSkyEnabled && !sealedRoom)
+		{
+			const Vector3f dirLightForward = s.dirLight.transform.GetForward();
+			const Vector3f sunDirToLight{ -dirLightForward.x, -dirLightForward.y, -dirLightForward.z };
+			const Vector3f sunRadiance{
+				lighting.dxrSunTint[0] * lighting.dxrSunIntensity,
+				lighting.dxrSunTint[1] * lighting.dxrSunIntensity,
+				lighting.dxrSunTint[2] * lighting.dxrSunIntensity };
+			const float cameraHeightCm = s.camera.GetTransform().GetPosition().y;
+			const rhi::SrvHandle nightSkySrv = s.fallbackCube ? s.fallbackCube->GetSrv() : rhi::SrvHandle{};
+			if (s.deferred->UpdateProceduralSky(sunDirToLight, sunRadiance, cameraHeightCm, nightSkySrv))
+				s.RebuildWorldEnvironmentPrefilter();
+		}
 	}
 	gss.SetCamera(s.camera);
 	gss.SetDirectionalLight(s.dirLight);
@@ -307,7 +327,14 @@ void GameWorld::Render()
 	}
 	else
 	{
-		s.ambient.cubemap = sealedRoom ? nullptr : s.fallbackCube;
+		// Procedural sky, when on, replaces the static fallback cubemap here --
+		// the reflection probe branch above needs no change of its own, since
+		// whatever it captures already includes the currently bound sky as its
+		// own backdrop.
+		const bool useProceduralSky = !sealedRoom && s.deferred && s.deferred->GetTunables().proceduralSkyEnabled
+			&& s.worldEnvironmentPrefiltered.resource != nullptr;
+		s.ambient.cubemap = sealedRoom ? nullptr
+			: (useProceduralSky ? s.worldEnvironmentPrefiltered.resource.get() : s.fallbackCube);
 	}
 
 	// Emissive GI: prime the whole volume over the first ~1 s, then a slow trickle
@@ -320,12 +347,19 @@ void GameWorld::Render()
 			// GI capture only sees `models` + (unsealed) skybox + placed pointLights,
 			// so those are the only inputs that change the volume. Quantised so
 			// slider hover / float jitter can't retrigger a prime.
+			const auto* skyTunForHash = s.deferred ? &s.deferred->GetTunables() : nullptr;
 			const float h = std::round(
 				s.sunPitch * 2.f + s.sunYaw * 1.3f + s.SunIntensity() * 40.f
 				+ (s.SunColor().x + s.SunColor().y * 2.f + s.SunColor().z * 3.f) * 20.f
 				+ (s.ambientColor[0] + s.ambientColor[1] + s.ambientColor[2]) * s.ambientScale * 50.f
 				+ (float)s.cubemapIdx * 100.f
-				+ (sealedRoom ? 777.f : 0.f));
+				+ (sealedRoom ? 777.f : 0.f)
+				// Procedural sky tunables: the sky itself is already covered by
+				// sunPitch/sunYaw above, but turbidity/ground albedo/the on-off
+				// switch change its appearance without moving the sun.
+				+ (skyTunForHash ? (skyTunForHash->proceduralSkyEnabled ? 555.f : 0.f)
+					+ skyTunForHash->atmosphereTurbidity * 30.f
+					+ skyTunForHash->groundAlbedo * 60.f : 0.f));
 			// The physical sky scale is only known once the environment map has
 			// been measured (a frame or two in), and the probes must be traced
 			// with it; hash it separately so a tiny night sky still registers.

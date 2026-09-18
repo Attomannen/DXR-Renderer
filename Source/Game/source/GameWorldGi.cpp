@@ -9,20 +9,34 @@
 bool GameWorld::Impl::RebuildWorldEnvironmentPrefilter()
 {
 	worldEnvironmentPrefiltered.Reset();
-	if (!probePrefilter || !fallbackCube) return false;
+	if (!probePrefilter) return false;
 
-	// DX12 TextureResource intentionally does not expose its native texture
-	// descriptor. The shipped environments are 512px faces; on DX11 retain
-	// the exact source size so importance-sampling chooses the correct LOD.
+	// Procedural sky (DeferredRendererSky.cpp) takes priority when it's on and
+	// has produced a valid base cubemap; otherwise fall back to the authored
+	// fallbackCube exactly as before.
+	rhi::SrvHandle baseSrv;
 	uint32_t sourceResolution = 512;
-	if (DX11::Rhi() && DX11::Rhi()->GetBackend() == rhi::Backend::DX11 &&
-		fallbackCube->GetShaderResourceView())
+	if (deferred && deferred->GetTunables().proceduralSkyEnabled && deferred->GetProceduralSkyCubemapSrv().IsValid())
 	{
-		sourceResolution = std::max(1u, fallbackCube->CalculateTextureSize().x);
+		baseSrv = deferred->GetProceduralSkyCubemapSrv();
+		sourceResolution = deferred->GetProceduralSkyCubemapResolution();
 	}
+	else if (fallbackCube)
+	{
+		baseSrv = fallbackCube->GetSrv();
+		// DX12 TextureResource intentionally does not expose its native texture
+		// descriptor. The shipped environments are 512px faces; on DX11 retain
+		// the exact source size so importance-sampling chooses the correct LOD.
+		if (DX11::Rhi() && DX11::Rhi()->GetBackend() == rhi::Backend::DX11 &&
+			fallbackCube->GetShaderResourceView())
+		{
+			sourceResolution = std::max(1u, fallbackCube->CalculateTextureSize().x);
+		}
+	}
+	if (!baseSrv.IsValid()) return false;
 
 	if (!probePrefilter->GeneratePrefilteredCubemap(
-		fallbackCube->GetSrv(), sourceResolution, 128, 128, worldEnvironmentPrefiltered))
+		baseSrv, sourceResolution, 128, 128, worldEnvironmentPrefiltered))
 	{
 		ERROR_PRINT("environment IBL: prefilter failed; DXR will use the source cubemap.");
 		return false;
