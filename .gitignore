@@ -41,3 +41,7 @@ Dependencies/
 **/*.local/
 **/_local/
 **/_placeholder/
+
+# Engine content (textures, models, sprites, shaders). Files already tracked stay tracked;
+# new ones need git add -f.
+EngineAssets/
