@@ -5,6 +5,27 @@
 
 using namespace Tga;
 
+// Grading constants, filled identically wherever PostFxCb is built.
+//
+// Composite() builds its own copy of the buffer rather than going through
+// PostFxFullscreen, so anything added to one and not the other silently reads
+// as zero -- which is exactly how the first version of this shipped with every
+// grading slider doing nothing at all.
+static void FillGradeConstants(PostFxCb& c, const DeferredRenderer::Tunables& t)
+{
+	c.gradeEnabled = t.gradeEnabled ? 1.f : 0.f;
+	c.gradeTemperature = std::clamp(t.gradeTemperature, -1.f, 1.f);
+	c.gradeTint = std::clamp(t.gradeTint, -1.f, 1.f);
+	c.gradeContrast = std::max(0.f, t.gradeContrast);
+	c.gradeSaturation = std::max(0.f, t.gradeSaturation);
+	for (int k = 0; k < 3; ++k)
+	{
+		c.gradeLift[k]  = std::clamp(t.gradeLift[k], -1.f, 1.f);
+		c.gradeGamma[k] = std::clamp(t.gradeGamma[k], 0.1f, 4.f);
+		c.gradeGain[k]  = std::max(0.f, t.gradeGain[k]);
+	}
+}
+
 bool DeferredRenderer::CreatePostFxTargets(Vector2ui aResolution)
 {
 	Vector2ui s{ std::max(1u, aResolution.x / 2u), std::max(1u, aResolution.y / 2u) };
@@ -118,6 +139,7 @@ void DeferredRenderer::PostFxFullscreen(const PixelShader* aPs, RenderTarget& aD
 			c.mbTileSize = 16.f;
 			c.mbMaxRadius = std::max(1.f, t.mbMaxRadius);
 		}
+		FillGradeConstants(c, t);
 		c.deltaTime = std::min(Application::GetInstance()->GetDeltaTime(), 0.1f);
 		myPostFxCb.Update(DX11::Rhi()->GetContext(), c);
 	}
@@ -338,6 +360,7 @@ void DeferredRenderer::Composite()
 		c.exposureComp = t.exposureComp;
 		c.adaptRate = t.exposureSpeed;
 		c.adaptStrength = std::clamp(t.exposureAdaptStrength, 0.f, 1.f);
+		FillGradeConstants(c, t);
 		c.deltaTime = std::min(Application::GetInstance()->GetDeltaTime(), 0.1f);
 		myPostFxCb.Update(DX11::Rhi()->GetContext(), c);
 	}

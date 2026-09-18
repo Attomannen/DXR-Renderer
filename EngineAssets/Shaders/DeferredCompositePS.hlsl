@@ -3,6 +3,7 @@
 //   t1 = bloom result (half-res, linear-sampled)
 //   t2 = 1x1 adapted (metered) EV100
 #include "PostFxCommon.hlsli"
+#include "ColorGrade.hlsli"
 
 Texture2D Hdr      : register(t0);
 Texture2D Bloom    : register(t1);
@@ -33,6 +34,7 @@ float4 main(FsIn i) : SV_TARGET
 
 	// Bloom is gathered from the unexposed HDR, so expose it the same way.
 	float3 color = (hdr + bloom * gBloomIntensity) * exposure;
+	color = ApplyColorGrade(color);
 	color = Tonemap(color);
 	return float4(color, 1.0f);   // opaque: the editor shows this target through ImGui
 }

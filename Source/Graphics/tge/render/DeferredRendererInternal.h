@@ -162,8 +162,12 @@ namespace
 		float dofCocScale, dofFocusDistance, dofMaxRadius, dofEnabled;
 		float dofNear, dofFar; float pad2[2];
 		float mbEnabled, mbVelocityScale, mbTileSize, mbMaxRadius;
+
+		float gradeEnabled, gradeTemperature, gradeTint, gradeContrast;
+		float gradeSaturation; float gradePad[3];
+		float gradeLift[4], gradeGamma[4], gradeGain[4];
 	};
-	static_assert(sizeof(PostFxCb) == 112);   // +32 depth of field, +16 motion blur
+	static_assert(sizeof(PostFxCb) == 192);   // +32 depth of field, +16 motion blur, +80 grading
 
 	// Shared by all three motion-blur compute passes. Layout must match
 	// MotionBlurCb in MotionTileMaxCS / MotionNeighbourMaxCS / MotionBlurCS.

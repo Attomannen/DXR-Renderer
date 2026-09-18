@@ -461,6 +461,18 @@ namespace Tga
 			// Clamp on the trail length in display pixels. The gather is a fixed
 			// 15 taps, so past a point the trail breaks into separate ghosts.
 			float mbMaxRadius     = 48.f;
+			// --- colour grading ---
+			// Applied to exposed linear HDR just BEFORE the tonemapper, so the
+			// tone curve has the last word and highlights stay in its shoulder
+			// rather than clipping the moment contrast goes up.
+			bool  gradeEnabled     = false;
+			float gradeTemperature = 0.f;    // -1 cool .. +1 warm, 0 = no change
+			float gradeTint        = 0.f;    // -1 green .. +1 magenta
+			float gradeContrast    = 1.f;    // about a 0.18 mid-grey pivot, in log
+			float gradeSaturation  = 1.f;
+			float gradeLift[3]     = { 0.f, 0.f, 0.f };   // shadows
+			float gradeGamma[3]    = { 1.f, 1.f, 1.f };   // midtones
+			float gradeGain[3]     = { 1.f, 1.f, 1.f };   // highlights
 			int   tonemapper      = 0;       // 0 AgX, 1 AgX Punchy, 2 ACES (fitted), 3 none
 			// DXR renderer: write lighting already multiplied by the previous
 			// frame's exposure, so moonlit and sunlit scenes both stay inside

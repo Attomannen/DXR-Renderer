@@ -43,6 +43,19 @@ cbuffer PostFxParams : register(b10)
 	float  gMbVelocityScale;
 	float  gMbTileSize;
 	float  gMbMaxRadius;
+
+	// Colour grading. Applied to exposed linear HDR just before the tonemapper.
+	float  gGradeEnabled;
+	float  gGradeTemperature;
+	float  gGradeTint;
+	float  gGradeContrast;
+
+	float  gGradeSaturation;
+	float3 _gradePad;
+
+	float4 gGradeLift;
+	float4 gGradeGamma;
+	float4 gGradeGain;
 };
 
 #include "Exposure.hlsli"

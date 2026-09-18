@@ -187,6 +187,11 @@ void ApplyRendererOverrides(DeferredRenderer::Tunables& tun)
 	tun.mbEnabled = EnvInt("BENCH_MOTIONBLUR", tun.mbEnabled ? 1 : 0) != 0;
 	tun.mbShutterAngle = std::clamp(EnvFloat("BENCH_MB_SHUTTER", tun.mbShutterAngle), 0.f, 360.f);
 	tun.mbMaxRadius = std::clamp(EnvFloat("BENCH_MB_MAXRADIUS", tun.mbMaxRadius), 1.f, 128.f);
+	tun.gradeEnabled = EnvInt("BENCH_GRADE", tun.gradeEnabled ? 1 : 0) != 0;
+	tun.gradeTemperature = std::clamp(EnvFloat("BENCH_GRADE_TEMP", tun.gradeTemperature), -1.f, 1.f);
+	tun.gradeTint = std::clamp(EnvFloat("BENCH_GRADE_TINT", tun.gradeTint), -1.f, 1.f);
+	tun.gradeContrast = std::max(0.f, EnvFloat("BENCH_GRADE_CONTRAST", tun.gradeContrast));
+	tun.gradeSaturation = std::max(0.f, EnvFloat("BENCH_GRADE_SAT", tun.gradeSaturation));
 	tun.nrdCheckerboard = EnvInt("BENCH_NRD_CHECKERBOARD", tun.nrdCheckerboard ? 1 : 0) != 0;
 	tun.nrdDenoiser = std::clamp(EnvInt("BENCH_NRD_DENOISER", tun.nrdDenoiser), 0, 1);
 	tun.nrdValidation = EnvInt("BENCH_NRD_VALIDATION", 0) != 0;
