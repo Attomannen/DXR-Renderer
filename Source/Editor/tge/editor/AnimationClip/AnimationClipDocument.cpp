@@ -411,9 +411,9 @@ void AnimationClipDocument::DrawPropertyPanel()
 			ImGui::Text("Animation Source");
 			PropertyEditor::PropertyValue();
 			ImGui::Text(modifiedClip.animationSourcePath.GetString());
-			if (ImGui::Button("Set From AssetBrowser##Animation Model"))
+			if (ImGui::Button("Set From Content Browser##Animation Model"))
 			{
-				StringId newValue = Editor::GetEditor()->GetAssetBrowser().GetSelectedAsset();
+				StringId newValue = Editor::GetEditor()->GetContentBrowser().GetSelectedAsset();
 				std::string stringWithExtension = newValue.GetString();
 				std::string::size_type pos = stringWithExtension.find(".fbx");
 				if (pos != std::string::npos)
@@ -427,9 +427,9 @@ void AnimationClipDocument::DrawPropertyPanel()
 			ImGui::Text("Preview Model");
 			PropertyEditor::PropertyValue();
 			ImGui::Text(modifiedClip.previewModelPath.GetString());
-			if (ImGui::Button("Set From AssetBrowser##Preview Model"))
+			if (ImGui::Button("Set From Content Browser##Preview Model"))
 			{
-				StringId newValue = Editor::GetEditor()->GetAssetBrowser().GetSelectedAsset();
+				StringId newValue = Editor::GetEditor()->GetContentBrowser().GetSelectedAsset();
 				std::string stringWithExtension = newValue.GetString();
 				std::string::size_type pos = stringWithExtension.find(".fbx");
 				if (pos != std::string::npos)

@@ -1,4 +1,4 @@
-#include <tge/editor/Tools/AssetBrowser/AssetBrowser.h>
+#include <tge/editor/Tools/ContentBrowser/ContentBrowser.h>
 
 #include <string>
 #include <mutex>
@@ -19,12 +19,10 @@
 #include <tge/editor/Scene/SceneDocument.h>
 #include <tge/editor/Material/MaterialDocument.h>
 #include <tge/editor/Import/FbxConvert.h>
-#include <tge/editor/Tools/AssetBrowser/AssetFileCommands.h>
+#include <tge/editor/Tools/ContentBrowser/AssetFileCommands.h>
 #include <tge/editor/CommandManager/CommandManager.h>
 
 #include <IconFontHeaders/IconsLucide.h>
-
-#define HIDE_LEVELDATA_DIRECTORIES 
 
 using namespace Tga;
 
@@ -94,12 +92,10 @@ void UpdateCacheThread(FileHierarchyCache* cache)
 						{
 							continue;
 						}
-#ifdef HIDE_LEVELDATA_DIRECTORIES
 						if (item.path().extension() == ".leveldata")
 						{
 							continue;
 						}
-#endif
 
 						dirCache.directories.push_back(item.path());
 						pending.push_back(item.path());
@@ -138,20 +134,20 @@ void UpdateCacheThread(FileHierarchyCache* cache)
 	}
 }
 
-AssetBrowser::AssetBrowser()
+ContentBrowser::ContentBrowser()
 {
 	myCache = std::make_unique<FileHierarchyCache>();
 
 	myCache->cacheThread = std::thread(UpdateCacheThread, myCache.get());
 }
 
-AssetBrowser::~AssetBrowser()
+ContentBrowser::~ContentBrowser()
 {
 	myCache->shutDownUpdate = true;
 	myCache->cacheThread.join();
 }
 
-void AssetBrowser::SetPath(const std::string_view& aPath) 
+void ContentBrowser::SetPath(const std::string_view& aPath) 
 {
 	_current_path = fs::absolute(aPath);
 
@@ -159,17 +155,17 @@ void AssetBrowser::SetPath(const std::string_view& aPath)
 	myCache->root = fs::absolute(aPath);
 }
 
-StringId AssetBrowser::GetSelectedAsset()
+StringId ContentBrowser::GetSelectedAsset()
 {
 	return StringRegistry::RegisterOrGetString(mySelectedPath.string());
 }
 
-fs::path AssetBrowser::GetCurrentFolder() const
+fs::path ContentBrowser::GetCurrentFolder() const
 {
 	return _current_path;
 }
 
-void AssetBrowser::DrawFileTree(const fs::path& parentPath)
+void ContentBrowser::DrawFileTree(const fs::path& parentPath)
 {
 	auto parentIt = myCache->drawSnapshot.find(parentPath);
 
@@ -188,13 +184,11 @@ void AssetBrowser::DrawFileTree(const fs::path& parentPath)
 
 		ImGuiTreeNodeFlags node_flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_Leaf;
 
-		// @todo: if we wanted to hide leveldata-folders HIDE_LEVELDATA_DIRECTORIES shows an example of how to do it..
-#ifdef HIDE_LEVELDATA_DIRECTORIES
+		// A scene's .leveldata folder is its own storage, not something to browse.
 		if (path.extension() == ".leveldata")
 		{
 			continue;
 		}
-#endif
 
 		/////////////////////////////////////////////////////////////
 		// need to know if there are sub-folders, if not it is a leaf
@@ -240,7 +234,7 @@ void AssetBrowser::DrawFileTree(const fs::path& parentPath)
 	}
 }
 
-void AssetBrowser::Draw()
+void ContentBrowser::Draw()
 {
 	// Copy, don't hold: the previous version locked isAccessingCache for
 	// this entire function, which runs ImGui widgets, thumbnail loads and
@@ -571,7 +565,7 @@ void AssetBrowser::Draw()
 		StartFbxConversion(requestFromDialog);
 }
 
-void AssetBrowser::DrawBreadcrumbs()
+void ContentBrowser::DrawBreadcrumbs()
 {
 	const fs::path root = fs::absolute(Tga::Settings::GameAssetRoot());
 
@@ -615,12 +609,12 @@ void AssetBrowser::DrawBreadcrumbs()
 	}
 }
 
-void AssetBrowser::RequestNewLevel()
+void ContentBrowser::RequestNewLevel()
 {
 	RequestCreate(CreateKind::Level);
 }
 
-void AssetBrowser::RequestCreate(CreateKind kind)
+void ContentBrowser::RequestCreate(CreateKind kind)
 {
 	static const char* defaults[] = { "", "NewFolder", "NewTGO", "NewLevel", "NewMaterial", "NewAnimationClip" };
 	myCreateKind = kind;
@@ -629,7 +623,7 @@ void AssetBrowser::RequestCreate(CreateKind kind)
 	strncpy_s(myCreateNameBuffer, defaults[(int)kind], _TRUNCATE);
 }
 
-void AssetBrowser::DrawAddMenuItems()
+void ContentBrowser::DrawAddMenuItems()
 {
 	ImGui::TextDisabled("Create in %s", _current_path.filename().string().c_str());
 	ImGui::Separator();
@@ -641,7 +635,7 @@ void AssetBrowser::DrawAddMenuItems()
 	if (ImGui::MenuItem(ICON_LC_FILE_CODE "  Animation Clip")) RequestCreate(CreateKind::AnimationClip);
 }
 
-void AssetBrowser::DrawCreatePopup()
+void ContentBrowser::DrawCreatePopup()
 {
 	if (myOpenCreatePopup)
 	{
@@ -701,7 +695,7 @@ void AssetBrowser::DrawCreatePopup()
 	ImGui::EndPopup();
 }
 
-void AssetBrowser::ConvertFbxToTgo(const fs::path& absoluteFbxPath)
+void ContentBrowser::ConvertFbxToTgo(const fs::path& absoluteFbxPath)
 {
 	if (myConvertRunner.IsRunning())
 		return;
@@ -717,12 +711,12 @@ void AssetBrowser::ConvertFbxToTgo(const fs::path& absoluteFbxPath)
 	StartFbxConversion(request);
 }
 
-void AssetBrowser::OpenFbxConvertDialog(const fs::path& absoluteFbxPath)
+void ContentBrowser::OpenFbxConvertDialog(const fs::path& absoluteFbxPath)
 {
 	myFbxDialog.Open(absoluteFbxPath);
 }
 
-void AssetBrowser::StartFbxConversion(const FbxCookRequest& request)
+void ContentBrowser::StartFbxConversion(const FbxCookRequest& request)
 {
 	if (myConvertRunner.IsRunning())
 		return;

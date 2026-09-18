@@ -5,7 +5,7 @@
 
 #include <tge/editor/Document/Document.h>
 
-#include <tge/editor/Tools/AssetBrowser/AssetBrowser.h>
+#include <tge/editor/Tools/ContentBrowser/ContentBrowser.h>
 
 #include <imgui.h>
 #include <tge/editor/CommandManager/CommandManager.h>
@@ -71,7 +71,7 @@ public:
 	Tga::SceneObjectDefinitionManager& GetSceneObjectDefinitionManager() { return mySceneObjectDefinitionManager; }
 	Tga::EditorSceneManager& GetEditorSceneManager() { return myEditorSceneManager; }
 
-	Tga::AssetBrowser& GetAssetBrowser() { return myAssetBrowser; }
+	Tga::ContentBrowser& GetContentBrowser() { return myContentBrowser; }
 	void FocusDocument(Document* document);
 
 	// The editor always has one level open. Opening another replaces it (after the save prompt
@@ -109,7 +109,7 @@ private:
 	EditorConfiguration myEditorConfiguration;
 	std::unique_ptr<EditorGraphicsBase> myEditorGraphics;
 
-	AssetBrowser myAssetBrowser;
+	ContentBrowser myContentBrowser;
 
 	Tga::SceneObjectDefinitionManager mySceneObjectDefinitionManager;
 	Tga::EditorSceneManager myEditorSceneManager;

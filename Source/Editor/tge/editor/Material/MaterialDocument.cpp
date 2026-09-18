@@ -35,8 +35,8 @@ void MaterialDocument::Init(std::string_view aPath)
 	myName = path.stem().string();
 	myMaterial = MaterialAsset::Default();
 
-	// The Asset Browser hands Init() a path relative to the game asset root
-	// (AssetBrowser.cpp: fs::relative(absPath, root)), which a bare
+	// The Content Browser hands Init() a path relative to the game asset root
+	// (ContentBrowser.cpp: fs::relative(absPath, root)), which a bare
 	// std::ifstream can't open from the process's own working directory --
 	// every already-cooked .tgmat opened by double-click was silently
 	// failing to load (falling back to MaterialAsset::Default(), with no
@@ -335,7 +335,7 @@ void MaterialDocument::DrawProperties()
 	}
 
 	{
-	Tga::InspectorSection texturesSection("Texture Maps", true, "Drop a cooked DDS texture here, or select one in the Asset Browser and use the picker.");
+	Tga::InspectorSection texturesSection("Texture Maps", true, "Drop a cooked DDS texture here, or select one in the Content Browser and use the picker.");
 	if (texturesSection.IsOpen() && Tga::BeginInspectorPropertyTable("TextureProperties"))
 	{
 	const char* slotNames[4] = { "Base Colour (_BC)", "Normal (_N)", "ORM (_ORM)", "Emissive (_E / _FX)" };
@@ -346,10 +346,10 @@ void MaterialDocument::DrawProperties()
 		const char* assetName = myMaterial.maps[i].empty() ? "None (Texture)" : myMaterial.maps[i].c_str();
 		if (ImGui::Button(assetName, ImVec2(-58, 0)))
 		{
-			std::string sel = Editor::GetEditor()->GetAssetBrowser().GetSelectedAsset().GetString();
+			std::string sel = Editor::GetEditor()->GetContentBrowser().GetSelectedAsset().GetString();
 			if (sel.ends_with(".dds")) { myMaterial.maps[i] = sel; changed = true; }
 		}
-		if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("Assign the selected DDS from Asset Browser, or drop one here.");
+		if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("Assign the selected DDS from Content Browser, or drop one here.");
 		if (ImGui::BeginDragDropTarget())
 		{
 			if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(".dds"))
@@ -601,11 +601,11 @@ void MaterialDocument::DrawGraphNode(MaterialGraphNS::Node& node)
 		const char* label = node.texturePath.empty() ? "None (Texture)" : node.texturePath.c_str();
 		if (ImGui::Button(label))
 		{
-			std::string sel = Editor::GetEditor()->GetAssetBrowser().GetSelectedAsset().GetString();
+			std::string sel = Editor::GetEditor()->GetContentBrowser().GetSelectedAsset().GetString();
 			if (sel.ends_with(".dds")) { node.texturePath = sel; changed = true; }
 		}
 		if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-			ImGui::SetTooltip("Select a DDS in the Asset Browser, then click to assign it.");
+			ImGui::SetTooltip("Select a DDS in the Content Browser, then click to assign it.");
 		break;
 	}
 	case NodeKind::ConstantScalar:

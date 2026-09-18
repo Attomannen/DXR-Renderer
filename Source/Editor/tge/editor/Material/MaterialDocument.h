@@ -86,8 +86,8 @@ private:
 	// see DrawGraph()/DrawGraphNode()'s comment on why this can only happen
 	// once per node, not every frame.
 	std::set<MaterialGraphNS::Id> myGraphPositionedNodes;
-	// The path handed to Init() by the Asset Browser is relative to the game
-	// asset root (see AssetBrowser.cpp's fs::relative(absPath, root)), not
+	// The path handed to Init() by the Content Browser is relative to the game
+	// asset root (see ContentBrowser.cpp's fs::relative(absPath, root)), not
 	// something openable via a bare std::ifstream from the process's working
 	// directory. This is the actual absolute path Load()/Save() use instead --
 	// see MaterialDocument.cpp's Init()/Save() for why myPath itself can't be

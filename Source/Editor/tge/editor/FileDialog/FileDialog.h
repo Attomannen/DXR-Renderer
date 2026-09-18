@@ -6,18 +6,6 @@
 namespace FileDialog {
 	typedef std::function<void(const char*)> Callback;
 
-	enum class FileType
-	{
-		na,
-		tgs,
-		tgo,
-		tgac,
-		tgmat,
-		Count
-	};
-
-	extern void OpenFile(Callback callback);
-	extern void SaveFile(FileType aFileType = FileType::na, Callback callback = [](const char*) {}, const char* initialFolder = nullptr);
+	// Shows the system folder picker and calls back with the chosen folder (ending in a backslash).
 	extern void OpenProjectFolder(Callback callback);
-
 }

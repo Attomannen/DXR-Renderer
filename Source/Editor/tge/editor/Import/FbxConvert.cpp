@@ -108,7 +108,7 @@ namespace
 	// Previews are shown through the engine's TextureManager, which only resolves paths
 	// relative to <exe folder>/data, the project or the engine assets -- never an
 	// absolute path. So they live in <exe folder>/data/TGE_FbxPreview (outside the
-	// project, so no asset scan or Asset Browser ever sees them) and are referred to
+	// project, so no asset scan or Content Browser ever sees them) and are referred to
 	// as "TGE_FbxPreview/<file>".
 	constexpr const char* kPreviewSubfolder = "TGE_FbxPreview";
 	fs::path TempPreviewFolder()

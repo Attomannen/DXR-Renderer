@@ -1,4 +1,4 @@
-#include <tge/editor/Tools/AssetBrowser/AssetFileCommands.h>
+#include <tge/editor/Tools/ContentBrowser/AssetFileCommands.h>
 
 using namespace Tga;
 

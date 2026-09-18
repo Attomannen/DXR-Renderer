@@ -340,9 +340,9 @@ void Tga::DefaultObjectDefinitionEditorGraphics::DrawVisualPreviewSettings()
 				myPreviewSettings.previewPixelShaderPath = "shaders/DebugEmissiveModelShaderPS"_tgaid;
 				UpdatePreviewShaders();
 			}
-			if (ImGui::Button("Set From AssetBrowser"))
+			if (ImGui::Button("Set From Content Browser"))
 			{
-				StringId newValue = Editor::GetEditor()->GetAssetBrowser().GetSelectedAsset();
+				StringId newValue = Editor::GetEditor()->GetContentBrowser().GetSelectedAsset();
 				std::string stringWithExtension = newValue.GetString();
 				std::string::size_type pos = stringWithExtension.find(".hlsl");
 				if (pos != std::string::npos)
@@ -389,9 +389,9 @@ void Tga::DefaultObjectDefinitionEditorGraphics::DrawVisualPreviewSettings()
 			PropertyEditor::PropertyValue();
 			ImGui::Text(myPreviewSettings.cubeMapPath.GetString());
 
-			if (ImGui::Button("Set From AssetBrowser"))
+			if (ImGui::Button("Set From Content Browser"))
 			{
-				StringId newValue = Editor::GetEditor()->GetAssetBrowser().GetSelectedAsset();
+				StringId newValue = Editor::GetEditor()->GetContentBrowser().GetSelectedAsset();
 				std::string stringWithExtension = newValue.GetString();
 				std::string::size_type pos = stringWithExtension.find(".dds");
 				if (pos != std::string::npos)
@@ -1057,13 +1057,13 @@ void DefaultMaterialEditorGraphics::DrawPreviewSettings()
 	}
 
 	{
-	InspectorSection environment("Environment", true, "Assign a DDS cubemap from Asset Browser or use uniform ambient light.");
+	InspectorSection environment("Environment", true, "Assign a DDS cubemap from Content Browser or use uniform ambient light.");
 	if (environment.IsOpen() && BeginInspectorPropertyTable("MaterialPreviewEnvironment"))
 	{
 		InspectorPropertyLabel("Cube Map"); InspectorPropertyValue();
 		if (ImGui::Button(myCubeMapPath.IsEmpty() ? "None (Cubemap)" : myCubeMapPath.GetString(), ImVec2(-58.f, 0.f)))
 		{
-			std::string sel = Editor::GetEditor()->GetAssetBrowser().GetSelectedAsset().GetString();
+			std::string sel = Editor::GetEditor()->GetContentBrowser().GetSelectedAsset().GetString();
 			if (sel.ends_with(".dds"))
 			{
 				myCubeMapPath = StringRegistry::RegisterOrGetString(sel);

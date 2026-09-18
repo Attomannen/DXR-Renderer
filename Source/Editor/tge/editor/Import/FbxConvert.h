@@ -111,7 +111,7 @@ namespace Tga
 	};
 
 	// The "Convert FBX" dialog: settings for this model, a normal-map preview, and
-	// Convert / Cancel. Opened from the Asset Browser.
+	// Convert / Cancel. Opened from the Content Browser.
 	class FbxConvertDialog
 	{
 	public:

@@ -11,11 +11,11 @@ namespace Tga
 {
 	struct FileHierarchyCache;
 
-	class AssetBrowser : public ToolsInterface 
+	class ContentBrowser : public ToolsInterface 
 	{
 	public:
-		AssetBrowser();
-		~AssetBrowser();
+		ContentBrowser();
+		~ContentBrowser();
 
 		virtual void Draw();
 		void SetPath(const std::string_view &);

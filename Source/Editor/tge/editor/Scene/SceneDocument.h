@@ -5,7 +5,7 @@
 
 #include <tge/editor/Tools/Navmesh/NavmeshCreationTool.h>
 #include <tge/editor/Tools/SceneObjectProperties/SceneObjectProperties.h>
-#include <tge/editor/Tools/AssetBrowser/AssetBrowser.h>
+#include <tge/editor/Tools/ContentBrowser/ContentBrowser.h>
 #include <tge/editor/Tools/SceneObjectList/SceneObjectList.h>
 #include <tge/editor/Tools/Viewport/Viewport.h>
 #include <tge/editor/Tools/ViewportGrid/ViewportGrid.h>

@@ -62,9 +62,9 @@ static std::string locTextureCookStatus;
 
 using namespace Tga;
 
-StringId GetSelectionFromAssetBrowser()
+StringId GetSelectionFromContentBrowser()
 {
-	return Editor::GetEditor()->GetAssetBrowser().GetSelectedAsset();
+	return Editor::GetEditor()->GetContentBrowser().GetSelectedAsset();
 }
 
 Editor* locEditor;
@@ -141,7 +141,7 @@ void Tga::Editor::Init(const EditorConfiguration& aEditorConfiguration, std::uni
 
 	RegisterExampleNodes();
 
-	RegisterAssetBrowserGetSelectionFunction(GetSelectionFromAssetBrowser);
+	RegisterContentBrowserGetSelectionFunction(GetSelectionFromContentBrowser);
 
 	// Defaults to setting the game project to default, perhaps not optimal, and could lead to problems if we move things around
 	// but I believe that right now the use-case is that we are going to couple the editor to the game-project. And at this time
@@ -149,7 +149,7 @@ void Tga::Editor::Init(const EditorConfiguration& aEditorConfiguration, std::uni
 	
 	const std::string& rootPath = Settings::GameAssetRoot();
 
-	myAssetBrowser.SetPath(rootPath);
+	myContentBrowser.SetPath(rootPath);
 	mySceneObjectDefinitionManager.Init(rootPath);
 
 	EditorSettings::Load();
@@ -371,7 +371,7 @@ std::string Tga::Editor::CreateNewAnimationClip(const fs::path& path)
 static void OpenTextureImporterFromSelection()
 {
 	const std::filesystem::path root = Tga::Settings::GameAssetRoot();
-	std::filesystem::path selected = Editor::GetEditor()->GetAssetBrowser().GetSelectedAsset().GetString();
+	std::filesystem::path selected = Editor::GetEditor()->GetContentBrowser().GetSelectedAsset().GetString();
 	std::filesystem::path folder = root / selected;
 	if (!std::filesystem::is_directory(folder)) folder = folder.parent_path();
 	if (folder.empty()) folder = root;
@@ -537,7 +537,7 @@ void Tga::Editor::Update(float aTimeDelta, InputManager& inputManager)
 						}
 						ImGui::Separator();
 						if (ImGui::MenuItem("New Level..."))
-							myAssetBrowser.RequestNewLevel();
+							myContentBrowser.RequestNewLevel();
 						if (ImGui::BeginMenu("Open Level"))
 						{
 							const fs::path root = fs::absolute(Settings::GameAssetRoot());
@@ -592,45 +592,27 @@ void Tga::Editor::Update(float aTimeDelta, InputManager& inputManager)
 							EditorSettings::Get().viewportCollisionVisible = myIsCollisionVisible;
 							EditorSettings::Save();
 						}
-						ImGui::Separator();
+						ImGui::EndMenu();
+					}
+					if (ImGui::BeginMenu("Window"))
+					{
+						// Rebuilds the default arrangement of the panels on the next frame.
 						if (ImGui::MenuItem("Reset Layout"))
-						{
-							// The normal path only (re)builds the hardcoded default
-							// layout once per process (myIsDockingInitialized);
-							// clearing that flag makes it run again next frame,
-							// discarding whatever panel arrangement imgui.ini has
-							// saved -- the same rebuild path Init() would take on
-							// a fresh install with no saved layout at all.
 							myIsDockingInitialized = false;
-						}
 						ImGui::EndMenu();
 					}
 					if (ImGui::BeginMenu("Tools"))
 					{
 						if (ImGui::MenuItem("Texture Importer..."))
 							OpenTextureImporterFromSelection();
-						ImGui::EndMenu();
-					}
-					// @todo: need to change this if we want it working, we need a document to get active scene
-					//if (ImGui::BeginMenu("Run"))
-					//{
-					//	if (ImGui::MenuItem("Run game"))
-					//	{
-					//		ProjectRunControls::ExecuteRun(/* expects a document to know what to run */);
-					//	}
-					//	ImGui::EndMenu();
-					//}
-
-
-					if (ImGui::BeginMenu("ImGui"))
-					{
-						if (ImGui::MenuItem("Show Demo"))
+						ImGui::Separator();
+						if (ImGui::BeginMenu("Dear ImGui"))
 						{
-							locImGuiDemoOpen = true;
-						}
-						if (ImGui::MenuItem("Show Style Edit"))
-						{
-							locImGuiStyleEditorOpen = true;
+							if (ImGui::MenuItem("Demo"))
+								locImGuiDemoOpen = true;
+							if (ImGui::MenuItem("Style Editor"))
+								locImGuiStyleEditorOpen = true;
+							ImGui::EndMenu();
 						}
 						ImGui::EndMenu();
 					}
@@ -641,12 +623,9 @@ void Tga::Editor::Update(float aTimeDelta, InputManager& inputManager)
 		}
 		ImGui::End();
 		
-		myAssetBrowser.Draw();
+		myContentBrowser.Draw();
 		
 		{
-			/*if (FileDialog::IsActive()) {
-				FileDialog::Draw();
-			}*/
 			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
 			ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1);
 

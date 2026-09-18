@@ -8,7 +8,7 @@
 
 using namespace Tga;
 
-StringId(*locAssetBrowserGetSelectionFunction)();
+StringId(*locContentBrowserGetSelectionFunction)();
 GetModelMeshInfoFunction locGetModelMeshInfoFunction = nullptr;
 GetModelCollisionInfoFunction locGetModelCollisionInfoFunction = nullptr;
 
@@ -20,9 +20,9 @@ namespace
 
 namespace Tga
 {
-	void RegisterAssetBrowserGetSelectionFunction(StringId(*aGetFunction)())
+	void RegisterContentBrowserGetSelectionFunction(StringId(*aGetFunction)())
 	{
-		locAssetBrowserGetSelectionFunction = aGetFunction;
+		locContentBrowserGetSelectionFunction = aGetFunction;
 	};
 
 	void RegisterGetModelMeshInfoFunction(GetModelMeshInfoFunction aGetFunction)
@@ -190,12 +190,12 @@ namespace Tga
 		PropertyEditor::PropertyLabel(true);
 		PropertyEditor::PropertyValue(true);
 
-		if (locAssetBrowserGetSelectionFunction)
+		if (locContentBrowserGetSelectionFunction)
 		{
-			if (ImGui::Button("Set From AssetBrowser"))
+			if (ImGui::Button("Set From Content Browser"))
 			{
 				// todo: validation
-				StringId newValue = locAssetBrowserGetSelectionFunction();
+				StringId newValue = locContentBrowserGetSelectionFunction();
 				if (newValue != model.path)
 				{
 					makeEditable();
@@ -246,12 +246,12 @@ namespace Tga
 					PropertyEditor::PropertyLabel(true);
 					PropertyEditor::PropertyValue(true);
 
-					if (locAssetBrowserGetSelectionFunction)
+					if (locContentBrowserGetSelectionFunction)
 					{
-						if (ImGui::Button("Set From AssetBrowser"))
+						if (ImGui::Button("Set From Content Browser"))
 						{
 							// todo: validation
-							StringId newValue = locAssetBrowserGetSelectionFunction();
+							StringId newValue = locContentBrowserGetSelectionFunction();
 							if (newValue != model.materials[meshIndex] && newValue.GetString()[0] != '\0' && std::filesystem::path(newValue.GetString()).extension() == ".tgmat")
 							{
 								makeEditable();
@@ -776,12 +776,12 @@ namespace Tga
 				PropertyEditor::PropertyLabel(true);
 				PropertyEditor::PropertyValue(true);
 
-				if (locAssetBrowserGetSelectionFunction)
+				if (locContentBrowserGetSelectionFunction)
 				{
-					if (ImGui::Button("Set From AssetBrowser"))
+					if (ImGui::Button("Set From Content Browser"))
 					{
 						// todo: validation
-						StringId newValue = locAssetBrowserGetSelectionFunction();
+						StringId newValue = locContentBrowserGetSelectionFunction();
 						if (newValue != sprite.textures[textureIndex])
 						{
 							makeEditable();
@@ -927,12 +927,12 @@ namespace Tga
 		PropertyEditor::PropertyLabel(true);
 		PropertyEditor::PropertyValue(true);
 
-		if (locAssetBrowserGetSelectionFunction)
+		if (locContentBrowserGetSelectionFunction)
 		{
-			if (ImGui::Button("Set From AssetBrowser"))
+			if (ImGui::Button("Set From Content Browser"))
 			{
 				// todo: validation
-				StringId newValue = locAssetBrowserGetSelectionFunction();
+				StringId newValue = locContentBrowserGetSelectionFunction();
 				if (newValue != sceneReference.path)
 				{
 					makeEditable();
@@ -1033,12 +1033,12 @@ namespace Tga
 		PropertyEditor::PropertyLabel(true);
 		PropertyEditor::PropertyValue(true);
 
-		if (locAssetBrowserGetSelectionFunction)
+		if (locContentBrowserGetSelectionFunction)
 		{
-			if (ImGui::Button("Set From AssetBrowser"))
+			if (ImGui::Button("Set From Content Browser"))
 			{
 				// todo: validation
-				StringId newValue = locAssetBrowserGetSelectionFunction();
+				StringId newValue = locContentBrowserGetSelectionFunction();
 				if (newValue != clipReference.path)
 				{
 					makeEditable();

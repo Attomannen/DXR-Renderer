@@ -13,7 +13,7 @@ namespace Tga
 	// so Undo can move it back -- keeps the file's relative path structure
 	// underneath it (".trash/Textures/Foo.dds", not just "Foo.dds") so two
 	// deleted files that happen to share a filename in different folders
-	// don't collide. AssetBrowser's background scan thread excludes this
+	// don't collide. ContentBrowser's background scan thread excludes this
 	// folder by name, the same way it already excludes ".leveldata".
 	constexpr const char* kAssetTrashFolderName = ".trash";
 

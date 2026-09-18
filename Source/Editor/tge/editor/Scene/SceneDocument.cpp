@@ -62,10 +62,10 @@ void SceneDocument::Init(std::string_view path)
 
 	myScene = Editor::GetEditor()->GetEditorSceneManager().Get(path);
 	// EditorSceneManager::Get() returns null when the .tgs doesn't exist on
-	// disk (deleted/moved externally after the Asset Browser listed it, or a
+	// disk (deleted/moved externally after the Content Browser listed it, or a
 	// stale path from elsewhere) -- myScene->GetName() a few lines down would
 	// otherwise be a null deref. Match ObjectDefinitionDocument::Init()'s own
-	// convention (throw, let the caller's try/catch -- see AssetBrowser's
+	// convention (throw, let the caller's try/catch -- see ContentBrowser's
 	// .tgs double-click handler -- turn it into a status message).
 	if (!myScene)
 		throw std::runtime_error("Could not load scene: " + std::string(path));
@@ -698,9 +698,9 @@ void SceneDocument::HandleDrop()
 					for (const StringId& material : sceneModel.materials)
 						if (!material.IsEmpty()) { hasMaterials = true; break; }
 				}
-				AssetBrowser& assetBrowser = Editor::GetEditor()->GetAssetBrowser();
-				if (!hasMaterials && !assetBrowser.IsConverting())
-					assetBrowser.ConvertFbxToTgo(fs::absolute(fs::path(Settings::GameAssetRoot()) / modelPath));
+				ContentBrowser& contentBrowser = Editor::GetEditor()->GetContentBrowser();
+				if (!hasMaterials && !contentBrowser.IsConverting())
+					contentBrowser.ConvertFbxToTgo(fs::absolute(fs::path(Settings::GameAssetRoot()) / modelPath));
 			}
 			placePrefab(prefabPath.string(), fs::path(modelPath).stem().string());
 			}

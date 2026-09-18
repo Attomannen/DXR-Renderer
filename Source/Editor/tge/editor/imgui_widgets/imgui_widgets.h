@@ -62,7 +62,7 @@ namespace Tga
 	// when textureID is 0) with the filename wrapped below, sized to
 	// `aTileSize`. Unlike AssetListItem (a full-row Selectable, see
 	// imgui_widgets.cpp), this is a fixed-width group so callers can lay out
-	// several per row with ImGui::SameLine() -- see AssetBrowser.cpp's grid
+	// several per row with ImGui::SameLine() -- see ContentBrowser.cpp's grid
 	// view. Same click/double-click/drag-drop semantics as AssetListItem.
 	extern AssetListItemStatus AssetGridItem(fs::path anAssetPath, bool isSelected, std::string_view anIcon, ImTextureID textureID, float aTileSize = 96.f);
 }
