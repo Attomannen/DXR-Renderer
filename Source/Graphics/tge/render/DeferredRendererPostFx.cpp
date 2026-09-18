@@ -48,6 +48,7 @@ void DeferredRenderer::PostFxFullscreen(const PixelShader* aPs, RenderTarget& aD
 		c.hdrPreExposed = PreExposureActive() ? 1u : 0u;
 		c.exposureComp = t.exposureComp;
 		c.adaptRate = t.exposureSpeed;
+		c.adaptStrength = std::clamp(t.exposureAdaptStrength, 0.f, 1.f);
 		c.deltaTime = std::min(Application::GetInstance()->GetDeltaTime(), 0.1f);
 		myPostFxCb.Update(DX11::Rhi()->GetContext(), c);
 	}
@@ -165,6 +166,7 @@ void DeferredRenderer::Composite()
 		c.hdrPreExposed = PreExposureActive() ? 1u : 0u;
 		c.exposureComp = t.exposureComp;
 		c.adaptRate = t.exposureSpeed;
+		c.adaptStrength = std::clamp(t.exposureAdaptStrength, 0.f, 1.f);
 		c.deltaTime = std::min(Application::GetInstance()->GetDeltaTime(), 0.1f);
 		myPostFxCb.Update(DX11::Rhi()->GetContext(), c);
 	}

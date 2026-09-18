@@ -23,7 +23,7 @@ cbuffer PostFxParams : register(b10)
 
 	uint   gTonemapper;      // 0 = AgX, 1 = AgX Punchy, 2 = ACES (fitted), 3 = none
 	uint   gHdrPreExposed;   // 1 = the HDR input carries the previous frame's exposure
-	float  _postFxPad1;
+	float  gAdaptStrength;   // 0 = fixed camera, 1 = fully compensating meter
 	float  _postFxPad2;
 };
 

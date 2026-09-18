@@ -14,7 +14,8 @@ cbuffer AtmosphereParams : register(b8)
 	uint FogSunDiskEnabled; float FogPreExposed;
 	float3 FogCamRight; float FogTanHalfFovY;
 	float3 FogCamUp; float FogAspect;
-	float3 FogCamForward; float _fogPad0;
+	float3 FogCamForward; float FogTime;   // seconds, wrapped; drives star scintillation
+	float FogStarIntensity, FogStarDensity, FogStarTwinkle, FogStarsEnabled;
 };
 // View direction through a pixel from the camera basis. FogWorld() at a
 // depth near 1 is numerically unusable for directions: see the comment on

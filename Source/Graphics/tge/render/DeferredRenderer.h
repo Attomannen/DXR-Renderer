@@ -296,6 +296,19 @@ namespace Tga
 			// upsampled with a depth-aware filter, so it does not need the
 			// resolution its cost implies.
 			int volumetricResolution = 2;
+			// --- procedural stars (StarField.hlsli) ---
+			bool  starsEnabled   = true;
+			// Screen brightness of the field. Absolute, not metered, which is
+			// why the frame mean rises again once the exposure meter bottoms
+			// out at night -- worth tying to exposure eventually.
+			float starIntensity  = 22.f;
+			// Cells per unit across a cube face. Higher is more stars and
+			// smaller ones. Most cells hold nothing; see StarField.hlsli.
+			float starDensity    = 55.f;
+			// Scintillation amount, 0 disables. Kept shallow by default: a fast
+			// or deep twinkle fights the temporal resolve and reads as noise.
+			float starTwinkle    = 1.f;
+
 			bool sunDiskEnabled = true;
 			// Radians. The real sun's angular RADIUS is ~0.267 degrees (its full
 			// disk, i.e. diameter, is the commonly-quoted ~0.53 degrees / 32
@@ -326,7 +339,16 @@ namespace Tga
 			// 1.0 it was washing the correctly-dark physical sky back out to a
 			// bright white wall at night. 1.0 still means "this cubemap at its own
 			// authored brightness", for anyone who swaps in an actual night asset.
-			float nightSkyIntensity = 0.05f;
+			// Zero. This blends the scene's FALLBACK cubemap in as the night sky,
+			// and in practice that is whatever daylight HDRI the scene uses for
+			// its environment -- a lit meadow, in the test scene. Even at 0.05
+			// it swamped the atmosphere: disabling just this blend took the
+			// night sky from 65.4 to 3.7 and the whole frame from 73 to 29.
+			// The physical sky goes properly dark on its own, and the stars are
+			// procedural now (StarField.hlsli), so there is nothing left for
+			// this to provide. Point it at an actual night HDRI and raise it if
+			// you want one.
+			float nightSkyIntensity = 0.0f;
 
 			// --- volumetric clouds (DeferredRendererClouds.cpp) ---
 			bool  cloudsEnabled = true;
@@ -383,14 +405,29 @@ namespace Tga
 			// Physical camera (see Photometry.h). Manual exposure comes from
 			// aperture/shutter/ISO; auto meters the scene like a reflected-light
 			// meter. Defaults are the "sunny 16" rule, EV100 ~15.
-			bool  exposureAuto    = false;          // averaging meters over-brighten mostly shaded daylight views
+			// On. A day-night cycle spans roughly 100 000 lux down to 0.001,
+			// about 27 stops, and no fixed exposure covers that -- either the
+			// camera adapts or night is lifted artificially and never gets
+			// dark. The old note here was that an averaging meter over-brightens
+			// mostly shaded daylight views, which is true and is what
+			// exposureComp is for; it is not a reason to meter nothing at all.
+			bool  exposureAuto    = true;
 			float cameraAperture  = 16.0f;          // f-number
 			float cameraShutter   = 1.0f / 125.0f;  // seconds
 			float cameraIso       = 100.0f;
-			float autoEvMin       = -2.0f;          // metered EV100 clamp
+			// Metered EV100 clamp. The floor was -2, which is a dim indoor room:
+			// it put a hard bottom on the cycle well above anything resembling
+			// night, so the camera stopped adapting and the image stayed lifted.
+			// A moonless overcast night is around -6.
+			float autoEvMin       = -6.0f;
 			float autoEvMax       = 17.0f;
 			float exposureSpeed   = 2.5f;    // adaptation rate (per second)
 			float exposureComp    = 0.0f;    // EV compensation (stops, +1 = brighter)
+			// How much of the metered change the camera actually applies, 0..1.
+			// 1 is a normal fully compensating meter, which makes every scene
+			// the same screen brightness and so cancels a day-night cycle out
+			// entirely. 0 is a fixed camera. See ExposureAdaptPS.hlsl.
+			float exposureAdaptStrength = 0.25f;
 			int   tonemapper      = 0;       // 0 AgX, 1 AgX Punchy, 2 ACES (fitted), 3 none
 			// DXR renderer: write lighting already multiplied by the previous
 			// frame's exposure, so moonlit and sunlit scenes both stay inside
@@ -856,6 +893,14 @@ namespace Tga
 		Vector3f EnvironmentTint() const;        // tint for every environment lookup
 		float SkyDisplayScale() const;           // primary-ray sky scale
 		float SkyBrightnessScale() const;        // physical sky relative to a clear day
+		// 1 with the sun well up, 0 once it is below the horizon. Direct sunlight
+		// does not simply stop at zero elevation -- the disc is half a degree
+		// across and refraction lifts it a little further -- but it is gone
+		// within a couple of degrees, and nothing should be lit by a sun that
+		// has set. Sun radiance was a constant before this, so at 30 degrees
+		// below the horizon the clouds were still lit white and every surface
+		// still had a full sun term.
+		float SunElevationFactor() const;
 		bool PreExposureActive() const;
 		void EnsureExposureHistory();
 

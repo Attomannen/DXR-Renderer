@@ -62,6 +62,9 @@ bool DeferredRenderer::CreateVolumeTexture(Vector2ui aTargetSize, const char* aN
 bool DeferredRenderer::RenderAtmosphere(bool beforeTemporal, bool aRenderResolution)
 {
 	const auto& t = myTunables;
+	// The clouds and the fog shafts must see the same sun the surfaces do, or
+	// the deck stays lit white after sunset while the ground below it is dark.
+	const float sunUp = SunElevationFactor();
 	// Two output domains. Display resolution writes into myAtmosphereHdr and
 	// swaps it into myHdr, as before. Render resolution (DLSS upscaling) writes
 	// into myAtmosphereRender, whose image then becomes DLSS's colour input;
@@ -105,8 +108,13 @@ bool DeferredRenderer::RenderAtmosphere(bool beforeTemporal, bool aRenderResolut
 	cb.sunDirection[1]=-myShadowLightDir.y/sunLength;
 	cb.sunDirection[2]=-myShadowLightDir.z/sunLength;
 	for (int i=0;i<3;++i) {
-		cb.sunRadiance[i]=std::max(0.f,t.dxrSunTint[i]*t.dxrSunIntensity);
-		cb.fogColor[i]=std::max(0.f,t.fogColor[i]) * SkyBrightnessScale();
+		cb.sunRadiance[i]=std::max(0.f,t.dxrSunTint[i]*t.dxrSunIntensity)*sunUp;
+		// Fog is lit by the sky, so its colour has to follow the sun. As a
+		// constant it was a slab of daylight-coloured haze sitting across the
+		// bottom of every night frame, which no amount of exposure work can
+		// fix because it is emitting the same light at midnight as at noon.
+		// The floor matches the ambient term's, for starlight and airglow.
+		cb.fogColor[i]=std::max(0.f,t.fogColor[i]) * SkyBrightnessScale() * (0.03f + 0.97f * sunUp);
 	}
 	cb.density=fogWanted ? std::clamp(t.fogDensity,0.f,0.05f) : 0.f;
 	cb.heightFalloff=std::clamp(t.fogHeightFalloff,0.f,0.2f);
@@ -127,6 +135,11 @@ bool DeferredRenderer::RenderAtmosphere(bool beforeTemporal, bool aRenderResolut
 		const float m22 = myViewToProj.GetDataPtr()[5];
 		cb.tanHalfFovY = m22 != 0.f ? 1.f / m22 : 1.f;
 		cb.aspect = extent.y != 0 ? (float)extent.x / (float)extent.y : 1.f;
+		cb.time = std::fmod(Application::GetInstance()->GetTotalTime(), 100000.f);
+		cb.starIntensity = std::max(0.f, t.starIntensity);
+		cb.starDensity = std::clamp(t.starDensity, 4.f, 400.f);
+		cb.starTwinkle = std::clamp(t.starTwinkle, 0.f, 1.f);
+		cb.starsEnabled = t.starsEnabled ? 1.f : 0.f;
 	}
 	cb.sunDiskAngularRadius=std::clamp(t.sunDiskAngularRadius, 0.001f, 0.08f);
 	cb.sunDiskIntensity=std::max(0.f,t.sunDiskIntensity);

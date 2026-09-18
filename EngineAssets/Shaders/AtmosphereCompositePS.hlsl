@@ -9,6 +9,7 @@ Texture2D<float> FogPreviousEv100 : register(t5);
 // that -- clouds are the far background layer, fog is near the camera.
 Texture2D<float4> FogClouds : register(t6);
 #include "Exposure.hlsli"
+#include "StarField.hlsli"
 float4 main(FsIn input) : SV_TARGET
 {
     int2 p = min(int2(input.position.xy + FogJitter), int2(FogWidth - 1, FogHeight - 1));
@@ -57,9 +58,28 @@ float4 main(FsIn input) : SV_TARGET
     }
     if (FogDebugView == 1) return float4(transmittance.xxx,1);
     if (FogDebugView == 2) return float4(sunlight,1);
+    // The DXR HDR carries pre-exposure; bring this pass's own light to match.
+    // Declared before the sky branch because the stars there need it too.
+    const float preExposure = FogPreExposed > 0.5f ? PreExposureFromEv100(FogPreviousEv100.Load(int3(0,0,0))) : 1.0f;
     float3 hdr = FogHdr.SampleLevel(FogLinear,input.uv,0).rgb;
     if (depth >= 0.999999f)
     {
+        // Stars, added BEFORE the clouds so a cloud occludes what is behind it,
+        // and before fog so the horizon haze washes them out as it really does.
+        //
+        // Faded by the same curve the night-sky cubemap uses, so they come up
+        // as the sun drops rather than popping against a still-lit blue sky,
+        // and attenuated toward the horizon where the air path is longest --
+        // that extinction is why you lose the faint ones near the ground long
+        // before the sky itself looks dark.
+        const float3 starDir = FogViewDir(input.uv);
+        const float nightBlend = saturate(-FogSunDirection.y * 4.0f + 0.15f);
+        if (FogStarsEnabled > 0.5f && nightBlend > 0.0f && starDir.y > -0.05f)
+        {
+            const float horizonExtinction = smoothstep(-0.05f, 0.18f, starDir.y);
+            hdr += StarField(starDir, FogSunDirection, FogStarDensity, FogTime, FogStarTwinkle)
+                 * (nightBlend * horizonExtinction * FogStarIntensity * preExposure);
+        }
         // Bilinear upsample from the clouds' own (reduced) resolution -- point
         // sampling the reduced target with a linear filter already does this;
         // FogClouds is written at whatever size CreateVolumeTexture chose, and
@@ -67,8 +87,6 @@ float4 main(FsIn input) : SV_TARGET
         float4 clouds = FogClouds.SampleLevel(FogLinear, input.uv, 0);
         hdr = hdr * clouds.a + clouds.rgb;
     }
-    // The DXR HDR carries pre-exposure; bring this pass's own light to match.
-    const float preExposure = FogPreExposed > 0.5f ? PreExposureFromEv100(FogPreviousEv100.Load(int3(0,0,0))) : 1.0f;
     sunlight *= preExposure;
 	// The disk is a directional sky feature, not a screen-space sprite. It
 	// shares FogSunDirection with direct lighting and the shadowed volume march,

@@ -14,7 +14,12 @@ project "Physics"
 	objdir ("%{dirs.temp}/%{prj.name}/%{cfg.buildcfg}")
 
 	includedirs { "." }
-	externalincludedirs { dirs.jolt }
+	-- includedirs, not externalincludedirs. Premake emits the latter as
+	-- MSBuild's ExternalIncludePath, which only reaches the compiler as
+	-- /external:I -- the ordinary include search never sees it, so
+	-- #include <Jolt/...> is not found. Jolt's own project uses includedirs
+	-- for the same path and builds fine.
+	includedirs { dirs.jolt }
 	links { "Jolt" }
 	libdirs { dirs.lib }
 

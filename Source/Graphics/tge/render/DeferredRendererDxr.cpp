@@ -31,6 +31,16 @@ float DeferredRenderer::SkyDisplayScale() const
 	return Photometry::NitsToUnits(myTunables.skyLuminanceNits) / myEnvAverageLuminance;
 }
 
+float DeferredRenderer::SunElevationFactor() const
+{
+	const float len = myShadowLightDir.Length();
+	if (len <= 1e-6f) return 0.f;
+	const float sunUp = -myShadowLightDir.y / len;   // +y component of the direction TO the sun
+	// Smooth over roughly +/-2.3 degrees about the horizon.
+	const float t = std::clamp((sunUp + 0.04f) / 0.08f, 0.f, 1.f);
+	return t * t * (3.f - 2.f * t);
+}
+
 bool DeferredRenderer::PreExposureActive() const
 {
 	return myTunables.preExposure && IsDxrRenderer() && IsPostFx() && myExposure[0].GetSrv().IsValid();
@@ -398,10 +408,19 @@ void DeferredRenderer::RenderDxrLighting()
 		if (lLen > 1e-5f) { c.gSunDirToLight[0] = lx / lLen; c.gSunDirToLight[1] = ly / lLen; c.gSunDirToLight[2] = lz / lLen; }
 		else { c.gSunDirToLight[0] = 0.f; c.gSunDirToLight[1] = 1.f; c.gSunDirToLight[2] = 0.f; }
 		c.gLightCount = (uint32_t)myLightCount;
-		c.gSunRadiance[0] = myTunables.dxrSunTint[0] * myTunables.dxrSunIntensity;
-		c.gSunRadiance[1] = myTunables.dxrSunTint[1] * myTunables.dxrSunIntensity;
-		c.gSunRadiance[2] = myTunables.dxrSunTint[2] * myTunables.dxrSunIntensity;
-		c.gAmbientIntensity = myTunables.dxrAmbientIntensity * SkyBrightnessScale();
+		const float sunUp = SunElevationFactor();
+		c.gSunRadiance[0] = myTunables.dxrSunTint[0] * myTunables.dxrSunIntensity * sunUp;
+		c.gSunRadiance[1] = myTunables.dxrSunTint[1] * myTunables.dxrSunIntensity * sunUp;
+		c.gSunRadiance[2] = myTunables.dxrSunTint[2] * myTunables.dxrSunIntensity * sunUp;
+		// Scaled by the sun, with a small floor. This is an artistic fill term,
+		// not a physical one, and as a constant it was a light source that never
+		// switched off: with the sky at 3.7 and every other contribution
+		// disabled, surfaces still measured 67. A scene cannot get dark while
+		// something adds the same light at midnight as at noon. The floor keeps
+		// a little starlight-and-airglow lift so night is dark rather than
+		// pitch black.
+		c.gAmbientIntensity = myTunables.dxrAmbientIntensity * SkyBrightnessScale()
+			* (0.03f + 0.97f * SunElevationFactor());
 		c.gReflectionRoughnessCutoff = myTunables.dxrReflectionRoughnessCutoff;
 		constexpr float kDxrEnvironmentScale = 1.0f;
 		const Vector3f environmentTint = EnvironmentTint() * kDxrEnvironmentScale;

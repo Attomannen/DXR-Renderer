@@ -281,7 +281,15 @@ void main(uint3 tid : SV_DispatchThreadID)
 				msAtten *= 0.5f; msOd *= 0.5f; msPhaseMix = saturate(msPhaseMix + 0.5f);
 			}
 			// Ambient: the shell's underside sees far less sky than its top.
-			float3 litColor = gSunIlluminance * sunLit + ambient * lerp(0.35f, 1.0f, saturate((sampleAltitude - gCloudBaseAltitude) / max(1.0f, gCloudTopAltitude - gCloudBaseAltitude)));
+			// gSunIlluminance is deliberately NOT attenuated by elevation -- the
+			// sky LUTs need the raw value because they apply their own
+			// transmittance, which is what correctly zeroes the sun once the
+			// path to it passes through the planet. The cloud march has no such
+			// check, so without this the deck stayed lit brilliant white with
+			// the sun 30 degrees below the horizon while the ground under it
+			// was dark.
+			const float sunAboveHorizon = smoothstep(-0.04f, 0.04f, gSunDirToLight.y);
+			float3 litColor = gSunIlluminance * sunAboveHorizon * sunLit + ambient * lerp(0.35f, 1.0f, saturate((sampleAltitude - gCloudBaseAltitude) / max(1.0f, gCloudTopAltitude - gCloudBaseAltitude)));
 
 			float segExtinction = density * stepLength * kExtinction;
 			float segTransmittance = exp(-segExtinction);

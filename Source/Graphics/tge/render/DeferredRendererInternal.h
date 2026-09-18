@@ -132,9 +132,10 @@ namespace
 		// catastrophically, quantising directions (see CloudsConstants.hlsli).
 		float camRight[3], tanHalfFovY;
 		float camUp[3], aspect;
-		float camForward[3], _pad0;
+		float camForward[3], time;   // seconds, wrapped; drives star scintillation
+		float starIntensity, starDensity, starTwinkle, starsEnabled;
 	};
-	static_assert(sizeof(AtmosphereCb) == 240);
+	static_assert(sizeof(AtmosphereCb) == 256);   // +16 stars
 
 	// b10. Layout must match PostFxParams in PostFxCommon.hlsli.
 	struct PostFxCb
@@ -155,7 +156,8 @@ namespace
 
 		uint32_t tonemapper;
 		uint32_t hdrPreExposed;
-		float pad1[2];
+		float adaptStrength;   // 0 = fixed camera, 1 = fully compensating
+		float pad1;
 	};
 	static_assert(sizeof(PostFxCb) == 64);
 
