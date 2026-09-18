@@ -5,6 +5,14 @@
 #include "GameWorldImpl.h"
 #include <tge/script/Script.h>
 #include <tge/script/ScriptManager.h>
+#include <tge/script/JsonData.h>
+#include <tge/scene/SceneObjectDefinition.h>
+
+namespace Tga
+{
+	void EnsureScenePropertiesAreLoaded();
+	void EnsureBasePropertiesAreLoaded();
+}
 
 // Per-object scripts.
 //
@@ -13,7 +21,11 @@
 // them). Every script starts when the scene loads and runs each frame, on the object
 // that the .tgo was placed as.
 //
-// Not yet: the object's properties (script variables), collision events, spawning.
+// Variables are the .tgo's properties, as in the editor preview: properties flagged dynamic
+// are read and written by scripts (and per-instance values from the scene file override the
+// .tgo's defaults), the rest are read-only. A parent object definition is not followed yet.
+//
+// Not yet: collision events, spawning.
 
 namespace
 {
@@ -115,6 +127,49 @@ namespace
 	};
 }
 
+static void LoadObjectVariables(const GameScene::SceneEntry& entry, GameWorld::Impl::SceneScriptObject& object)
+{
+	// The property types register themselves from static initialisers; make sure they linked.
+	Tga::EnsureScenePropertiesAreLoaded();
+	Tga::EnsureBasePropertiesAreLoaded();
+
+	try
+	{
+		SceneObjectDefinition definition;
+		definition.Load((entry.tgoPath + ".tgo").c_str());
+
+		for (const ScenePropertyDefinition& property : definition.GetProperties())
+		{
+			if (!property.type || !property.value.HasValue())
+				continue;
+
+			Property value = property.value;
+
+			// Per-instance override from the scene file.
+			if ((property.flags & ScenePropertyFlags::IsPerInstance) != ScenePropertyFlags::None)
+			{
+				for (const GameScene::json& item : entry.instanceProperties)
+				{
+					if (item.value("name", "") != property.name.GetString() || item.value("type", "") != property.type->GetName().GetString())
+						continue;
+					if (item.contains("value"))
+						value = Property::CreateFromJson(property.type, JsonData{ item["value"] });
+					break;
+				}
+			}
+
+			if ((property.flags & ScenePropertyFlags::IsDynamic) != ScenePropertyFlags::None)
+				object.dynamicProperties[property.name] = value;
+			else
+				object.staticProperties[property.name] = value;
+		}
+	}
+	catch (const std::exception& e)
+	{
+		ERROR_PRINT("script: could not read the variables of '%s': %s", entry.tgoPath.c_str(), e.what());
+	}
+}
+
 void GameWorld::Impl::ClearSceneScripts()
 {
 	sceneScripts.clear();
@@ -136,6 +191,7 @@ void GameWorld::Impl::RegisterSceneScripts(const GameScene::SceneEntry& entry, s
 	SceneScriptObject object;
 	object.instance = instanceIndex;
 	object.name = entry.tgoPath;
+	LoadObjectVariables(entry, object);
 
 	for (const fs::directory_entry& item : fs::recursive_directory_iterator(folder, ec))
 	{

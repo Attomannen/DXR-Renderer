@@ -60,6 +60,7 @@ namespace GameScene
 		std::string fbx;
 		std::vector<std::string> materials;
 		SceneEntryPhysics physics;
+		json instanceProperties;                            // per-instance property values written in the scene file
 		std::string tgoPath;                                // "Folder/Name" of the .tgo (no extension); scripts live in <tgoPath>/
 		Matrix4x4f transform;                               // identity by default
 	};
