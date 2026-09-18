@@ -99,7 +99,17 @@ void main(uint3 tid : SV_DispatchThreadID)
 	// use the parabolic form h(t) = h0 + t dy + t^2 (1 - dy^2) / (2 (R + h0)),
 	// exact enough for the 140 km march and free of the catastrophic
 	// cancellation the exact sqrt form has against R^2.
-	const float R = gBottomRadius;
+	// A deliberately SMALLER planet than the sky's, for the cloud shell only.
+	//
+	// On the true Earth radius the deck curves away correctly but the effect is
+	// slight over the distances a cloud layer is legible at: the deck reads as
+	// nearly flat and runs almost to the horizon before dropping. Shrinking the
+	// radius tightens that curve, so the deck visibly bends down and away and
+	// the far cloud stacks up into a band the way it does in a photograph.
+	// This is an artistic exaggeration, not physics, which is why it is local
+	// to the cloud march and does not touch the sky LUTs' own geometry.
+	const float kCurveExaggeration = 2.5f;
+	const float R = gBottomRadius / kCurveExaggeration;
 	const float h0 = origin.y;
 	float tEnter = 0.0f, tExit = -1.0f;
 	{

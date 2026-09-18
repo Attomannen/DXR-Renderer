@@ -26,10 +26,18 @@ float4 main(FsIn input) : SV_TARGET
         // model's raw albedo term -- the flat brown slab under the horizon.
         // In Unreal that region is fog, which is why it reads as distance.
         //
-        // Faded over a few degrees rather than switched at exactly zero, so the
-        // horizon does not gain a hard line where the two cases meet.
+        // Deliberately NARROW, about half a degree. The instinct is to widen
+        // this so the two cases meet gently, and that is backwards: what lies
+        // just below the horizon is the sky model's own ground term, a dark
+        // brown lit by whatever the sun is doing, and the fade is how long it
+        // stays visible before fog covers it. Widening to three and then twelve
+        // degrees turned a thin seam into an obvious brown band. Covering it
+        // almost immediately leaves a transition between the horizon sky and
+        // the fog colour, which are close enough in hue that it reads as haze
+        // rather than as an edge. Measured over 0.01 / 0.03 / 0.08: the darkest
+        // value in the horizon band goes 106 / 87 / 63.
         const float3 skyDir = normalize(delta);
-        transmittance = lerp(1.0, transmittance, saturate(-skyDir.y / 0.05));
+        transmittance = lerp(1.0, transmittance, smoothstep(0.0, 0.01, -skyDir.y));
     }
     float3 sunlight = 0;
     if (FogVolumeEnabled != 0)

@@ -267,12 +267,23 @@ namespace Tga
 			// ray now escapes the layer on its own.
 			float fogMaxDistance = 20000.f;
 			float fogColor[3] = {0.30f, 0.40f, 0.55f}; // linear HDR
-			// On. Unreal's height fog reaches the sky, and with the integral
-			// converging correctly that is a dense band at the horizon thinning
-			// smoothly toward the zenith rather than a flat tint over
-			// everything. Off still fogs the ground below the horizon, which is
-			// geometry at a finite distance rather than sky.
-			bool fogAffectSky = true;
+			// Off, and it should stay off with a physical sky.
+			//
+			// The sky model already integrates Rayleigh and Mie scattering
+			// along the view ray, so it carries its own aerial perspective --
+			// that IS what makes its horizon pale. Height fog is a near-field
+			// layer with a 40 m scale height, meant for the ground and the
+			// geometry standing on it. Applying it to sky pixels as well
+			// double-counts the atmosphere: near the horizon the fog integral
+			// saturates, and about seven degrees of sky got replaced wholesale
+			// by the flat fog colour. That flat band sat between the bottom of
+			// the cloud deck and the ground, which is what made the low cloud
+			// look like it stopped short of the horizon -- the clouds were
+			// there, painted over.
+			//
+			// Rays BELOW the horizon are still fogged whatever this says: they
+			// end on the ground at a finite distance and are geometry, not sky.
+			bool fogAffectSky = false;
 			bool volumetricEnabled = true;
 			float volumetricStrength = 0.5f;
 			float volumetricAnisotropy = 0.45f;
@@ -335,8 +346,8 @@ namespace Tga
 			// makes a sky read as three-dimensional rather than as a ceiling.
 			// A thicker layer also means more optical depth end to end, so
 			// cloudDensity may want lowering to match a previous look.
-			float cloudBaseAltitude = 1200.f;
-			float cloudTopAltitude = 5000.f;
+			float cloudBaseAltitude = 2000.f;
+			float cloudTopAltitude = 7000.f;
 			// Meters per shape-noise tile, i.e. both the repeat distance and the
 			// size of a cloud cell. A 6 km tile put several repeats inside the
 			// deck as seen from cloud altitude; 12 km hid the repeat but grew
