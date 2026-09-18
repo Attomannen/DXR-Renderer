@@ -424,6 +424,7 @@ namespace Tga
 		collider.radius = json.value("radius", collider.radius);
 		collider.halfHeight = json.value("halfHeight", collider.halfHeight);
 		collider.offset = ReadVector3(json, "offset", collider.offset);
+		collider.isTrigger = json.value("isTrigger", collider.isTrigger);
 	}
 
 	template<>
@@ -437,6 +438,7 @@ namespace Tga
 		json["radius"] = collider.radius;
 		json["halfHeight"] = collider.halfHeight;
 		json["offset"] = { collider.offset.x, collider.offset.y, collider.offset.z };
+		json["isTrigger"] = collider.isTrigger;
 	}
 
 	template<>
@@ -471,6 +473,12 @@ namespace Tga
 			changed |= FloatRow("Half height", edited.halfHeight, 1.f, 0.1f, 100000.f);
 		if (edited.shape == SceneColliderShape::Box || edited.shape == SceneColliderShape::Sphere || edited.shape == SceneColliderShape::Capsule)
 			changed |= Vector3Row("Offset", edited.offset, 1.f);
+
+		BeginRow("Is trigger");
+		changed |= ImGui::Checkbox("##v", &edited.isTrigger);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("A trigger does not block. It raises On Trigger Enter on the objects that overlap it.");
+		EndRow();
 
 		if (changed)
 			value.Edit() = edited;

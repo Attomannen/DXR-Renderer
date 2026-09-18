@@ -12,6 +12,9 @@ namespace Tga
 	// Distances are engine units (cm); forces and impulses are in kg, m and s, like Jolt.
 	struct GameScriptContext : ScriptUpdateContext
 	{
+		// While an event node runs: the scene index of the object on the other side (-1 otherwise).
+		int eventOtherObject = -1;
+
 		virtual Vector3f GetLocation() const = 0;
 		virtual void SetLocation(const Vector3f& location) = 0;
 

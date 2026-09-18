@@ -82,6 +82,7 @@ namespace Tga
 	{
 		PhysicsShapeId shape;
 		PhysicsMotion motion = PhysicsMotion::Static;
+		bool isSensor = false;                       // a trigger volume: reports overlaps, blocks nothing
 
 		PhysicsVec3 position;                        // cm
 		PhysicsQuat rotation;
@@ -113,6 +114,7 @@ namespace Tga
 		float maxSlopeDegrees = 50.f;      // steeper ground is not walkable
 		float stepHeight = 40.f;           // cm, the tallest step it walks up
 		float mass = 80.f;                 // kg, for pushing bodies
+		uint64_t userData = 0;             // handed back in contact events
 	};
 
 	// Wireframe of the collision near a point, for drawing. Every shape type comes out as
@@ -124,6 +126,15 @@ namespace Tga
 		std::vector<PhysicsVec3> to;
 		std::vector<Kind> kind;
 		bool truncated = false; // hit the line cap; shrink the radius to see the rest
+	};
+
+	// Two things started touching (or one entered the other's trigger volume). The user data is
+	// what the body or character was created with; 0 means it has none.
+	struct PhysicsContactEvent
+	{
+		uint64_t userDataA = 0;
+		uint64_t userDataB = 0;
+		bool trigger = false;
 	};
 
 	class PhysicsWorld
@@ -176,6 +187,9 @@ namespace Tga
 		PhysicsVec3 GetLinearVelocity(PhysicsBodyId body) const;
 
 		uint32_t GetBodyCount() const;
+
+		// Contacts that began since the last call.
+		void TakeContactEvents(std::vector<PhysicsContactEvent>& out);
 
 		PhysicsCharacterId CreateCharacter(const PhysicsCharacterDesc& desc);
 		void DestroyCharacter(PhysicsCharacterId character);

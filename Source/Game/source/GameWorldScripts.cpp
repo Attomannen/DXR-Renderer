@@ -5,6 +5,7 @@
 #include "GameWorldImpl.h"
 #include <tge/script/Script.h>
 #include <tge/script/JsonData.h>
+#include <tge/script/Nodes/EventNode.h>
 #include <tge/scene/SceneObjectDefinition.h>
 
 namespace Tga
@@ -267,7 +268,9 @@ static void LoadObjectDefinition(const GameScene::SceneEntry& entry, GameWorld::
 				object.staticProperties[property.name] = value;
 		}
 
-		if (definition.HasEventGraph())
+		// A graph whose nodes are not wired to anything (the untouched default events) does nothing.
+		const Script* graph = definition.GetEventGraph();
+		if (definition.HasEventGraph() && graph->GetFirstLinkId().id != ScriptLinkId::InvalidId)
 		{
 			object.graph = std::make_unique<ScriptRuntimeInstance>(definition.GetEventGraphSnapshot());
 			object.graph->Init();
@@ -299,6 +302,40 @@ void GameWorld::Impl::RegisterSceneScripts(const GameScene::SceneEntry& entry, s
 	{
 		INFO_PRINT("script: '%s' on object %zu", entry.tgoPath.c_str(), instanceIndex);
 		sceneScripts.push_back(std::move(object));
+	}
+}
+
+void GameWorld::Impl::DispatchContactEvents()
+{
+	std::vector<Tga::PhysicsContactEvent> events;
+	physics.TakeContactEvents(events);
+	if (events.empty() || sceneScripts.empty())
+		return;
+
+	// Tell both sides: On Trigger Enter when a trigger volume was involved, else On Collision Enter.
+	auto raise = [&](uint64_t self, uint64_t other, bool trigger)
+	{
+		if (self == 0)
+			return;
+		const size_t instance = (size_t)(self - 1);
+		for (SceneScriptObject& object : sceneScripts)
+		{
+			if (object.instance != instance)
+				continue;
+			ObjectScriptContext context(*this, object.instance);
+			context.deltaTime = 0.f;
+			context.frameNumber = scriptFrame;
+			context.dynamicProperties = &object.dynamicProperties;
+			context.staticProperties = &object.staticProperties;
+			context.eventOtherObject = other == 0 ? -1 : (int)(other - 1);
+			object.graph->TriggerEvent(trigger ? Tga::ScriptEventKind::TriggerEnter : Tga::ScriptEventKind::CollisionEnter, context);
+			return;
+		}
+	};
+	for (const Tga::PhysicsContactEvent& event : events)
+	{
+		raise(event.userDataA, event.userDataB, event.trigger);
+		raise(event.userDataB, event.userDataA, event.trigger);
 	}
 }
 
@@ -403,6 +440,7 @@ void GameWorld::Impl::RegisterSceneCharacter(const GameScene::SceneEntry& entry,
 	object.desc.stepHeight = entry.character.stepHeight;
 	object.desc.maxSlopeDegrees = entry.character.maxSlope;
 	object.desc.mass = entry.character.mass;
+	object.desc.userData = instanceIndex + 1; // 0 means "none" in contact events
 	sceneCharacters.push_back(object);
 
 	// A scene with a character is a game: the world runs from the start instead of waiting

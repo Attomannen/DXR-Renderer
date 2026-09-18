@@ -97,7 +97,8 @@ void GameWorld::Impl::RegisterScenePhysics(const GameScene::SceneEntry& entry, c
 	body.gravityFactor = p.gravityFactor;
 	body.linearDamping = p.linearDamping;
 	body.angularDamping = p.angularDamping;
-	body.userData = instanceIndex;
+	body.userData = instanceIndex + 1; // 0 means "none" in contact events
+	body.isSensor = p.hasCollider && p.isTrigger;
 
 	// Shapes are shared between identical objects (same model, kind and scale).
 	char key[512];
@@ -350,6 +351,7 @@ void GameWorld::Impl::UpdatePhysicsTest(float deltaSeconds)
 		return;
 
 	physics.Update(deltaSeconds);
+	DispatchContactEvents();
 
 	PhysicsVec3 position;
 	PhysicsQuat rotation;

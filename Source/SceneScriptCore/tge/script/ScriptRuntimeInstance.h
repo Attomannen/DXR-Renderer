@@ -8,6 +8,7 @@
 namespace Tga
 {
 struct ScriptUpdateContext;
+enum class ScriptEventKind : int;
 
 class ScriptRuntimeInstance
 {
@@ -25,6 +26,8 @@ public:
 	void Reset();
 	void Update(ScriptUpdateContext& context);
 	void TriggerPin(ScriptPinId pin, ScriptUpdateContext& context);
+	// Starts the chain of every event node of this kind.
+	void TriggerEvent(ScriptEventKind kind, ScriptUpdateContext& context);
 
 	const Script& GetScript() const;
 	char* GetRuntimeInstance(ScriptNodeId nodeId);

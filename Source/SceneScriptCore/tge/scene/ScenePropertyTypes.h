@@ -86,6 +86,7 @@ namespace Tga
 		float radius = 50.f;                         // Sphere / Capsule, cm
 		float halfHeight = 50.f;                     // Capsule cylinder half height, cm
 		Vector3f offset = { 0.f, 0.f, 0.f };         // from the object origin, cm
+		bool isTrigger = false;                      // reports overlaps (On Trigger Enter) instead of blocking
 	};
 
 	enum class SceneBodyMotion : int

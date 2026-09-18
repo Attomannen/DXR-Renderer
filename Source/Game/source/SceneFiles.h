@@ -42,6 +42,7 @@ namespace GameScene
 		float radius = 50.f;
 		float halfHeight = 50.f;
 		Vector3f offset{ 0.f, 0.f, 0.f };
+		bool isTrigger = false;
 
 		bool hasBody = false;
 		std::string motion = "Dynamic";          // Static, Kinematic, Dynamic

@@ -115,6 +115,7 @@ namespace GameScene
 				out.radius = v.value("radius", out.radius);
 				out.halfHeight = v.value("halfHeight", out.halfHeight);
 				vec3(v, "offset", out.offset);
+				out.isTrigger = v.value("isTrigger", out.isTrigger);
 			}
 			else if (type == "Rigidbody")
 			{

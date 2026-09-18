@@ -444,6 +444,7 @@ struct GameWorld::Impl
 	void ClearSceneScripts();
 	void RegisterSceneScripts(const GameScene::SceneEntry& entry, size_t instanceIndex);
 	void UpdateSceneScripts(float deltaSeconds);
+	void DispatchContactEvents();   // raises On Collision Enter / On Trigger Enter from the physics contacts
 
 	// --- Characters (GameWorldScripts.cpp) ---
 	// A character is created when the simulation starts and destroyed on Reset, like the props.

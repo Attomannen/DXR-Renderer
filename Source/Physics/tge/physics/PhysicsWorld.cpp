@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -13,6 +14,7 @@
 #include <Jolt/Physics/Body/BodyFilter.h>
 #include <Jolt/Physics/Body/BodyInterface.h>
 #include <Jolt/Physics/Character/CharacterVirtual.h>
+#include <Jolt/Physics/Collision/ContactListener.h>
 #include <Jolt/Physics/Collision/ShapeFilter.h>
 #include <Jolt/Physics/Collision/BroadPhase/BroadPhaseLayer.h>
 #include <Jolt/Physics/Collision/ObjectLayer.h>
@@ -87,6 +89,34 @@ namespace Tga
 			{
 				return a == Layers::Moving || b == Layers::Moving;
 			}
+		};
+
+		// Called by Jolt from its job threads whenever two bodies start touching.
+		class ContactCollector final : public JPH::ContactListener
+		{
+		public:
+			void OnContactAdded(const JPH::Body& a, const JPH::Body& b, const JPH::ContactManifold&, JPH::ContactSettings&) override
+			{
+				PhysicsContactEvent event;
+				event.userDataA = a.GetUserData();
+				event.userDataB = b.GetUserData();
+				event.trigger = a.IsSensor() || b.IsSensor();
+				if (event.userDataA == 0 && event.userDataB == 0)
+					return;
+				std::lock_guard<std::mutex> lock(myMutex);
+				myEvents.push_back(event);
+			}
+
+			void Take(std::vector<PhysicsContactEvent>& out)
+			{
+				std::lock_guard<std::mutex> lock(myMutex);
+				out.insert(out.end(), myEvents.begin(), myEvents.end());
+				myEvents.clear();
+			}
+
+		private:
+			std::mutex myMutex;
+			std::vector<PhysicsContactEvent> myEvents;
 		};
 
 		int gJoltRefCount = 0;
@@ -214,6 +244,7 @@ namespace Tga
 		BroadPhaseLayers broadPhaseLayers;
 		ObjectVsBroadPhase objectVsBroadPhase;
 		ObjectPairs objectPairs;
+		ContactCollector contacts;
 
 		std::unique_ptr<JPH::TempAllocatorImpl> tempAllocator;
 		std::unique_ptr<JPH::JobSystemThreadPool> jobSystem;
@@ -296,6 +327,7 @@ namespace Tga
 		constexpr JPH::uint maxContactConstraints = 20480;
 		s.system->Init(maxBodies, 0, maxBodyPairs, maxContactConstraints, s.broadPhaseLayers, s.objectVsBroadPhase, s.objectPairs);
 		s.system->SetGravity(JPH::Vec3(0.f, -9.81f, 0.f));
+		s.system->SetContactListener(&s.contacts);
 		return true;
 	}
 
@@ -399,6 +431,7 @@ namespace Tga
 		settings.mLinearDamping = desc.linearDamping;
 		settings.mAngularDamping = desc.angularDamping;
 		settings.mUserData = desc.userData;
+		settings.mIsSensor = desc.isSensor;
 		if (desc.motion == PhysicsMotion::Dynamic && desc.mass > 0.f)
 		{
 			settings.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
@@ -492,6 +525,12 @@ namespace Tga
 		return ToEngine(myImpl->Bodies().GetLinearVelocity(JPH::BodyID(body.value)));
 	}
 
+	void PhysicsWorld::TakeContactEvents(std::vector<PhysicsContactEvent>& out)
+	{
+		if (myImpl)
+			myImpl->contacts.Take(out);
+	}
+
 	uint32_t PhysicsWorld::GetBodyCount() const
 	{
 		return myImpl ? myImpl->system->GetNumBodies() : 0;
@@ -516,6 +555,9 @@ namespace Tga
 
 		JPH::CharacterVirtualSettings settings;
 		settings.mShape = shape.Get();
+		// A body of the same shape follows the character, so triggers and other bodies can see it.
+		settings.mInnerBodyShape = shape.Get();
+		settings.mInnerBodyLayer = Layers::Moving;
 		settings.mUp = JPH::Vec3::sAxisY();
 		settings.mMass = desc.mass;
 		settings.mMaxSlopeAngle = JPH::DegreesToRadians(desc.maxSlopeDegrees);
@@ -523,7 +565,7 @@ namespace Tga
 		settings.mSupportingVolume = JPH::Plane(JPH::Vec3::sAxisY(), -radius);
 
 		Impl::Character character;
-		character.character = new JPH::CharacterVirtual(&settings, JPH::RVec3(ToJolt(desc.position)), JPH::Quat::sIdentity(), 0, s.system.get());
+		character.character = new JPH::CharacterVirtual(&settings, JPH::RVec3(ToJolt(desc.position)), JPH::Quat::sIdentity(), desc.userData, s.system.get());
 		character.stepHeight = desc.stepHeight * kCmToM;
 
 		for (size_t i = 0; i < s.characters.size(); ++i)

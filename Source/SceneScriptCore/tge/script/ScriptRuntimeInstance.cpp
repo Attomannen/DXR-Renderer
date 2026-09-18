@@ -1,6 +1,7 @@
 #include <stdafx.h>
 
 #include "ScriptRuntimeInstance.h"
+#include "Nodes/EventNode.h"
 
 using namespace Tga;
 
@@ -122,6 +123,16 @@ void ScriptRuntimeInstance::TriggerPin(ScriptPinId pinId, ScriptUpdateContext& u
 	else
 	{
 		executionContext.TriggerOutputPin(pinId);
+	}
+}
+
+void ScriptRuntimeInstance::TriggerEvent(ScriptEventKind kind, ScriptUpdateContext& updateContext)
+{
+	for (ScriptNodeId id = myScript->GetFirstNodeId(); id.id != ScriptNodeId::InvalidId; id = myScript->GetNextNodeId(id))
+	{
+		const EventNode* event = dynamic_cast<const EventNode*>(&myScript->GetNode(id));
+		if (event && event->GetKind() == kind)
+			TriggerPin(event->GetFlowOutput(), updateContext);
 	}
 }
 

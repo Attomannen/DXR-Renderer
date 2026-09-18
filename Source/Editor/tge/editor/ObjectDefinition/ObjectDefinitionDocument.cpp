@@ -16,6 +16,8 @@
 #include <tge/editor/ScriptEditor/ScriptEditor.h>
 
 #include <tge/editor/Editor.h>
+#include <tge/script/Script.h>
+#include <tge/script/ScriptNodeTypeRegistry.h>
 
 #include "tge/Application.h"
 #include <tge/animation/Skeleton.h>
@@ -47,6 +49,26 @@ void ObjectDefinitionDocument::Init(std::string_view aPath)
 		myObjectDefinition = Editor::GetEditor()->GetSceneObjectDefinitionManager().CreateOrGet(path);
 	if (!myObjectDefinition)
 		throw std::runtime_error("Could not load object definition");
+
+	// A new object's Event Graph starts with the standard events, like a Blueprint's: nothing to
+	// look up, just wire them to what should happen.
+	{
+		Script& graph = myObjectDefinition->EditEventGraph();
+		if (graph.GetFirstNodeId().id == ScriptNodeId::InvalidId)
+		{
+			float y = 0.f;
+			for (const char* name : { "Start", "Update", "On Collision Enter", "On Trigger Enter" })
+			{
+				const ScriptNodeTypeId type = ScriptNodeTypeRegistry::GetTypeId(name);
+				if (type.id == ScriptNodeTypeId::InvalidId)
+					continue;
+				const ScriptNodeId id = graph.CreateNode(type, ScriptNodeTypeRegistry::CreateNode(type), { 0.f, y });
+				ScriptCreationContext context(graph, id);
+				graph.EditNode(id).Init(context);
+				y += 190.f;
+			}
+		}
+	}
 
 	char buffer[512];
 	char asterix[2] = { 0, 0 };

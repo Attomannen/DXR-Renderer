@@ -10,6 +10,8 @@
 #include <tge/scene/ScenePropertyTypes.h>
 #include <tge/log/Log.h>
 #include "CommentNode.h"
+#include "EventNode.h"
+#include <tge/script/Contexts/GameScriptContext.h>
 
 using namespace Tga;
 
@@ -423,6 +425,12 @@ public:
 	bool ShouldExecuteAtStart() const override { return false; }
 };
 
+Property EventNode::ReadPin(ScriptExecutionContext& context, ScriptPinId) const
+{
+	const GameScriptContext* game = dynamic_cast<const GameScriptContext*>(&context.GetUpdateContext());
+	return Property::Create<int>(game ? game->eventOtherObject : -1);
+}
+
 void Tga::RegisterCommonNodes()
 {
 	ScriptNodeTypeRegistry::RegisterType<ErrorNode>("Common/ERROR", "Error node, is created when nodes can't load");
@@ -433,7 +441,9 @@ void Tga::RegisterCommonNodes()
 
 	ScriptNodeTypeRegistry::RegisterType<SequenceNode>("Common/Sequence", "Runs its outputs one after another, top to bottom");
 	ScriptNodeTypeRegistry::RegisterType<CommentNode>("Common/Comment", "A titled box around nodes, for explaining them. Select nodes and press C to make one");
-	ScriptNodeTypeRegistry::RegisterType<TickNode>("Common/Tick", "A node that executes every frame");
+	ScriptNodeTypeRegistry::RegisterType<CollisionEnterNode>("Common/On Collision Enter", "Runs when this object touches another one. Needs a Collider");
+	ScriptNodeTypeRegistry::RegisterType<TriggerEnterNode>("Common/On Trigger Enter", "Runs when this object enters a trigger volume, or something enters this object's trigger. Needs a Collider");
+	ScriptNodeTypeRegistry::RegisterType<TickNode>("Common/Update", "Runs every frame. Delta Seconds is the time since the previous frame");
 	ScriptNodeTypeRegistry::RegisterType<DelayNode>("Common/Delay", "A node that executes after a delays");
 	ScriptNodeTypeRegistry::RegisterType<BranchNode>("Common/Branch", "A node that branches depending on a condition");
 

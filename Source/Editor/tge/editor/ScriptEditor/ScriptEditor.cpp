@@ -332,8 +332,6 @@ namespace
 			const bool isEvent = script.GetNode(id).ShouldExecuteAtStart() || title == "Trigger";
 			if (hasFlowInput && !flowInputConnected && !isEvent)
 				issues.push_back({ false, id, std::string(title) + ": never runs, nothing triggers it." });
-			if (isEvent && hasFlowOutput && !flowOutputConnected)
-				issues.push_back({ false, id, std::string(title) + ": does nothing, its output is not connected." });
 
 			bool isWrite = false;
 			if (!IsPropertyNode(title, isWrite))
@@ -863,13 +861,6 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 		ed::NavigateToSelection();
 		activeScript.pendingFocusNode = { ScriptNodeId::InvalidId };
 	}
-	if (!activeScript.pendingSelect.empty())
-	{
-		ed::ClearSelection();
-		for (ScriptNodeId id : activeScript.pendingSelect)
-			ed::SelectNode(ed::NodeId(id.id), true);
-		activeScript.pendingSelect.clear();
-	}
 	ScriptNodeId openCommentEditFor = { ScriptNodeId::InvalidId };
 
 	for (ScriptNodeId currentNodeId = script.GetFirstNodeId(); currentNodeId.id != ScriptNodeId::InvalidId; currentNodeId = script.GetNextNodeId(currentNodeId))
@@ -1026,6 +1017,17 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 					look.header, ed::GetStyle().NodeRounding, ImDrawFlags_RoundCornersTop);
 			}
 		}
+	}
+
+	// Select nodes that were just created. This has to come after they are drawn: the node editor
+	// only knows a node once it has been drawn, and selecting an unknown one crashes it.
+	if (!activeScript.pendingSelect.empty())
+	{
+		ed::ClearSelection();
+		for (ScriptNodeId id : activeScript.pendingSelect)
+			if (script.Exists(id))
+				ed::SelectNode(ed::NodeId(id.id), true);
+		activeScript.pendingSelect.clear();
 	}
 
 	for (ScriptLinkId linkId = script.GetFirstLinkId(); linkId.id != ScriptLinkId::InvalidId; linkId = script.GetNextLinkId(linkId))
@@ -1223,7 +1225,7 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 	}
 
 	// Shortcuts (Blueprint's): Ctrl+C/V/D copy, paste, duplicate; Q straighten; C comment box;
-	// hold B/D/S/T/P and click empty space to create Branch/Delay/Sequence/Tick/Start there.
+	// hold B/D/S/T/P and click empty space to create Branch/Delay/Sequence/Update/Start there.
 	struct ShortcutRequest
 	{
 		bool paste = false, duplicate = false, comment = false;
@@ -1273,7 +1275,7 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 				&& !ed::GetHoveredNode() && !ed::GetHoveredPin() && !ed::GetHoveredLink())
 			{
 				static const struct { ImGuiKey key; const char* type; } kQuickCreate[] = {
-					{ ImGuiKey_B, "Branch" }, { ImGuiKey_D, "Delay" }, { ImGuiKey_S, "Sequence" }, { ImGuiKey_T, "Tick" }, { ImGuiKey_P, "Start" },
+					{ ImGuiKey_B, "Branch" }, { ImGuiKey_D, "Delay" }, { ImGuiKey_S, "Sequence" }, { ImGuiKey_T, "Update" }, { ImGuiKey_P, "Start" },
 				};
 				for (const auto& entry : kQuickCreate)
 					if (ImGui::IsKeyDown(entry.key))
