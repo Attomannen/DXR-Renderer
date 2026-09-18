@@ -1139,7 +1139,11 @@ namespace
 		return ratio;
 	}
 
-	void DecodeVertices(uint8_t layout, const uint8_t* src, uint32_t count, Tga::MeshVertex* dst)
+	// allowThreads: false when the CALLER is already running one of these per
+	// mesh. Letting both levels thread oversubscribes badly -- 15 outer workers
+	// each spawning 15 more -- and was most of why moving the decode off the
+	// upload path first made it slower rather than faster.
+	void DecodeVertices(uint8_t layout, const uint8_t* src, uint32_t count, Tga::MeshVertex* dst, bool allowThreads = true)
 	{
 		const uint32_t floats = layout == 2 ? kCompactColorFloats : kCompactFloats;
 		auto decode = [=](uint32_t first, uint32_t last)
@@ -1171,7 +1175,7 @@ namespace
 			}
 		};
 		constexpr uint32_t kChunk = 1u << 18;
-		if (count <= kChunk) { decode(0, count); return; }
+		if (!allowThreads || count <= kChunk) { decode(0, count); return; }
 		const uint32_t threads = std::clamp(std::thread::hardware_concurrency(), 1u, 16u);
 		const uint32_t per = (count + threads - 1) / threads;
 		std::vector<std::thread> pool;
@@ -1206,6 +1210,31 @@ namespace
 
 		Tga::rhi::IDevice* dev = Tga::DX11::Rhi();
 		std::vector<Tga::Model::MeshData> meshes(meshCount);
+
+		// Vertex decode is deferred so it can run across ALL meshes at once.
+		//
+		// DecodeVertices threads internally, but only above 262 144 vertices,
+		// and a real scene is made of many small meshes rather than a few huge
+		// ones -- the Bistro is 133, almost all under that threshold, so the
+		// decode ran effectively single-threaded and measured 401 ms of a 496 ms
+		// mesh upload. The parallelism belongs ACROSS meshes.
+		//
+		// The cache cursor is sequential, so parsing stays serial; only the
+		// decode moves. It costs the decoded vertices in RAM until the buffers
+		// are created, which is transient and bounded by the model's size.
+		struct PendingMesh
+		{
+			uint32_t mesh = 0;
+			uint8_t layout = 0;
+			uint32_t vertexCount = 0;
+			const uint8_t* vertexData = nullptr;
+			const uint8_t* indexData = nullptr;
+			uint32_t indexCount = 0;
+			std::vector<uint32_t> lodIndices;   // owns indexData when a LOD was built
+			Tga::MeshVertex* decoded = nullptr;   // into decodeArena below
+		};
+		std::vector<PendingMesh> pending;
+		pending.reserve(meshCount);
 		for (uint32_t m = 0; m < meshCount; ++m)
 		{
 			Tga::Model::MeshData& md = meshes[m];
@@ -1263,30 +1292,82 @@ namespace
 				}
 			}
 
-			TGA_CPU_SCOPE("Mesh GPU buffers");
-			// The cache only holds static meshes, which always upload compact.
-			Tga::Model::CreateVertexBuffer(md, vc,
-				[&](Tga::MeshVertex* mapped) { DecodeVertices(layout, vertexData, vc, mapped); }, "Mesh_VB");
-			const Tga::rhi::BufferHandle vb = md.vertexBuffer;
+			PendingMesh pm;
+			pm.mesh = m;
+			pm.layout = layout;
+			pm.vertexCount = vc;
+			pm.vertexData = vertexData;
+			pm.indexCount = uploadIndexCount;
+			pm.lodIndices = std::move(lodIndices);
+			// uploadIndices points either into the mapped cache file or into the
+			// LOD vector that has just been moved; re-derive it from the moved-to
+			// copy so it stays valid.
+			pm.indexData = pm.lodIndices.empty() ? uploadIndices
+				: reinterpret_cast<const uint8_t*>(pm.lodIndices.data());
+			pending.push_back(std::move(pm));
+		}
 
-			Tga::rhi::BufferDesc ibd{};
-			ibd.byteSize = (UINT)((uint64_t)uploadIndexCount * sizeof(unsigned int));
-			ibd.stride = sizeof(unsigned int);
-			ibd.usage = Tga::rhi::BufferUsage::Index | Tga::rhi::BufferUsage::ByteAddress;
-			ibd.memory = Tga::rhi::MemoryType::Default;
-			ibd.debugName = "Mesh_IB";
-			const Tga::rhi::BufferHandle ib = vb.IsValid() ? dev->CreateBuffer(ibd, uploadIndices) : Tga::rhi::BufferHandle{};
-			if (!vb.IsValid() || !ib.IsValid())
+		// One allocation for every mesh's vertices, handed out as spans.
+		//
+		// A vector per mesh meant 133 heap allocations contended across the
+		// worker threads, and resize() value-initialises, so every byte was
+		// memset to zero immediately before being overwritten. Between them
+		// those cost more than the decode they were meant to parallelise.
+		// new[] on a trivial type default-initialises, which does no work.
+		uint64_t totalVertices = 0;
+		for (const PendingMesh& pm : pending) totalVertices += pm.vertexCount;
+		std::unique_ptr<Tga::MeshVertex[]> decodeArena(totalVertices ? new Tga::MeshVertex[totalVertices] : nullptr);
+		{
+			uint64_t offset = 0;
+			for (PendingMesh& pm : pending) { pm.decoded = decodeArena.get() + offset; offset += pm.vertexCount; }
+		}
+		{
+			TGA_CPU_SCOPE("Mesh vertex decode (parallel)");
+			const uint32_t threads = std::clamp(std::thread::hardware_concurrency(), 1u, 16u);
+			std::atomic<size_t> next{ 0 };
+			const auto worker = [&]()
 			{
-				ERROR_PRINT("mesh '%s': GPU buffer creation failed", md.name.GetString());
-				if (vb.IsValid()) dev->Destroy(vb);
-				md.vertexBuffer = {};
-				continue;
+				for (size_t i = next++; i < pending.size(); i = next++)
+				{
+					PendingMesh& pm = pending[i];
+					DecodeVertices(pm.layout, pm.vertexData, pm.vertexCount, pm.decoded, /*allowThreads*/ false);
+				}
+			};
+			std::vector<std::thread> pool;
+			for (uint32_t t = 1; t < threads; ++t) pool.emplace_back(worker);
+			worker();
+			for (std::thread& t : pool) t.join();
+		}
+
+		{
+			TGA_CPU_SCOPE("Mesh GPU buffers");
+			for (PendingMesh& pm : pending)
+			{
+				Tga::Model::MeshData& md = meshes[pm.mesh];
+				// The cache only holds static meshes, which always upload compact.
+				Tga::Model::CreateVertexBuffer(md, pm.vertexCount,
+					[&](Tga::MeshVertex* mapped) { memcpy(mapped, pm.decoded, (size_t)pm.vertexCount * sizeof(Tga::MeshVertex)); }, "Mesh_VB");
+				const Tga::rhi::BufferHandle vb = md.vertexBuffer;
+
+				Tga::rhi::BufferDesc ibd{};
+				ibd.byteSize = (UINT)((uint64_t)pm.indexCount * sizeof(unsigned int));
+				ibd.stride = sizeof(unsigned int);
+				ibd.usage = Tga::rhi::BufferUsage::Index | Tga::rhi::BufferUsage::ByteAddress;
+				ibd.memory = Tga::rhi::MemoryType::Default;
+				ibd.debugName = "Mesh_IB";
+				const Tga::rhi::BufferHandle ib = vb.IsValid() ? dev->CreateBuffer(ibd, pm.indexData) : Tga::rhi::BufferHandle{};
+				if (!vb.IsValid() || !ib.IsValid())
+				{
+					ERROR_PRINT("mesh '%s': GPU buffer creation failed", md.name.GetString());
+					if (vb.IsValid()) dev->Destroy(vb);
+					md.vertexBuffer = {};
+					continue;
+				}
+				md.vertexBuffer = vb;
+				md.indexBuffer = ib;
+				md.numberOfVertices = pm.vertexCount;
+				md.numberOfIndices = pm.indexCount;
 			}
-			md.vertexBuffer = vb;
-			md.indexBuffer = ib;
-			md.numberOfVertices = vc;
-			md.numberOfIndices = uploadIndexCount;
 		}
 		if (DebugLodRatio() < 1.0f && gLodSourceTris > 0)
 			INFO_PRINT("LOD: ratio %.2f  %llu -> %llu triangles (%.1f%% kept)", DebugLodRatio(),

@@ -1,3 +1,4 @@
+#include <tge/Application.h>
 #include "stdafx.h"
 #include <tge/debugging/CpuProfiler.h>
 #include <tge/graphics/DX11.h>
@@ -511,6 +512,17 @@ void DX11::BeginFrame(Color aClearColor)
 
 void DX11::EndFrame(bool aEnableVSync)
 {
+	// The first present is the moment the blank window becomes a picture. Report
+	// once: this is the number to optimise, and it is not the same as any of the
+	// load-profile scopes, which all sit inside it.
+	if (!Application::ourFirstPresentReported)
+	{
+		Application::ourFirstPresentReported = true;
+		const double ms = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - Application::ourWindowCreatedAt).count();
+		INFO_PRINT("startup: window to first presented frame %.0f ms", ms);
+	}
+
 	// DX12's Dx12Device::EndFrame does the real present (it owns the swapchain);
 	// DX11::SwapChain is null under that backend, so presenting through it here
 	// would be a null-pointer dereference. The DX11 backend's own EndFrame is a

@@ -295,6 +295,14 @@ bool Tga::LoadSettings(const std::string& aProjectName)
 			Settings::locWindowParams.enableVSync = app;
 		}
 	}
+	//////////////////////////////////////
+	// Streamline / upscaling
+	{
+		auto& app = game_settings["enable_upscaling"];
+		if (!app.is_null()) {
+			Settings::locWindowParams.enableUpscaling = app;
+		}
+	}
 	/////////////////////////////////////
 	// Start in fullscreen / Maximized
 	{

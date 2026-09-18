@@ -32,6 +32,11 @@ namespace Tga
 		friend class WindowsWindow;
 
     public:
+		// Wall clock from window creation to the first presented frame -- the
+		// only startup number the user can see. See Application.cpp.
+		static std::chrono::steady_clock::time_point ourWindowCreatedAt;
+		static bool ourFirstPresentReported;
+
         Application &operator =( const Application& anOther ) = delete;
 		static bool Start();
 		static void Shutdown();

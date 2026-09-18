@@ -63,6 +63,7 @@ namespace Tga
             winProcCallback = nullptr;
             windowSize = { 1280, 720 };
             enableVSync = false;
+            enableUpscaling = false;
             renderSize = windowSize;
             startInFullScreen = false;
             startMaximized = false;
@@ -89,6 +90,16 @@ namespace Tga
         HINSTANCE hInstance;
         std::wstring applicationName;
         bool enableVSync;
+        /* Load Streamline (DLSS / DLAA / Ray Reconstruction) at startup.
+         *
+         * Off by default because it is expensive and unconditional: initialising
+         * the interposer and attaching the device measured 4.9 s of an 8.5 s
+         * startup on this machine, and it has to happen BEFORE the DXGI/D3D12
+         * bootstrap because it interposes on it -- so it cannot be deferred
+         * until upscaling is first switched on. Turning this on costs that time
+         * every launch; leaving it off means the upscaling modes are
+         * unavailable until you enable it and restart. */
+        bool enableUpscaling;
         bool startInFullScreen;
         bool startMaximized;
         bool borderless;

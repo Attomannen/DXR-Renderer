@@ -33,6 +33,9 @@ static bool locIsLppValid;
 #endif
 
 using namespace Tga; 
+std::chrono::steady_clock::time_point Tga::Application::ourWindowCreatedAt{};
+bool Tga::Application::ourFirstPresentReported = false;
+
 Application* Tga::Application::ourInstance = nullptr;
 Application::Application()
 : myWindow(nullptr)
@@ -119,6 +122,12 @@ bool Application::InternalStart()
 #endif
 
 	myFileWatcher = std::make_unique<FileWatcher>();
+	// Startup cost that matters is measured from HERE, not from process start.
+	// The window is created before the device, Streamline, the graphics engine
+	// and the scene load, so it sits on screen blank for all of it -- and a
+	// blank window is what the user is actually waiting through. Profiling
+	// scopes above this line are invisible to them; everything after is not.
+	Application::ourWindowCreatedAt = std::chrono::steady_clock::now();
 	myWindow = std::make_unique<WindowsWindow>();
 	if (!myWindow->Init(myWindowConfiguration, myWindowConfiguration.hInstance, myWindowConfiguration.hwnd)) 
 	{
@@ -129,6 +138,12 @@ bool Application::InternalStart()
 	myDx11 = std::make_unique<DX11>();
 	// Streamline's interposer has to be initialized before the DXGI/D3D12
 	// bootstrap.  It is optional: missing DLLs simply retain native TAA.
+	// Gated on a setting, because it cannot be made lazy. Streamline interposes
+	// on DXGI/D3D12, so it has to load before the device exists -- there is no
+	// point later at which it could be brought up on demand. That makes it a
+	// flat 4.9 s cost on every launch, for a feature that is off by default.
+	const bool wantUpscaling = Settings::GetApplicationConfiguration().enableUpscaling;
+	if (wantUpscaling)
 	{
 		TGA_CPU_SCOPE("Streamline init");
 		StreamlineDLSS::Get().Initialize();
@@ -140,7 +155,7 @@ bool Application::InternalStart()
 		myWindow->Close();
 		return false;
 	}
-	if (rhi::IDevice* rhiDevice = DX11::Rhi(); rhiDevice && rhiDevice->GetBackend() == rhi::Backend::DX12)
+	if (rhi::IDevice* rhiDevice = DX11::Rhi(); wantUpscaling && rhiDevice && rhiDevice->GetBackend() == rhi::Backend::DX12)
 	{
 		TGA_CPU_SCOPE("Streamline attach device");
 		StreamlineDLSS::Get().AttachD3D12Device(rhiDevice->GetNativeDevice());

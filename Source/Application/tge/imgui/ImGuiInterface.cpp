@@ -4,6 +4,7 @@
 #include <tge/application.h>
 #include <tge/graphics/DX11.h>
 #include <tge/rhi/Device.h>
+#include <tge/debugging/CpuProfiler.h>
 #include <IconFontHeaders/IconsLucide.h>
 
 #include "imgui/imgui_impl_dx11.h"
@@ -82,8 +83,16 @@ static ImFont* ImGuiLoadSystemFont(ImFontAtlas& atlas, const char* name, float s
 	};
 
 	ImFontConfig config;
-	config.OversampleH = 4;
-	config.OversampleV = 4;
+	// 2x horizontal, 1x vertical -- not 4x4.
+	//
+	// Oversampling rasterises each glyph at N times the pixels per axis, so 4x4
+	// is sixteen times the work for the whole atlas. Vertical oversampling buys
+	// almost nothing, because text baselines land on pixel boundaries anyway;
+	// ImGui's own default is 1 vertically for exactly that reason. Horizontal
+	// oversampling does help, since glyph advances are fractional, but the
+	// return past 2 is very small.
+	config.OversampleH = 2;
+	config.OversampleV = 1;
 	config.PixelSnapH = false;
 
 	auto path = std::string(windir) + "\\Fonts\\" + name;
@@ -108,8 +117,12 @@ void ImGuiInterface::Init()
 		static const ImWchar icons_ranges[] = { ICON_MIN_LC, ICON_MAX_16_LC, 0 };
 		ImFontConfig icons_config;
 		icons_config.MergeMode = true;
-		icons_config.OversampleH = 4;
-		icons_config.OversampleV = 4;
+		// Icons are pixel-snapped and drawn at a fixed size, so there are no
+		// fractional positions for oversampling to resolve. It was pure cost --
+		// and this font's range is well over a thousand glyphs, rasterised twice
+		// because the atlas holds it at two sizes.
+		icons_config.OversampleH = 1;
+		icons_config.OversampleV = 1;
 		icons_config.PixelSnapH = true;
 		icons_config.GlyphMinAdvanceX = iconFontSize;
 		icons_config.GlyphOffset = { 0.f, 3.f };
@@ -127,8 +140,8 @@ void ImGuiInterface::Init()
 
 		static const ImWchar icons_ranges[] = { ICON_MIN_LC, ICON_MAX_16_LC, 0 };
 		ImFontConfig icons_config;
-		icons_config.OversampleH = 4;
-		icons_config.OversampleV = 4;
+		icons_config.OversampleH = 1;
+		icons_config.OversampleV = 1;
 		icons_config.PixelSnapH = true;
 		icons_config.GlyphMinAdvanceX = iconFontSize;
 		FilePathStream fontPath;
@@ -138,10 +151,10 @@ void ImGuiInterface::Init()
 		}
 	}
 
-	ourImpl->fontAtlas.Build();
+	{ TGA_CPU_SCOPE("Font atlas build"); ourImpl->fontAtlas.Build(); }
 
 
-	ImGui::CreateContext(&ourImpl->fontAtlas);
+	{ TGA_CPU_SCOPE("ImGui CreateContext"); ImGui::CreateContext(&ourImpl->fontAtlas); }
 	ImGuiIO& io = ImGui::GetIO();
 
 	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
@@ -161,7 +174,7 @@ void ImGuiInterface::Init()
 
 
 	// Setup ImGui binding
-	ImGui_ImplWin32_Init(*Tga::Application::GetInstance()->GetHWND());
+	{ TGA_CPU_SCOPE("ImGui Win32 init"); ImGui_ImplWin32_Init(*Tga::Application::GetInstance()->GetHWND()); }
 	// imgui_impl_dx11/dx12 are dedicated per-backend renderer backends (stay
 	// outside the RHI seam per the plan); GetNative*/GetImGuiSrv* are the
 	// sanctioned escape hatches rather than reaching for backend-private
@@ -190,7 +203,8 @@ void ImGuiInterface::Init()
 		initInfo.SrvDescriptorHeap = static_cast<ID3D12DescriptorHeap*>(rhiDevice->GetImGuiSrvDescriptorHeap());
 		initInfo.LegacySingleSrvCpuDescriptor = fontCpu;
 		initInfo.LegacySingleSrvGpuDescriptor = fontGpu;
-		ImGui_ImplDX12_Init(&initInfo);
+		{ TGA_CPU_SCOPE("ImGui DX12 backend init");
+		ImGui_ImplDX12_Init(&initInfo); }
 	}
 	else
 	{

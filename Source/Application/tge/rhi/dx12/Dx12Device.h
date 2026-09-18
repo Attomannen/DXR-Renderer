@@ -320,7 +320,9 @@ namespace Tga::rhi::dx12
 		// The upload list is either closed or open collecting a batch.
 		ID3D12GraphicsCommandList* OpenUploadList();
 		void SubmitUploadList();                               // execute + wait, if open
-		void FinishUpload(ComPtr<ID3D12Resource> staging, uint64_t bytes);
+		// Staging lifetime is owned by the arena now; this only accounts bytes
+		// and decides when a batch has grown big enough to submit.
+		void FinishUpload(uint64_t bytes);
 		void UploadTextureData(ID3D12Resource* dst, const TextureDesc&, const SubresourceData* initial, uint32_t count);
 
 		static constexpr uint32_t kFramesInFlight = 3;
@@ -424,6 +426,23 @@ namespace Tga::rhi::dx12
 		bool myUploadListOpen = false;
 		std::vector<ComPtr<ID3D12Resource>> myUploadStaging;   // kept alive until the batch executes
 		uint64_t myUploadStagingBytes = 0;
+		// A persistent, persistently-mapped upload arena that every staging copy
+		// sub-allocates from.
+		//
+		// Each upload used to create its own committed upload heap, and a
+		// committed resource is an expensive allocation: loading the Bistro
+		// meant 266 of them for meshes and another 378 for textures, which
+		// measured 1786 ms and 1109 ms respectively. The bytes were never the
+		// problem -- the allocations were.
+		ComPtr<ID3D12Resource> myUploadArena;
+		uint8_t* myUploadArenaMapped = nullptr;
+		uint64_t myUploadArenaSize = 0;
+		uint64_t myUploadArenaOffset = 0;
+		// Returns a pointer to write into plus the resource and offset to copy
+		// from. Falls back to a dedicated committed resource for anything too
+		// large to sub-allocate.
+		uint8_t* AcquireUploadSpace(uint64_t size, uint64_t align,
+		                            ID3D12Resource*& outResource, uint64_t& outOffset);
 
 		TextureHandle myBackBufferTex[kFramesInFlight];
 		RtvHandle     myBackBufferRtv[kFramesInFlight];        // sRGB write view (default DX11::BackBuffer)

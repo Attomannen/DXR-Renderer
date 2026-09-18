@@ -922,7 +922,9 @@ namespace Tga::rhi::dx12
 
 		D3D12_HEAP_PROPERTIES heapProps = { heapType };
 		ComPtr<ID3D12Resource> res;
-		HRESULT hr = myDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &rd, initState, nullptr, IID_PPV_ARGS(res.GetAddressOf()));
+		HRESULT hr;
+		{ TGA_CPU_SCOPE("Buffer: CreateCommittedResource");
+		hr = myDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &rd, initState, nullptr, IID_PPV_ARGS(res.GetAddressOf())); }
 		if (FAILED(hr)) { ERROR_PRINT("Dx12Device::CreateBuffer: CreateCommittedResource failed 0x%08X", (unsigned)hr); return {}; }
 
 		if (initialData && d.memory == MemoryType::Default)
@@ -1476,7 +1478,9 @@ namespace Tga::rhi::dx12
 
 		D3D12_HEAP_PROPERTIES heapProps = { D3D12_HEAP_TYPE_DEFAULT };
 		ComPtr<ID3D12Resource> res;
-		HRESULT hr = myDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &rd, initState, pClear, IID_PPV_ARGS(res.GetAddressOf()));
+		HRESULT hr;
+		{ TGA_CPU_SCOPE("Texture: CreateCommittedResource");
+		hr = myDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &rd, initState, pClear, IID_PPV_ARGS(res.GetAddressOf())); }
 		if (FAILED(hr)) { ERROR_PRINT("Dx12Device::CreateTexture: CreateCommittedResource failed 0x%08X", (unsigned)hr); return {}; }
 
 		if (initial && initialCount)
@@ -1512,26 +1516,81 @@ namespace Tga::rhi::dx12
 		UploadBufferFill(dst, size, [&](void* mapped) { memcpy(mapped, data, size); });
 	}
 
+	uint8_t* Dx12Device::AcquireUploadSpace(uint64_t size, uint64_t align,
+	                                        ID3D12Resource*& outResource, uint64_t& outOffset)
+	{
+		// 64 MB blocks. Big enough that a whole scene's meshes usually need one
+		// or two, small enough not to reserve absurd amounts for a small load.
+		constexpr uint64_t kBlockSize = 64ull << 20;
+		const uint64_t aligned = (myUploadArenaOffset + align - 1) & ~(align - 1);
+
+		if (size > kBlockSize)
+		{
+			// Too big to sub-allocate: give it its own resource, as before.
+			D3D12_HEAP_PROPERTIES heap = { D3D12_HEAP_TYPE_UPLOAD };
+			D3D12_RESOURCE_DESC rd = {};
+			rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+			rd.Width = size; rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+			rd.SampleDesc.Count = 1; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+			ComPtr<ID3D12Resource> big;
+			if (FAILED(myDevice->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &rd,
+				D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(big.GetAddressOf()))))
+				return nullptr;
+			uint8_t* mapped = nullptr;
+			D3D12_RANGE noRead{ 0, 0 };
+			if (FAILED(big->Map(0, &noRead, reinterpret_cast<void**>(&mapped)))) return nullptr;
+			outResource = big.Get();
+			outOffset = 0;
+			myUploadStaging.push_back(std::move(big));
+			return mapped;
+		}
+
+		if (!myUploadArena || aligned + size > myUploadArenaSize)
+		{
+			// Wrapping means reusing memory the GPU may still be reading, so the
+			// pending copies have to complete first. SubmitUploadList waits for
+			// idle, which makes the reuse safe.
+			if (myUploadArena && myUploadListOpen) SubmitUploadList();
+			if (!myUploadArena)
+			{
+				D3D12_HEAP_PROPERTIES heap = { D3D12_HEAP_TYPE_UPLOAD };
+				D3D12_RESOURCE_DESC rd = {};
+				rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+				rd.Width = kBlockSize; rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+				rd.SampleDesc.Count = 1; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+				if (FAILED(myDevice->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &rd,
+					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(myUploadArena.GetAddressOf()))))
+					return nullptr;
+				D3D12_RANGE noRead{ 0, 0 };
+				if (FAILED(myUploadArena->Map(0, &noRead, reinterpret_cast<void**>(&myUploadArenaMapped))))
+				{
+					myUploadArena.Reset();
+					return nullptr;
+				}
+				myUploadArenaSize = kBlockSize;
+			}
+			myUploadArenaOffset = 0;
+		}
+
+		const uint64_t offset = (myUploadArenaOffset + align - 1) & ~(align - 1);
+		myUploadArenaOffset = offset + size;
+		outResource = myUploadArena.Get();
+		outOffset = offset;
+		return myUploadArenaMapped + offset;
+	}
+
 	void Dx12Device::UploadBufferFill(ID3D12Resource* dst, size_t size, const std::function<void(void*)>& fill)
 	{
-		D3D12_HEAP_PROPERTIES uploadHeap = { D3D12_HEAP_TYPE_UPLOAD };
-		D3D12_RESOURCE_DESC ud = {};
-		ud.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-		ud.Width = size; ud.Height = 1; ud.DepthOrArraySize = 1; ud.MipLevels = 1;
-		ud.SampleDesc.Count = 1;
-		ud.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-		ComPtr<ID3D12Resource> upload;
-		myDevice->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &ud, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(upload.GetAddressOf()));
-
-		void* mapped = nullptr;
-		D3D12_RANGE noRead{ 0, 0 };
-		upload->Map(0, &noRead, &mapped);
+		TGA_CPU_SCOPE("Buffer: staging fill + copy");
+		// D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT is the strictest requirement a
+		// copy source here has; 512 also satisfies buffer copies.
+		ID3D12Resource* uploadRes = nullptr; uint64_t uploadOffset = 0;
+		void* mapped = AcquireUploadSpace(size, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, uploadRes, uploadOffset);
+		if (!mapped) { ERROR_PRINT("Dx12Device::UploadBufferFill: no upload space for %llu bytes", (unsigned long long)size); return; }
 		fill(mapped);
-		upload->Unmap(0, nullptr);
 
 		ID3D12GraphicsCommandList* list = OpenUploadList();
-		list->CopyBufferRegion(dst, 0, upload.Get(), 0, size);
+		list->CopyBufferRegion(dst, 0, uploadRes, uploadOffset, size);
 		D3D12_RESOURCE_BARRIER b = {};
 		b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 		b.Transition.pResource = dst;
@@ -1539,7 +1598,7 @@ namespace Tga::rhi::dx12
 		b.Transition.StateAfter = D3D12_RESOURCE_STATE_GENERIC_READ;
 		b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 		list->ResourceBarrier(1, &b);
-		FinishUpload(std::move(upload), size);
+		FinishUpload(size);
 	}
 
 	ID3D12GraphicsCommandList* Dx12Device::OpenUploadList()
@@ -1565,10 +1624,9 @@ namespace Tga::rhi::dx12
 		myUploadStagingBytes = 0;
 	}
 
-	void Dx12Device::FinishUpload(ComPtr<ID3D12Resource> staging, uint64_t bytes)
+	void Dx12Device::FinishUpload(uint64_t bytes)
 	{
 		if (myUploadBatchDepth <= 0) { SubmitUploadList(); return; }
-		myUploadStaging.push_back(std::move(staging));
 		myUploadStagingBytes += bytes;
 		// Bound the staging memory a large scene can pin at once.
 		constexpr uint64_t kMaxBatchStagingBytes = 512ull << 20;
@@ -1598,20 +1656,11 @@ namespace Tga::rhi::dx12
 		std::vector<UINT64> rowSizes(count);
 		UINT64 totalBytes = 0;
 		myDevice->GetCopyableFootprints(&dstDesc, 0, count, 0, footprints.data(), numRows.data(), rowSizes.data(), &totalBytes);
+		TGA_CPU_SCOPE("Texture: staging fill + copy");
 
-		D3D12_HEAP_PROPERTIES uploadHeap = { D3D12_HEAP_TYPE_UPLOAD };
-		D3D12_RESOURCE_DESC ud = {};
-		ud.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-		ud.Width = totalBytes; ud.Height = 1; ud.DepthOrArraySize = 1; ud.MipLevels = 1;
-		ud.SampleDesc.Count = 1;
-		ud.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-		ComPtr<ID3D12Resource> upload;
-		myDevice->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &ud, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(upload.GetAddressOf()));
-
-		uint8_t* mapped = nullptr;
-		D3D12_RANGE noRead{ 0, 0 };
-		upload->Map(0, &noRead, reinterpret_cast<void**>(&mapped));
+		ID3D12Resource* uploadRes = nullptr; uint64_t uploadBase = 0;
+		uint8_t* mapped = AcquireUploadSpace(totalBytes, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, uploadRes, uploadBase);
+		if (!mapped) { ERROR_PRINT("Dx12Device::UploadTextureData: no upload space for %llu bytes", (unsigned long long)totalBytes); return; }
 		for (uint32_t i = 0; i < count; ++i)
 		{
 			const uint8_t* src = static_cast<const uint8_t*>(initial[i].data);
@@ -1623,7 +1672,6 @@ namespace Tga::rhi::dx12
 				       (size_t)rowSizes[i]);
 			}
 		}
-		upload->Unmap(0, nullptr);
 
 		ID3D12GraphicsCommandList* list = OpenUploadList();
 		// CreateTexture creates render/depth targets directly in their natural
@@ -1649,8 +1697,11 @@ namespace Tga::rhi::dx12
 		{
 			D3D12_TEXTURE_COPY_LOCATION dstLoc = { dst, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {} };
 			dstLoc.SubresourceIndex = i;
-			D3D12_TEXTURE_COPY_LOCATION srcLoc = { upload.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {} };
+			D3D12_TEXTURE_COPY_LOCATION srcLoc = { uploadRes, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {} };
 			srcLoc.PlacedFootprint = footprints[i];
+			// Footprints were computed from offset 0; shift them to wherever in
+			// the arena this upload actually landed.
+			srcLoc.PlacedFootprint.Offset += uploadBase;
 			list->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
 		}
 		D3D12_RESOURCE_BARRIER b = {};
@@ -1660,7 +1711,7 @@ namespace Tga::rhi::dx12
 		b.Transition.StateAfter = rt ? D3D12_RESOURCE_STATE_RENDER_TARGET : ds ? D3D12_RESOURCE_STATE_DEPTH_WRITE : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 		b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 		list->ResourceBarrier(1, &b);
-		FinishUpload(std::move(upload), totalBytes);
+		FinishUpload(totalBytes);
 	}
 
 	// ------------------------------------------------------------------ views
