@@ -928,10 +928,16 @@ float Hash01(uint2 p, uint salt)
 // This is the sampling half of ReSTIR. Temporal and spatial reuse -- the "R" --
 // build on exactly this reservoir, so they can be added without changing the
 // shading below.
-float3 SampleEmissiveDirect(HitSurface hs, float3 viewDir, uint2 pixel, uint frameIndex, uint candidates)
+// Diffuse and specular are returned separately so the diffuse bulk can join the
+// signal NRD denoises. Added straight to the output instead, this is the only
+// un-denoised term in the frame and it dominates the image's noise.
+void SampleEmissiveDirect(HitSurface hs, float3 viewDir, uint2 pixel, uint frameIndex, uint candidates,
+	out float3 diffuseOut, out float3 specularOut)
 {
+	diffuseOut = 0.0f;
+	specularOut = 0.0f;
 	const uint lightCount = gEmissiveLightCount[0];
-	if (lightCount == 0u || candidates == 0u) return 0.0f;
+	if (lightCount == 0u || candidates == 0u) return;
 	const uint usable = min(lightCount, 65536u);
 
 	float weightSum = 0.0f;
@@ -968,7 +974,15 @@ float3 SampleEmissiveDirect(HitSurface hs, float3 viewDir, uint2 pixel, uint fra
 
 		// Geometry term in AREA measure, without the triangle's area: the area
 		// belongs in the source pdf below, not in the target.
-		const float geometry = (nDotL * lDotN) / distSq;
+		//
+		// distSq is floored by the triangle's own area. Sampling a point
+		// uniformly over a triangle is only a sane estimator while the receiver
+		// is further away than the triangle is wide; closer than that, 1/distSq
+		// diverges and one unlucky candidate returns a blinding sample. With
+		// tens of thousands of emitters something is always nearly touching a
+		// surface -- a lamp's glass against its own fixture, a sign against its
+		// wall -- so without this floor the image is covered in fireflies.
+		const float geometry = (nDotL * lDotN) / max(distSq, light.area);
 		const float target = dot(light.radiance, float3(0.2126f, 0.7152f, 0.0722f)) * geometry;
 		if (target <= 0.0f) continue;
 
@@ -990,7 +1004,7 @@ float3 SampleEmissiveDirect(HitSurface hs, float3 viewDir, uint2 pixel, uint fra
 		}
 	}
 
-	if (chosenTarget <= 0.0f || weightSum <= 0.0f) return 0.0f;
+	if (chosenTarget <= 0.0f || weightSum <= 0.0f) return;
 
 	// One shadow ray for the whole list.
 	const float3 toChosen = chosenPoint - hs.worldPosition;
@@ -998,19 +1012,30 @@ float3 SampleEmissiveDirect(HitSurface hs, float3 viewDir, uint2 pixel, uint fra
 	const float3 l = toChosen / max(chosenDist, 1e-4f);
 	// Stop short of the emitter so its own triangle does not occlude it.
 	const float visibility = TraceShadowRay(hs.shadowPosition, l, chosenDist * 0.999f, hs.instanceId, hs.primitiveIndex);
-	if (visibility <= 0.0f) return 0.0f;
+	if (visibility <= 0.0f) return;
 
 	const float nDotL = saturate(dot(hs.worldNormal, l));
 	float3 kd;
-	const float3 specular = CookTorrance(hs.worldNormal, viewDir, l, hs.albedo, hs.roughness, hs.metalness, kd);
-	const float3 brdf = kd * hs.albedo / 3.14159265f + specular;
+	const float3 specularBrdf = CookTorrance(hs.worldNormal, viewDir, l, hs.albedo, hs.roughness, hs.metalness, kd);
+	const float3 diffuseBrdf = kd * hs.albedo / 3.14159265f;
 
 	// The RIS estimator is f(x)/p^(x) times the mean weight. Both the geometry
 	// term and the luminance cancel out of f/p^, leaving just the BRDF and the
 	// emitter's colour -- all the geometry is carried by the accumulated weight.
 	const float3 lum = float3(0.2126f, 0.7152f, 0.0722f);
 	const float3 fOverTarget = chosenRadiance / max(dot(chosenRadiance, lum), 1e-6f);
-	return brdf * fOverTarget * (weightSum / (float)candidates) * visibility;
+	const float3 common = fOverTarget * (weightSum / (float)candidates) * visibility;
+	diffuseOut = diffuseBrdf * common;
+	specularOut = specularBrdf * common;
+
+	// Bound whatever outliers survive the distance floor above, the same way the
+	// reflection path bounds its own. Until temporal reuse raises the effective
+	// sample count, a single-sample estimator will occasionally land on a
+	// configuration no clamp-free estimator can make quiet.
+	const float diffuseLum = dot(diffuseOut, lum);
+	if (diffuseLum > 8.0f) diffuseOut *= 8.0f / diffuseLum;
+	const float specularLum = dot(specularOut, lum);
+	if (specularLum > 8.0f) specularOut *= 8.0f / specularLum;
 }
 
 float3 ShadeDirect(HitSurface hs, float3 shadowOrigin, float3 viewDir, float3 sunDirToLight, uint lightCount,

@@ -315,7 +315,13 @@ void main(uint3 dtid : SV_DispatchThreadID)
 		if (gLightingView == 17u) d = float3(gEmissiveLightCount[0] / 65536.0f, gEmissiveLightCount[0] > 0u ? 1.0f : 0.0f, 0.0f);
 		// viewDir is not in scope this early in main(); it is just the direction
 		// back to the camera.
-		else d = SampleEmissiveDirect(hs, normalize(gCameraOrigin - hs.worldPosition), dtid.xy, gReflectionFrameIndex, max(gEmissiveLightSamples, 1u));
+		else
+		{
+			float3 dd, ds;
+			SampleEmissiveDirect(hs, normalize(gCameraOrigin - hs.worldPosition), dtid.xy,
+				gReflectionFrameIndex, max(gEmissiveLightSamples, 1u), dd, ds);
+			d = dd + ds;
+		}
 		gOutput[dtid.xy] = float4(d, 1);
 		return;
 	}
@@ -389,7 +395,14 @@ void main(uint3 dtid : SV_DispatchThreadID)
 	if (gEnableEnvironmentLighting == 0u) { envDiffuse = 0.0f; envSpecular = 0.0f; }
 	const float3 gi = gEnableIndirectGi != 0u ? (1.0f - hs.metalness) * hs.albedo * ao * EvaluateDxrGi(hitPos, hs.worldNormal) : 0.0f;
 	float3 color = hs.emissive;
-	const float3 indirectDiffuse = gi + envDiffuse * ao;
+	// Emissive geometry sampled as area lights (RIS + one shadow ray): what
+	// makes a lamp light the pavement instead of merely glowing. The diffuse
+	// half joins the indirect signal so NRD denoises it with everything else.
+	float3 emissiveDiffuse = 0.0f, emissiveSpecular = 0.0f;
+	if (gEnableDirectLighting != 0u)
+		SampleEmissiveDirect(hs, viewDir, dtid.xy, gReflectionFrameIndex, gEmissiveLightSamples,
+			emissiveDiffuse, emissiveSpecular);
+	const float3 indirectDiffuse = gi + envDiffuse * ao + emissiveDiffuse;
 	if (gNrdEnabled != 0u && gLightingView == 0u)
 	{
 		// NRD denoises the stochastic (AO-traced) indirect diffuse on its own.
@@ -409,10 +422,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
 	{
 		color += indirectDiffuse;
 	}
-	// Emissive geometry sampled as area lights (RIS + one shadow ray). This is
-	// what makes a lamp light the pavement instead of merely glowing.
-	if (gEnableDirectLighting != 0u)
-		color += SampleEmissiveDirect(hs, viewDir, dtid.xy, gReflectionFrameIndex, gEmissiveLightSamples);
+	color += emissiveSpecular;
 	if (gEnableDirectLighting != 0u)
 		color += ShadeDirect(hs, shadowOrigin, viewDir, gSunDirToLight, gLightCount, gSunRadiance, gAmbientIntensity, clamp(gSunShadowSamples, 1u, 4u),
 			gSunShadowSamples < 4u ? frac(float(gReflectionFrameIndex) * 0.618034f) : 0.0f);
