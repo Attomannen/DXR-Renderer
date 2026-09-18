@@ -3,8 +3,12 @@
 #include <tge/stringRegistry/StringRegistry.h>
 #include <tge/script/Property.h>
 
+#include <memory>
+
 namespace Tga
 {
+	class Script;
+
 	enum class ScenePropertyFlags : unsigned char
 	{
 		None = 0,
@@ -65,11 +69,23 @@ namespace Tga
 		std::span<const ScenePropertyDefinition> GetProperties() const { return myProperties; };
 		std::vector<ScenePropertyDefinition>& EditProperties() { return myProperties; };
 
+		// The object's script. It lives inside the .tgo (saved as "event-graph"), the way a
+		// Blueprint keeps its event graph, and cannot exist apart from it.
+		Script& EditEventGraph();                       // creates an empty graph on first use
+		const Script* GetEventGraph() const { return myEventGraph.get(); }
+		bool HasEventGraph() const;                     // has at least one node
+		// A frozen copy to run while the graph keeps being edited. Rebuilt when the graph changes.
+		std::shared_ptr<const Script> GetEventGraphSnapshot();
+
 	private:
 		std::string myPath;
 		StringId myName;
 
 		StringId myParent;
 		std::vector<ScenePropertyDefinition> myProperties;
+
+		std::shared_ptr<Script> myEventGraph;
+		std::shared_ptr<const Script> myEventGraphSnapshot;
+		int myEventGraphSnapshotSequence = -1;
 	};
 }

@@ -17,25 +17,32 @@ namespace Tga
 	const uint8_t* GetScriptLinkSelectedColor(const ScriptPin& pin);
 	
 	class MoveNodesCommand;
-	
-	class EditorScriptManager
-	{
-		EditorScriptManager();
-		~EditorScriptManager();
+	class SceneObjectDefinition;
 
-		struct EditorScriptData
+	// The node graph editor for one script. Each object-definition document owns one.
+	class ScriptGraphEditor
+	{
+	public:
+		ScriptGraphEditor();
+		~ScriptGraphEditor();
+		ScriptGraphEditor(const ScriptGraphEditor&) = delete;
+		ScriptGraphEditor& operator=(const ScriptGraphEditor&) = delete;
+
+		// Draws the graph. `definition` is the object the script belongs to; its variables are
+		// what Read/Write Property nodes and "Promote to Variable" work with.
+		void Display(Script& script, SceneObjectDefinition* definition, ScriptPinId& pinToTrigger, bool isRunning);
+
+		ScriptEditorSelection& GetSelection() { return myState.selection; }
+
+	private:
+		struct State
 		{
-			Script* script;
 			ScriptEditorSelection selection = {};
 			ax::NodeEditor::EditorContext* nodeEditorContext = nullptr;
 			ScriptPinId inProgressLinkPin = { ScriptPinId::InvalidId };
 			ScriptNodeId hoveredNode = { ScriptNodeId::InvalidId };
-			int latestSavedSequenceNumber = 0;
-			bool hasBeenRemoved = false;
-
 			std::shared_ptr<MoveNodesCommand> inProgressMove;
 
-			// Editor state that is not part of the script.
 			ScriptNodeId pendingFocusNode = { ScriptNodeId::InvalidId }; // select and frame this node next frame
 			std::vector<ScriptNodeId> pendingSelect;                     // select these next frame (just created)
 			bool showIssues = false;                                     // the compile results list is open
@@ -44,25 +51,7 @@ namespace Tga
 			ScriptPinId contextPin = { ScriptPinId::InvalidId };         // pin the right-click menu is about
 			ScriptPinId dragPin = { ScriptPinId::InvalidId };            // pin a wire was dragged off into empty space
 			bool searchJustOpened = false;
-		};
-	
-		std::map<std::string, EditorScriptData, std::less<>> myOpenScripts;
-	
-	public:
-		static EditorScriptManager& GetInstance();
-	
-		void Init();
-
-		Script& CreateNewScript(const std::string_view& aName);
-		void MarkScriptAsRemoved(const std::string_view aName);
-		void MarkScriptAsAdded(const std::string_view aName);
-		void DisplayEditor(const std::string_view& aActiveScript, ScriptPinId &aPinToTrigger, bool aIsRunning);
-
-		void GetAllScriptsThatStartsWithPath(const std::string_view path, std::vector<std::string_view>& scripts);
-
-		ScriptEditorSelection& GetSelection(const std::string_view& aName);
-
-		void SaveAll();
+		} myState;
 	};
 
 } // namespace Tga

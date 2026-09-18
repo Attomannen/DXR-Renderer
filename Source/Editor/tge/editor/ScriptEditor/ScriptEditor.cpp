@@ -4,7 +4,6 @@
 
 #include <tge/script/ScriptRuntimeInstance.h>
 #include <tge/script/ScriptNodeTypeRegistry.h>
-#include <tge/script/ScriptManager.h>
 #include <tge/script/JsonData.h>
 #include <tge/script/Script.h>
 
@@ -41,18 +40,6 @@ namespace ed = ax::NodeEditor;
 
 using namespace Tga;
 
-// Deleted assets are moved into "<asset root>/.trash" (so a delete can be undone). They
-// are not part of the project and must not be found by a scan of it.
-static bool IsInAssetTrash(const std::filesystem::path& path)
-{
-	for (const auto& part : path)
-		if (part == ".trash") return true;
-	return false;
-}
-
-static std::unique_ptr<ScriptRuntimeInstance> locScriptRuntimeInstance;
-static int frameNumber = 0;
-
 // Disables this library's own position/selection persistence file -- it
 // would otherwise write "NodeEditor.json" into the process's working
 // directory and collide across every open script, since each gets its own
@@ -63,13 +50,6 @@ static ed::EditorContext* CreateScriptEditorContext()
 	ed::Config config;
 	config.SettingsFile = nullptr;
 	return ed::CreateEditor(&config);
-}
-
-EditorScriptManager& EditorScriptManager::GetInstance()
-{
-	static EditorScriptManager s_instance;
-
-	return s_instance;
 }
 
 const uint8_t* Tga::GetScriptLinkColor(const ScriptPin& pin)
@@ -201,102 +181,15 @@ const uint8_t* Tga::GetScriptLinkSelectedColor(const ScriptPin& pin)
 }
 
 
-Tga::EditorScriptManager::EditorScriptManager()
-{}
-
-Tga::EditorScriptManager::~EditorScriptManager()
-{}
-
-Script& Tga::EditorScriptManager::CreateNewScript(const std::string_view& aName)
+Tga::ScriptGraphEditor::ScriptGraphEditor()
 {
-	ScriptManager::AddEditableScript(aName, std::make_unique<Script>());
-	myOpenScripts.insert({ std::string(aName), EditorScriptData{ScriptManager::GetEditableScript(aName), {}, CreateScriptEditorContext()} });
-	return *ScriptManager::GetEditableScript(aName);
+	myState.nodeEditorContext = CreateScriptEditorContext();
 }
 
-void Tga::EditorScriptManager::MarkScriptAsRemoved(const std::string_view aName)
+Tga::ScriptGraphEditor::~ScriptGraphEditor()
 {
-	myOpenScripts.find(aName)->second.hasBeenRemoved = true;
-}
-
-void Tga::EditorScriptManager::MarkScriptAsAdded(const std::string_view aName)
-{
-	myOpenScripts.find(aName)->second.hasBeenRemoved = false;
-}
-
-ScriptEditorSelection& Tga::EditorScriptManager::GetSelection(const std::string_view& aName)
-{
-	return myOpenScripts.find(aName)->second.selection;
-}
-
-
-void Tga::EditorScriptManager::GetAllScriptsThatStartsWithPath(const std::string_view path, std::vector<std::string_view>& scripts)
-{
-	// all scripts with path, will be just after the path in the
-	auto it = myOpenScripts.upper_bound(path);
-
-	// Loop as long as we have a sub paths
-	for (; it != myOpenScripts.end() && it->first.compare(0, path.size(), path) == 0; ++it) 
-	{
-		if (it->second.hasBeenRemoved)
-			continue;
-
-		scripts.push_back(it->first);
-	}
-}
-
-
-void Tga::EditorScriptManager::Init()
-{
-	// Load all scripts in the data/scripts folder:
-
-	for (const auto& entry : std::filesystem::recursive_directory_iterator(Settings::GameAssetRoot()))
-	{
-		if (entry.path().extension() != ".tgscript" || IsInAssetTrash(entry.path()))
-			continue;
-
-		std::filesystem::path relPath = fs::relative(entry.path(), Settings::GameAssetRoot());
-		relPath.replace_extension("");
-		std::string relPathString = relPath.string();
-		Script* script = ScriptManager::GetEditableScript(relPathString);
-
-		if (!script)
-			continue;
-
-		EditorScriptData data{ script, {}, CreateScriptEditorContext() };
-		data.latestSavedSequenceNumber = script->GetSequenceNumber();
-
-		myOpenScripts.insert({ relPathString, data});
-	}
-}
-
-void Tga::EditorScriptManager::SaveAll()
-{
-	for (auto& p : myOpenScripts)
-	{
-		FilePathStream pathStream;
-		pathStream << Tga::Settings::GameAssetRoot() << "/" << p.first << ".tgscript";
-		pathStream.NormalizePath();
-		std::filesystem::path path(pathStream.GetData());
-		if (p.second.hasBeenRemoved)
-		{
-			std::filesystem::remove(path);
-		}
-		else
-		{
-			JsonData jsonData;
-			p.second.script->WriteToJson(jsonData);
-
-			if (fs::exists(path))
-				fs::permissions(path, fs::perms::all);
-
-			std::ofstream out(path, std::ios::trunc);
-			out << jsonData.json.dump(2);
-			out.close();
-
-			p.second.latestSavedSequenceNumber = p.second.script->GetSequenceNumber();
-		}
-	}
+	if (myState.nodeEditorContext)
+		ed::DestroyEditor(myState.nodeEditorContext);
 }
 
 static ImU32 ColorU32(const uint8_t* aColor) { return IM_COL32(aColor[0], aColor[1], aColor[2], 255); }
@@ -390,15 +283,6 @@ namespace
 		ScriptNodeId node;
 		std::string message;
 	};
-
-	SceneObjectDefinition* FindScriptObjectDefinition(std::string_view scriptName)
-	{
-		// Scripts live in <object path>/<name>.tgscript, so the folder names the object.
-		const std::filesystem::path parent = std::filesystem::path(std::string(scriptName)).parent_path();
-		if (parent.empty())
-			return nullptr;
-		return Editor::GetEditor()->GetSceneObjectDefinitionManager().Get(StringRegistry::RegisterOrGetString(parent.filename().string()));
-	}
 
 	bool IsPropertyNode(std::string_view title, bool& outIsWrite)
 	{
@@ -895,15 +779,13 @@ namespace
 	std::unordered_map<unsigned int, ImVec2> locCommentOverhead;
 }
 
-void Tga::EditorScriptManager::DisplayEditor(const std::string_view& aActiveScript, ScriptPinId &aPinToTrigger, bool aIsRunning)
+void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* definition, ScriptPinId& aPinToTrigger, bool aIsRunning)
 {
-	EditorScriptData& activeScript = myOpenScripts.find(aActiveScript)->second;
+	State& activeScript = myState;
 
 	ed::SetCurrentEditor(activeScript.nodeEditorContext);
-	Script& script = *activeScript.script;
 
 	// Compile: checks the script every frame and lists what is wrong; click a row to jump to it.
-	SceneObjectDefinition* definition = FindScriptObjectDefinition(aActiveScript);
 	{
 		std::vector<ScriptIssue> issues;
 		ValidateScript(script, definition, issues);

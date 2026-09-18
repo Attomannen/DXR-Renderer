@@ -18,7 +18,6 @@
 #include <tge/imgui/ImGuiInterface.h>
 #include <tge/scene/SceneSerialize.h>
 
-#include <tge/script/ScriptManager.h>
 #include <tge/script/ScriptRuntimeInstance.h>
 
 #include <tge/animation/Script/AnimationNodes.h>
@@ -152,7 +151,6 @@ void Tga::Editor::Init(const EditorConfiguration& aEditorConfiguration, std::uni
 
 	myAssetBrowser.SetPath(rootPath);
 	mySceneObjectDefinitionManager.Init(rootPath);
-	EditorScriptManager::GetInstance().Init();
 
 	EditorSettings::Load();
 	myIsViewportGridVisible = EditorSettings::Get().viewportGridVisible;
@@ -756,7 +754,6 @@ void Editor::Save()
 	// populating myClosedDocuments without also revisiting this. Left out
 	// deliberately rather than silently kept "for when that's wired up".
 
-	EditorScriptManager::GetInstance().SaveAll();
 }
 
 void Editor::OnAction(CommandManager::Action action)

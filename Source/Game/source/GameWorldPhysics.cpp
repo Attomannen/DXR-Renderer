@@ -446,10 +446,7 @@ void GameWorld::Impl::DrawPhysicsTab()
 
 	ImGui::Text("Scene collision: %d static, %d prop(s)", scenePhysicsStaticCount, dynamicProps);
 	{
-		size_t scriptCount = 0;
-		for (const SceneScriptObject& object : sceneScripts)
-			scriptCount += object.scripts.size();
-		ImGui::Text("Scripts: %zu on %zu object(s)", scriptCount, sceneScripts.size());
+		ImGui::Text("Scripts: %zu object(s) run an event graph", sceneScripts.size());
 		ImGui::SameLine();
 		ImGui::Checkbox("Run scripts", &scriptsEnabled);
 	}

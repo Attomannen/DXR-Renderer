@@ -7,6 +7,7 @@
 #include <tge/editor/Tools/Viewport/Viewport.h>
 #include <tge/scene/SceneObjectDefinition.h>
 #include <tge/script/ScriptRuntimeInstance.h>
+#include <tge/editor/ScriptEditor/ScriptEditor.h>
 
 #include "tge/animation/Pose.h"
 #include <tge/editor/EditorGraphics/EditorGraphicsBase.h>
@@ -32,8 +33,7 @@ struct LivePreviewData
 	std::unordered_map<StringId, Property> dynamicProperties;
 	std::unordered_map<StringId, Property> staticProperties;
 
-	std::unordered_set<StringId> enabledScripts;
-	std::vector<std::pair<StringId, ScriptRuntimeInstance>> scriptInstances;
+	std::unique_ptr<ScriptRuntimeInstance> graph; // the object's event graph while it runs
 };
 
 class ObjectDefinitionDocument : public Document, public ViewportInterface
@@ -76,9 +76,7 @@ private:
 	SceneObjectDefinition* myObjectDefinition;
 
 	StringId mySelectedProperty;
-	std::string mySelectedScript;
-	std::string myActiveScript;
-	std::string myPrevActiveScript;
+	ScriptGraphEditor myGraphEditor;
 
 	EditorViewport myViewport;
 

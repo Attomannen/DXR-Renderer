@@ -11,7 +11,6 @@ float deg_to_rad(float degree) { return (degree * (pi / 180.0f)); }
 
 #include <tge/editor/CommandManager/CommandManager.h>
 #include <tge/script/Script.h>
-#include <tge/script/ScriptManager.h>
 #include <tge/script/JsonData.h>
 #include <tge/settings/settings.h>
 

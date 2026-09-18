@@ -3,7 +3,6 @@
 #include "Scene.h"
 #include <filesystem>
 #include <tge/script/Script.h>
-#include <tge/script/ScriptManager.h>
 #include <tge/script/ScriptRuntimeInstance.h>
 #include <tge/script/Contexts/ScriptUpdateContext.h>
 

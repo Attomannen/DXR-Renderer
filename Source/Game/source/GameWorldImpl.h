@@ -422,14 +422,13 @@ struct GameWorld::Impl
 	float physicsLogTimer = 0.f;
 	int physicsLogCount = 0;
 	// --- per-object scripts (GameWorldScripts.cpp) ---
-	// A .tgo's scripts are the .tgscript files in the folder named after it
-	// (Folder/Name.tgo -> Folder/Name/*.tgscript). They start when the scene loads and
-	// run every frame.
+	// An object's script is the event graph inside its .tgo. It starts when the scene loads
+	// and runs every frame.
 	struct SceneScriptObject
 	{
 		size_t instance = 0;                                   // index into models
 		std::string name;                                      // for logs
-		std::vector<std::unique_ptr<Tga::ScriptRuntimeInstance>> scripts;
+		std::unique_ptr<Tga::ScriptRuntimeInstance> graph;
 		std::unordered_map<StringId, Tga::Property> dynamicProperties;
 		std::unordered_map<StringId, Tga::Property> staticProperties;
 

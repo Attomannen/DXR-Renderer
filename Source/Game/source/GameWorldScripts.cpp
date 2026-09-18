@@ -4,7 +4,6 @@
 
 #include "GameWorldImpl.h"
 #include <tge/script/Script.h>
-#include <tge/script/ScriptManager.h>
 #include <tge/script/JsonData.h>
 #include <tge/scene/SceneObjectDefinition.h>
 
@@ -16,10 +15,8 @@ namespace Tga
 
 // Per-object scripts.
 //
-// A .tgo's scripts are the .tgscript files in the folder named after it:
-// Folder/Name.tgo -> <game root>/Folder/Name/*.tgscript (the same place the editor puts
-// them). Every script starts when the scene loads and runs each frame, on the object
-// that the .tgo was placed as.
+// An object's script is the event graph stored inside its .tgo. It starts when the scene
+// loads and runs every frame, on the object that the .tgo was placed as.
 //
 // Variables are the .tgo's properties, as in the editor preview: properties flagged dynamic
 // are read and written by scripts (and per-instance values from the scene file override the
@@ -233,7 +230,7 @@ namespace
 	};
 }
 
-static void LoadObjectVariables(const GameScene::SceneEntry& entry, GameWorld::Impl::SceneScriptObject& object)
+static void LoadObjectDefinition(const GameScene::SceneEntry& entry, GameWorld::Impl::SceneScriptObject& object)
 {
 	// The property types register themselves from static initialisers; make sure they linked.
 	Tga::EnsureScenePropertiesAreLoaded();
@@ -269,6 +266,12 @@ static void LoadObjectVariables(const GameScene::SceneEntry& entry, GameWorld::I
 			else
 				object.staticProperties[property.name] = value;
 		}
+
+		if (definition.HasEventGraph())
+		{
+			object.graph = std::make_unique<ScriptRuntimeInstance>(definition.GetEventGraphSnapshot());
+			object.graph->Init();
+		}
 	}
 	catch (const std::exception& e)
 	{
@@ -287,41 +290,16 @@ void GameWorld::Impl::RegisterSceneScripts(const GameScene::SceneEntry& entry, s
 	if (entry.tgoPath.empty())
 		return;
 
-	namespace fs = std::filesystem;
-	const fs::path root = Settings::GameAssetRoot();
-	const fs::path folder = root / entry.tgoPath;
-	std::error_code ec;
-	if (!fs::is_directory(folder, ec))
-		return;
-
 	SceneScriptObject object;
 	object.instance = instanceIndex;
 	object.name = entry.tgoPath;
-	LoadObjectVariables(entry, object);
+	LoadObjectDefinition(entry, object);
 
-	for (const fs::directory_entry& item : fs::recursive_directory_iterator(folder, ec))
+	if (object.graph)
 	{
-		if (!item.is_regular_file() || item.path().extension() != ".tgscript")
-			continue;
-
-		fs::path relative = fs::relative(item.path(), root, ec);
-		relative.replace_extension("");
-		const std::string scriptPath = relative.generic_string();
-
-		std::shared_ptr<const Script> script = ScriptManager::GetScript(scriptPath);
-		if (!script)
-		{
-			ERROR_PRINT("script: could not load '%s'", scriptPath.c_str());
-			continue;
-		}
-
-		object.scripts.push_back(std::make_unique<ScriptRuntimeInstance>(script));
-		object.scripts.back()->Init();
-		INFO_PRINT("script: '%s' on object %zu", scriptPath.c_str(), instanceIndex);
-	}
-
-	if (!object.scripts.empty())
+		INFO_PRINT("script: '%s' on object %zu", entry.tgoPath.c_str(), instanceIndex);
 		sceneScripts.push_back(std::move(object));
+	}
 }
 
 void GameWorld::Impl::UpdateSceneScripts(float deltaSeconds)
@@ -341,8 +319,7 @@ void GameWorld::Impl::UpdateSceneScripts(float deltaSeconds)
 		context.dynamicProperties = &object.dynamicProperties;
 		context.staticProperties = &object.staticProperties;
 
-		for (std::unique_ptr<ScriptRuntimeInstance>& script : object.scripts)
-			script->Update(context);
+		object.graph->Update(context);
 	}
 }
 

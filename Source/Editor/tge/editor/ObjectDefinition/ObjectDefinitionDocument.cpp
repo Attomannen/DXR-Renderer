@@ -6,7 +6,6 @@
 
 #include <tge/imgui/ImGuiPropertyEditor.h>
 #include <tge/scene/ScenePropertyTypes.h>
-#include <tge/script/ScriptManager.h>
 #include <tge/script/ScriptRuntimeInstance.h>
 #include <tge/script/contexts/ScriptUpdateContext.h>
 #include <tge/script/BaseProperties.h>
@@ -15,7 +14,6 @@
 
 #include <tge/editor/ObjectDefinition/Commands/ChangePropertiesCommand.h>
 #include <tge/editor/ScriptEditor/ScriptEditor.h>
-#include <tge/editor/ScriptEditor/Commands/CreateScriptCommand.h>
 
 #include <tge/editor/Editor.h>
 
@@ -164,17 +162,11 @@ void ObjectDefinitionDocument::Update(float aTimeDelta, InputManager& inputManag
 			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Properties].c_str(), right);
 			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::VisualPreviewSettings].c_str(), left);
 			
-			if (Editor::GetEditor()->GetEditorConfiguration().enableVisualScripts)
-			{
-				ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::LivePreview].c_str(), left);
-			}
+			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::LivePreview].c_str(), left);
 
 			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::ObjectDefinition].c_str(), left);
 
-			if (Editor::GetEditor()->GetEditorConfiguration().enableVisualScripts)
-			{
-				ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Script].c_str(), center);
-			}
+			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Script].c_str(), center);
 
 			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Viewport].c_str(), center);
 
@@ -210,24 +202,10 @@ void ObjectDefinitionDocument::Update(float aTimeDelta, InputManager& inputManag
 
 	ImGui::End();
 
-	if (Editor::GetEditor()->GetEditorConfiguration().enableVisualScripts)
-	{
-		ImGui::SetNextWindowClass(&myDocumentWindowClass);
-
-		if (myActiveScript != myPrevActiveScript)
-		{
-			ImGui::SetNextWindowFocus();
-			myPrevActiveScript = myActiveScript;
-		}
-
-		ImGui::Begin(myPanelWindowNames[(size_t)Panels::Script].c_str());
-
-		if (!myActiveScript.empty())
-		{
-			EditorScriptManager::GetInstance().DisplayEditor(myActiveScript, myLivePreviewData.pinToTrigger, myLivePreviewData.mode==LivePreviewMode::Running);
-		}
-		ImGui::End();
-	}
+	ImGui::SetNextWindowClass(&myDocumentWindowClass);
+	ImGui::Begin(myPanelWindowNames[(size_t)Panels::Script].c_str());
+	myGraphEditor.Display(myObjectDefinition->EditEventGraph(), myObjectDefinition, myLivePreviewData.pinToTrigger, myLivePreviewData.mode == LivePreviewMode::Running);
+	ImGui::End();
 
 	ImGui::SetNextWindowClass(&myDocumentWindowClass);
 
@@ -249,14 +227,9 @@ void ObjectDefinitionDocument::Update(float aTimeDelta, InputManager& inputManag
 
 	ImGui::End();
 
-	if (Editor::GetEditor()->GetEditorConfiguration().enableVisualScripts)
-	{
-		ImGui::Begin(myPanelWindowNames[(size_t)Panels::LivePreview].c_str());
-
-		DrawAndUpdateLivePreview(aTimeDelta);
-
-		ImGui::End();
-	}
+	ImGui::Begin(myPanelWindowNames[(size_t)Panels::LivePreview].c_str());
+	DrawAndUpdateLivePreview(aTimeDelta);
+	ImGui::End();
 }
 
 void ObjectDefinitionDocument::OnAction(CommandManager::Action action)
@@ -283,11 +256,6 @@ void ObjectDefinitionDocument::OnAction(CommandManager::Action action)
 	}
 }
 
-struct CreateScriptData
-{
-	char name[MAX_OBJECTDEFINITION_TEXT_LENGTH];
-};
-
 struct CreateVariableData
 {
 	char name[MAX_OBJECTDEFINITION_TEXT_LENGTH];
@@ -297,105 +265,12 @@ struct CreateVariableData
 void ObjectDefinitionDocument::DrawObjectDefinitionPanel()
 {
 	static CreateVariableData locCreateVariableData;
-	static CreateVariableData locCreateScriptData;
 
 	// todo: add option to select parent object definition here
-	// todo: add list of scripts here!
 
 	ImGuiTreeNodeFlags sectionFlags = ImGuiTreeNodeFlags_DefaultOpen;
 	ImGuiTreeNodeFlags categoryFlags = ImGuiTreeNodeFlags_DefaultOpen;
 	ImGuiTreeNodeFlags itemFlags = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
-
-	if (Editor::GetEditor()->GetEditorConfiguration().enableVisualScripts)
-	{
-		bool showScripts = ImGui::TreeNodeEx("Scripts", sectionFlags);
-		ImGui::SameLine();
-		if (ImGui::SmallButton("Add##Scripts"))
-		{
-			strncpy_s(locCreateScriptData.name, "untitled", sizeof(locCreateScriptData.name));
-			locCreateScriptData.name[sizeof(locCreateScriptData.name) - 1] = '\0';
-
-			ImGui::OpenPopup("Add Script");
-		}
-
-		if (ImGui::BeginPopupModal("Add Script", NULL, ImGuiWindowFlags_AlwaysAutoResize))
-		{
-
-
-			ImGui::InputText("##Name", locCreateScriptData.name, IM_ARRAYSIZE(locCreateScriptData.name), ImGuiInputTextFlags_AutoSelectAll);
-
-			ImGui::Separator();
-
-			if (ImGui::Button("Create", ImVec2(120, 0)))
-			{
-				std::filesystem::path path = myObjectDefinition->GetPath();
-				path.replace_extension(""); 
-				path += "_";
-				path += std::string_view(locCreateScriptData.name);
-
-				std::string pathString = path.string();
-
-				EditorScriptManager& editorScriptManager = EditorScriptManager::GetInstance();
-
-				auto& script = editorScriptManager.CreateNewScript(pathString);
-
-				std::shared_ptr<CreateScriptCommand> createCommand = std::make_shared<CreateScriptCommand>(pathString, script, editorScriptManager.GetSelection(pathString) );
-				CommandManager::DoCommand(createCommand);
-
-				ImGui::CloseCurrentPopup();
-			}
-
-			ImGui::SetItemDefaultFocus();
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel", ImVec2(120, 0)))
-			{
-				ImGui::CloseCurrentPopup();
-			}
-
-			ImGui::EndPopup();
-		}
-
-		if (showScripts)
-		{
-			static std::vector<std::string_view> scripts;
-
-			std::filesystem::path objectPath = myObjectDefinition->GetPath();
-			objectPath.replace_extension("");
-
-			scripts.clear();
-
-			EditorScriptManager& editorScriptManager = EditorScriptManager::GetInstance();
-
-			std::string objectPathString = objectPath.string();
-			editorScriptManager.GetAllScriptsThatStartsWithPath(objectPathString, scripts);
-
-			for (auto s : scripts)
-			{
-				ImGuiTreeNodeFlags flags = itemFlags;
-
-				if (mySelectedScript == s)
-					flags |= ImGuiTreeNodeFlags_Selected;
-
-				// just show the scripts name relative to the objects path:
-				ImGui::TreeNodeEx(s.data() + objectPathString.size() + 1, flags);
-
-				if (ImGui::IsItemClicked())
-				{
-					mySelectedProperty = {};
-					mySelectedScript = s;
-				}
-				
-				if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))
-				{
-					myActiveScript = s;
-				}
-					
-
-			}
-			ImGui::TreePop();
-		}
-	}
-
 
 	// Components: what the object is made of (Mesh, Collider, Rigidbody), like a Blueprint.
 	// Everything else below is a plain variable.
@@ -455,7 +330,6 @@ void ObjectDefinitionDocument::DrawObjectDefinitionPanel()
 				std::shared_ptr<ChangePropertiesCommand> command = std::make_shared<ChangePropertiesCommand>(*myObjectDefinition, ChangePropertiesCommand::Action::Add, newProperty, ScenePropertyDefinition{});
 				CommandManager::DoCommand(command);
 				mySelectedProperty = newProperty.name;
-				mySelectedScript.clear();
 			}
 
 			ImGui::CloseCurrentPopup();
@@ -484,7 +358,6 @@ void ObjectDefinitionDocument::DrawObjectDefinitionPanel()
 			if (ImGui::IsItemClicked())
 			{
 				mySelectedProperty = components[i].name;
-				mySelectedScript.clear();
 			}
 
 			if (ImGui::BeginPopupContextItem(components[i].name.GetString()))
@@ -622,7 +495,6 @@ void ObjectDefinitionDocument::DrawObjectDefinitionPanel()
 				else if (ImGui::IsItemClicked())
 				{
 					mySelectedProperty = properties[i].name;
-					mySelectedScript.clear();
 				}
 
 				if (ImGui::BeginPopupContextItem(properties[i].name.GetString()))
@@ -760,7 +632,6 @@ void ObjectDefinitionDocument::DrawPropertyPanel()
 					}
 				}
 
-				if (Editor::GetEditor()->GetEditorConfiguration().enableVisualScripts)
 				{
 					bool currentIsDynamic = (property.flags & ScenePropertyFlags::IsDynamic) != ScenePropertyFlags::None;
 					bool newIsDynamic = currentIsDynamic;
@@ -846,35 +717,6 @@ void ObjectDefinitionDocument::DrawPropertyPanel()
 
 void ObjectDefinitionDocument::DrawAndUpdateLivePreview(float deltaTime)
 {
-	static std::vector<StringId> scriptNames;
-	static std::vector<std::string_view> scriptPaths;
-
-
-	{
-		scriptNames.clear();
-		scriptPaths.clear();
-
-		std::filesystem::path objectPath = myObjectDefinition->GetPath();
-		objectPath.replace_extension("");
-
-		EditorScriptManager& editorScriptManager = EditorScriptManager::GetInstance();
-
-		std::string objectPathString = objectPath.string();
-		editorScriptManager.GetAllScriptsThatStartsWithPath(objectPathString, scriptPaths);
-
-		for (std::string_view s : scriptPaths)
-		{
-			scriptNames.push_back(StringRegistry::RegisterOrGetString(s.data() + objectPathString.length() + 1));
-		}
-	}
-
-	if (scriptNames.empty())
-	{
-		ImGui::Text("No scripts found");
-		ImGui::Text("Add scripts first to preview");
-
-	}
-
 	if (ImGui::BeginTable("Toolbar", 3, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingFixedFit))
 	{
 		ImGui::TableNextRow();
@@ -900,16 +742,11 @@ void ObjectDefinitionDocument::DrawAndUpdateLivePreview(float deltaTime)
 					}
 				}
 
-				for (int i = 0; i<scriptNames.size(); i++)
+				if (myObjectDefinition->HasEventGraph())
 				{
-					if (myLivePreviewData.enabledScripts.find(scriptNames[i]) == myLivePreviewData.enabledScripts.end())
-						continue;
-
-					std::shared_ptr<const Script> script = ScriptManager::GetScript(scriptPaths[i]);
-					myLivePreviewData.scriptInstances.emplace_back(std::make_pair(scriptNames[i], ScriptRuntimeInstance{script}));
-					myLivePreviewData.scriptInstances.back().second.Init();
+					myLivePreviewData.graph = std::make_unique<ScriptRuntimeInstance>(myObjectDefinition->GetEventGraphSnapshot());
+					myLivePreviewData.graph->Init();
 				}
-				
 			}
 
 			myLivePreviewData.mode = LivePreviewMode::Running;
@@ -930,95 +767,17 @@ void ObjectDefinitionDocument::DrawAndUpdateLivePreview(float deltaTime)
 			myLivePreviewData.poses.clear();
 			myLivePreviewData.dynamicProperties.clear();
 			myLivePreviewData.staticProperties.clear();
-			myLivePreviewData.scriptInstances.clear();
+			myLivePreviewData.graph.reset();
 			myLivePreviewData.frameNumber = 0;
 		}
 
 		ImGui::EndTable();
 	}
 
-	if (PropertyEditor::PropertyHeader("Scripts to preview") && PropertyEditor::BeginPropertyTable())
-	{
-		for (int i = 0; i < scriptNames.size(); i++)
-		{
-			StringId scriptName = scriptNames[i];
-			ImGui::PushID(i);
-
-			PropertyEditor::PropertyLabel();
-			ImGui::Text(scriptName.GetString());
-
-			PropertyEditor::PropertyValue();
-
-			bool wasActive = myLivePreviewData.enabledScripts.find(scriptName) != myLivePreviewData.enabledScripts.end();
-			bool isActive = wasActive;
-
-			ImGui::Checkbox("##IsEnabled", &isActive);
-
-			if (!myLivePreviewData.scriptInstances.empty())
-			{
-				int index = -1;
-				for (int j = 0; j < myLivePreviewData.scriptInstances.size(); j++)
-				{
-					if (myLivePreviewData.scriptInstances[j].first == scriptName)
-					{
-						index = j;
-						break;
-					}
-				}
-				if (index != -1)
-				{
-					int previewSequenceNumber = myLivePreviewData.scriptInstances[index].second.GetScript().GetSequenceNumber();
-					int currentSequenceNumber = ScriptManager::GetEditableScript(scriptPaths[i])->GetSequenceNumber();
-
-					if (previewSequenceNumber != currentSequenceNumber)
-					{
-						// Script is running but out of date, show a warning
-						ImGui::SameLine();
-
-						ImGui::Text(ICON_LC_TRIANGLE_ALERT);
-						if (ImGui::IsItemHovered())
-						{
-							ImGui::SetTooltip("The running script is out of date. Restart the live preview to get latest changes.");
-						}
-
-					}
-				}
-				
-
-			}
-
-			if (isActive && !wasActive)
-			{
-				myLivePreviewData.enabledScripts.insert(scriptName);
-
-				if (myLivePreviewData.mode != LivePreviewMode::Stopped)
-				{
-					std::shared_ptr<const Script> script = ScriptManager::GetScript(scriptPaths[i]);
-					myLivePreviewData.scriptInstances.emplace_back(std::make_pair(scriptName, ScriptRuntimeInstance{ script }));
-					myLivePreviewData.scriptInstances.back().second.Init();
-				}
-			}
-			else if (!isActive && wasActive)
-			{
-				myLivePreviewData.enabledScripts.erase(scriptName);
-
-				if (myLivePreviewData.mode != LivePreviewMode::Stopped)
-				{
-					for (int j = 0; j < myLivePreviewData.scriptInstances.size(); j++)
-					{
-						if (myLivePreviewData.scriptInstances[j].first == scriptName)
-						{
-							myLivePreviewData.scriptInstances.erase(myLivePreviewData.scriptInstances.begin() + j);
-						}
-					}
-				}
-			}
-
-			ImGui::PopID();
-		}
-
-		PropertyEditor::EndPropertyTable();
-	}
+	if (!myObjectDefinition->HasEventGraph())
+		ImGui::TextDisabled("The Event Graph is empty. Add nodes to it to preview.");
+	else if (myLivePreviewData.graph && myLivePreviewData.graph->GetScript().GetSequenceNumber() != myObjectDefinition->EditEventGraph().GetSequenceNumber())
+		ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.3f, 1.f), ICON_LC_TRIANGLE_ALERT " The running graph is out of date. Stop and play again to use the latest changes.");
 
 	if (myLivePreviewData.mode == LivePreviewMode::Running)
 	{
@@ -1031,14 +790,14 @@ void ObjectDefinitionDocument::DrawAndUpdateLivePreview(float deltaTime)
 		scriptUpdateContext.dynamicProperties = &myLivePreviewData.dynamicProperties;
 		scriptUpdateContext.staticProperties = &myLivePreviewData.staticProperties;
 
-		for (auto& pair : myLivePreviewData.scriptInstances)
+		if (myLivePreviewData.graph)
 		{
 			if (myLivePreviewData.pinToTrigger.id != ScriptPinId::InvalidId)
 			{
-				pair.second.TriggerPin(myLivePreviewData.pinToTrigger, scriptUpdateContext);
+				myLivePreviewData.graph->TriggerPin(myLivePreviewData.pinToTrigger, scriptUpdateContext);
 				myLivePreviewData.pinToTrigger.id = ScriptPinId::InvalidId;
 			}
-			pair.second.Update(scriptUpdateContext);
+			myLivePreviewData.graph->Update(scriptUpdateContext);
 		}
 		
 		std::span<const ScenePropertyDefinition> properties = myObjectDefinition->GetProperties();

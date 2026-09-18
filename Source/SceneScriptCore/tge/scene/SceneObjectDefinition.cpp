@@ -3,6 +3,7 @@
 #include <tge/script/JsonData.h>
 #include <tge/settings/settings.h>
 #include "ScenePropertyTypes.h"
+#include <tge/script/Script.h>
 
 #include <fstream>
 #include <filesystem>
@@ -57,6 +58,13 @@ void SceneObjectDefinition::Save()
 		jsonData["properties"].push_back(propertyJson);
 	}
 
+	if (HasEventGraph())
+	{
+		JsonData graph;
+		myEventGraph->WriteToJson(graph);
+		jsonData["event-graph"] = graph.json;
+	}
+
 	std::ofstream fout(path, std::ios::trunc);
 	fs::permissions(path, fs::perms::all);
 
@@ -103,4 +111,46 @@ void SceneObjectDefinition::Load(const char* aPath)
 
 		myProperties.push_back(propertyDefinition);
 	}
+
+	myEventGraph.reset();
+	myEventGraphSnapshot.reset();
+	myEventGraphSnapshotSequence = -1;
+	if (jsonData.contains("event-graph"))
+	{
+		myEventGraph = std::make_shared<Script>();
+		myEventGraph->LoadFromJson(JsonData{ jsonData["event-graph"] });
+	}
+}
+
+Script& SceneObjectDefinition::EditEventGraph()
+{
+	if (!myEventGraph)
+		myEventGraph = std::make_shared<Script>();
+	return *myEventGraph;
+}
+
+bool SceneObjectDefinition::HasEventGraph() const
+{
+	return myEventGraph && myEventGraph->GetFirstNodeId().id != ScriptNodeId::InvalidId;
+}
+
+std::shared_ptr<const Script> SceneObjectDefinition::GetEventGraphSnapshot()
+{
+	if (!myEventGraph)
+		return nullptr;
+
+	const int sequence = myEventGraph->GetSequenceNumber();
+	if (myEventGraphSnapshot && myEventGraphSnapshotSequence == sequence)
+		return myEventGraphSnapshot;
+
+	// The runtime must not see edits half way, so it gets its own copy, made through the file format.
+	JsonData json;
+	myEventGraph->WriteToJson(json);
+	std::shared_ptr<Script> snapshot = std::make_shared<Script>();
+	snapshot->LoadFromJson(json);
+	snapshot->SetSequenceNumber(sequence);
+
+	myEventGraphSnapshot = snapshot;
+	myEventGraphSnapshotSequence = sequence;
+	return snapshot;
 }
