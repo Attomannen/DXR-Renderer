@@ -20,6 +20,8 @@ namespace Tga
 		virtual void Draw();
 		void SetPath(const std::string_view &);
 		StringId GetSelectedAsset();
+		// File > New Level: asks for a name in the Content Browser's current folder.
+		void RequestNewLevel();
 		fs::path GetCurrentFolder() const;
 
 		// Converts an FBX into its .tgo prefab plus one .tgmat per FBX material, with

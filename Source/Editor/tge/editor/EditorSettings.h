@@ -20,6 +20,7 @@ namespace Tga
 	{
 		bool viewportGridVisible = true;
 		bool viewportCollisionVisible = false;
+		std::string lastLevel;     // the level (relative to the asset root) that was open last
 		int dockLayoutVersion = 0; // the layout version imgui.ini was saved with (see DockLayoutVersion)
 
 		// Gizmos::Snap's fields, duplicated flat rather than reusing that

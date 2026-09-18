@@ -219,6 +219,80 @@ bool Tga::Editor::ShowSavePromptModal()
 }
 
 
+SceneDocument* Tga::Editor::GetLevelDocument()
+{
+	for (const std::unique_ptr<Document>& document : myOpenDocuments)
+		if (SceneDocument* level = dynamic_cast<SceneDocument*>(document.get()))
+			if (level->GetState() != Document::State::CloseConfirmed)
+				return level;
+	return nullptr;
+}
+
+void Tga::Editor::OpenLevel(const fs::path& path)
+{
+	const fs::path relative = path.is_absolute() ? fs::relative(path, Settings::GameAssetRoot()) : path;
+	const std::string relativeString = relative.string();
+
+	SceneDocument* current = GetLevelDocument();
+	if (current && current->GetPath() == relativeString)
+		return;
+
+	if (current)
+	{
+		// Closing goes through the usual save prompt; the new level opens once it is gone.
+		current->SetState(Document::State::CloseRequested);
+		myPendingLevel = relativeString;
+		myPendingLevelSawClose = false;
+		return;
+	}
+	OpenLevelNow(relativeString);
+}
+
+void Tga::Editor::OpenLevelNow(const std::string& relativePath)
+{
+	try
+	{
+		std::unique_ptr<SceneDocument> document = std::make_unique<SceneDocument>();
+		document->Init(relativePath);
+		AddDocument(std::move(document));
+
+		EditorSettings::Get().lastLevel = relativePath;
+		EditorSettings::Save();
+	}
+	catch (const std::exception& e)
+	{
+		ERROR_PRINT("Could not open level '%s': %s", relativePath.c_str(), e.what());
+	}
+}
+
+void Tga::Editor::OpenStartupLevel()
+{
+	const fs::path root = fs::absolute(Settings::GameAssetRoot());
+	const std::string& last = EditorSettings::Get().lastLevel;
+	if (!last.empty() && fs::exists(root / last))
+	{
+		OpenLevelNow(last);
+		return;
+	}
+
+	std::error_code error;
+	for (const fs::directory_entry& entry : fs::recursive_directory_iterator(root, error))
+	{
+		if (!entry.is_regular_file() || entry.path().extension() != ".tgs")
+			continue;
+		bool trashed = false;
+		for (const auto& part : entry.path())
+			trashed |= part == ".trash";
+		if (trashed)
+			continue;
+		OpenLevelNow(fs::relative(entry.path(), root).string());
+		return;
+	}
+
+	// A project with no level yet still gets one to work in.
+	CreateNewScene(root / "Untitled.tgs");
+}
+
 std::string Tga::Editor::CreateNewScene(const fs::path& path)
 {
 	fs::path p = path;
@@ -234,9 +308,7 @@ std::string Tga::Editor::CreateNewScene(const fs::path& path)
 	scene.SetPath(relativePath.string().c_str());
 	SaveScene(scene);
 
-	std::unique_ptr<SceneDocument> sceneDocument = std::make_unique<SceneDocument>();
-	sceneDocument->Init(relativePath.string());
-	AddDocument(std::move(sceneDocument));
+	OpenLevel(p);
 	return {};
 }
 
@@ -459,9 +531,35 @@ void Tga::Editor::Update(float aTimeDelta, InputManager& inputManager)
 				{
 					if (ImGui::BeginMenu("File"))
 					{
-						if (ImGui::MenuItem("Save", "Ctrl+S"))
+						if (ImGui::MenuItem("Save All", "Ctrl+S"))
 						{
 							Save();
+						}
+						ImGui::Separator();
+						if (ImGui::MenuItem("New Level..."))
+							myAssetBrowser.RequestNewLevel();
+						if (ImGui::BeginMenu("Open Level"))
+						{
+							const fs::path root = fs::absolute(Settings::GameAssetRoot());
+							std::error_code error;
+							int count = 0;
+							for (const fs::directory_entry& entry : fs::recursive_directory_iterator(root, error))
+							{
+								if (!entry.is_regular_file() || entry.path().extension() != ".tgs")
+									continue;
+								bool trashed = false;
+								for (const auto& part : entry.path())
+									trashed |= part == ".trash";
+								if (trashed)
+									continue;
+								++count;
+								const fs::path relative = fs::relative(entry.path(), root);
+								if (ImGui::MenuItem(fs::path(relative).replace_extension("").generic_string().c_str()))
+									OpenLevel(entry.path());
+							}
+							if (count == 0)
+								ImGui::TextDisabled("No levels yet");
+							ImGui::EndMenu();
 						}
 
 						ImGui::EndMenu();
@@ -507,7 +605,7 @@ void Tga::Editor::Update(float aTimeDelta, InputManager& inputManager)
 						}
 						ImGui::EndMenu();
 					}
-					if (ImGui::BeginMenu("Assets"))
+					if (ImGui::BeginMenu("Tools"))
 					{
 						if (ImGui::MenuItem("Texture Importer..."))
 							OpenTextureImporterFromSelection();
@@ -564,6 +662,29 @@ void Tga::Editor::Update(float aTimeDelta, InputManager& inputManager)
 			ImGui::End();
 			
 			std::erase_if(myOpenDocuments, [](const auto& document) { return document->GetState() == Document::State::CloseConfirmed; });
+
+			if (!myStartupLevelOpened)
+			{
+				myStartupLevelOpened = true;
+				OpenStartupLevel();
+			}
+			if (!myPendingLevel.empty())
+			{
+				SceneDocument* level = GetLevelDocument();
+				if (!level)
+				{
+					OpenLevelNow(myPendingLevel);
+					myPendingLevel.clear();
+				}
+				else if (level->GetState() != Document::State::Open)
+				{
+					myPendingLevelSawClose = true;
+				}
+				else if (myPendingLevelSawClose)
+				{
+					myPendingLevel.clear(); // the save prompt was cancelled: stay on this level
+				}
+			}
 
 			if (myDocumentsPendingClose.size() > 0)
 			{

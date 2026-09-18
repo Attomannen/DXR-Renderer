@@ -79,9 +79,9 @@ void SceneDocument::Init(std::string_view path)
 
 	sprintf_s(buffer, "Viewport##Document:%s", path.data());
 	myPanelWindowNames[(size_t)Panels::Viewport] = buffer;
-	sprintf_s(buffer, "Properties##Document:%s", path.data());
+	sprintf_s(buffer, "Details##Document:%s", path.data());
 	myPanelWindowNames[(size_t)Panels::Properties] = buffer;
-	sprintf_s(buffer, "Instances##Document:%s", path.data());
+	sprintf_s(buffer, "Outliner##Document:%s", path.data());
 	myPanelWindowNames[(size_t)Panels::Instances] = buffer;
 	sprintf_s(buffer, "Tool Settings##Document:%s", path.data());
 	myPanelWindowNames[(size_t)Panels::ToolSettings] = buffer;
@@ -162,12 +162,8 @@ void SceneDocument::Update(float aTimeDelta, InputManager& inputManager)
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1);
 
 
-	bool open = true;
-	ImGui::Begin(buffer, &open);
-	if (myState == Document::State::Open && !open)
-	{
-		myState = Document::State::CloseRequested;
-	}
+	// The level is always open: no close button. Opening another level replaces it.
+	ImGui::Begin(buffer);
 	{
 		// Todo: move this out so it can be reused between documents
 
@@ -233,6 +229,10 @@ void SceneDocument::Update(float aTimeDelta, InputManager& inputManager)
 
 	ImGui::PopStyleVar(2);
 
+	ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 8.f);
+	DrawAddMenu();
+	ImGui::Dummy(ImVec2(0.f, 2.f));
+
 	ImVec2 docSpaceSize = ImGui::GetContentRegionAvail();
 
 	ImGuiID dockSpaceId = ImGui::GetID("Document Dockspace");
@@ -241,7 +241,7 @@ void SceneDocument::Update(float aTimeDelta, InputManager& inputManager)
 
 	if (!myIsDockingInitialized && docSpaceSize.x > 0.0f && docSpaceSize.y > 0.0f)
 	{
-		ImGuiID center = 0, left = 0, rightBottom = 0, rightTop = 0;
+		ImGuiID center = 0, right = 0, rightBottom = 0;
 
 		ImGui::DockBuilderRemoveNode(dockSpaceId); // clear any previous layout
 		ImGui::DockBuilderAddNode(dockSpaceId, ImGuiDockNodeFlags_DockSpace);
@@ -249,15 +249,13 @@ void SceneDocument::Update(float aTimeDelta, InputManager& inputManager)
 
 		center = dockSpaceId;
 
-		ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.2f, &left, &center);
-		ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.25f, &rightBottom, &center);
-		ImGui::DockBuilderSplitNode(rightBottom, ImGuiDir_Up, 0.2f, &rightTop, &rightBottom);
+		ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.25f, &right, &center);
+		ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.55f, &rightBottom, &right);
 
 		ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Viewport].c_str(), center);
-		ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::ToolSettings].c_str(), rightTop);
+		ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Instances].c_str(), right);
+		ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::ToolSettings].c_str(), right);
 		ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Properties].c_str(), rightBottom);
-		ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Instances].c_str(), left);
-		//ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::NavmeshCreationTool].c_str(), left);
 
 		ImGui::DockBuilderFinish(dockSpaceId);
 
@@ -530,69 +528,123 @@ void SceneDocument::OnAction(CommandManager::Action action)
 	mySceneObjectList.SetSceneDirty();
 }
 
-void SceneDocument::HandleDrop() 
+void SceneDocument::PlaceObject(const std::string& definitionPath, const std::string& displayName)
+{
+	auto object = std::make_shared<SceneObject>();
+	StringId objectDefinitionName = StringRegistry::RegisterOrGetString(fs::path(definitionPath).stem().string());
+	object->SetSceneObjectDefinitionName(objectDefinitionName);
+
+	if (myScene->GetFirstSceneObject(objectDefinitionName.GetString()) == nullptr)
+	{
+		object->SetName(displayName.c_str());
+	}
+	else
+	{
+		char buffer[512];
+
+		int i = 1;
+
+		// todo: this is a O(n^2) algorithm
+		while (true)
+		{
+			sprintf_s(buffer, "%s(%i)", displayName.c_str(), i);
+			if (myScene->GetFirstSceneObject(buffer) == nullptr)
+			{
+				object->SetName(buffer);
+				break;
+			}
+			i++;
+		}
+	}
+
+	{
+		Camera& cam = myViewport.GetCamera();
+		Vector3f pos = cam.GetTransform().GetPosition() + cam.GetTransform().GetForward() * myViewport.GetCameraFocusDistance();
+
+		if (myViewport.GetGizmos().GetSnappingInfo().snapPos)
+		{
+			pos = pos / myViewport.GetGizmos().GetSnappingInfo().pos;
+			pos.x = round(pos.x);
+			pos.y = round(pos.y);
+			pos.z = round(pos.z);
+
+			pos = myViewport.GetGizmos().GetSnappingInfo().pos * pos;
+		}
+
+		object->GetTRS().translation = pos;
+	}
+
+	std::shared_ptr<AddSceneObjectsCommand> command = std::make_shared<AddSceneObjectsCommand>();
+	command->AddObjects(std::span<std::shared_ptr<SceneObject>>(&object, 1));
+	CommandManager::DoCommand(command);
+
+	SceneSelection::GetActiveSceneSelection()->ClearSelection();
+
+	std::span<const std::pair<uint32_t, std::shared_ptr<SceneObject>>>  createdObjects = command->GetObjects();
+	for (const std::pair<uint32_t, std::shared_ptr<SceneObject>>& p : createdObjects)
+	{
+		SceneSelection::GetActiveSceneSelection()->AddToSelection(p.first);
+	}
+
+	mySceneObjectList.SetSceneDirty();
+}
+
+void SceneDocument::DrawAddMenu()
+{
+	static char filter[64] = "";
+
+	if (ImGui::Button(ICON_LC_PLUS " Add"))
+	{
+		filter[0] = '\0';
+		ImGui::OpenPopup("PlaceObjectMenu");
+	}
+	ImGui::SameLine();
+	ImGui::TextDisabled("Place a TGO in the level");
+
+	if (ImGui::BeginPopup("PlaceObjectMenu"))
+	{
+		if (ImGui::IsWindowAppearing())
+			ImGui::SetKeyboardFocusHere();
+		ImGui::SetNextItemWidth(300.f);
+		ImGui::InputTextWithHint("##placefilter", ICON_LC_SEARCH " Search", filter, sizeof(filter));
+
+		std::string lowerFilter = filter;
+		for (char& c : lowerFilter) c = (char)std::tolower((unsigned char)c);
+
+		if (ImGui::BeginChild("##placelist", ImVec2(300.f, 260.f)))
+		{
+			int shown = 0;
+			for (SceneObjectDefinition* definition : Editor::GetEditor()->GetSceneObjectDefinitionManager().GetAll())
+			{
+				std::string name = definition->GetName().GetString();
+				std::string lowerName = name;
+				for (char& c : lowerName) c = (char)std::tolower((unsigned char)c);
+				if (!lowerFilter.empty() && lowerName.find(lowerFilter) == std::string::npos)
+					continue;
+				++shown;
+				ImGui::PushID(shown);
+				if (ImGui::Selectable(name.c_str()))
+				{
+					PlaceObject(definition->GetPath(), name);
+					ImGui::CloseCurrentPopup();
+				}
+				ImGui::PopID();
+			}
+			if (shown == 0)
+				ImGui::TextDisabled("No TGO matches");
+		}
+		ImGui::EndChild();
+		ImGui::EndPopup();
+	}
+}
+
+void SceneDocument::HandleDrop()
 {
 	if (ImGui::BeginDragDropTarget())
 	{
 		auto placePrefab = [this](const std::string& definitionPath, const std::string& displayName)
 		{
-			auto object = std::make_shared<SceneObject>();
-			StringId objectDefinitionName = StringRegistry::RegisterOrGetString(fs::path(definitionPath).stem().string());
-			object->SetSceneObjectDefinitionName(objectDefinitionName);
-
-			if (myScene->GetFirstSceneObject(objectDefinitionName.GetString()) == nullptr)
-			{
-				object->SetName(displayName.c_str());
-			}
-			else
-			{
-				char buffer[512];
-
-				int i = 1;
-
-				// todo: this is a O(n^2) algorithm
-				while (true)
-				{
-					sprintf_s(buffer, "%s(%i)", displayName.c_str(), i);
-					if (myScene->GetFirstSceneObject(buffer) == nullptr)
-					{
-						object->SetName(buffer);
-						break;
-					}
-					i++;
-				}
-			}
-
-			{
-				Camera& cam = myViewport.GetCamera();
-				Vector3f pos = cam.GetTransform().GetPosition() + cam.GetTransform().GetForward() * myViewport.GetCameraFocusDistance();
-
-				if (myViewport.GetGizmos().GetSnappingInfo().snapPos)
-				{
-					pos = pos / myViewport.GetGizmos().GetSnappingInfo().pos;
-					pos.x = round(pos.x);
-					pos.y = round(pos.y);
-					pos.z = round(pos.z);
-
-					pos = myViewport.GetGizmos().GetSnappingInfo().pos * pos;
-				}
-
-				object->GetTRS().translation = pos;
-			}
-
-			std::shared_ptr<AddSceneObjectsCommand> command = std::make_shared<AddSceneObjectsCommand>();
-			command->AddObjects(std::span<std::shared_ptr<SceneObject>>(&object, 1));
-			CommandManager::DoCommand(command);
-
-			SceneSelection::GetActiveSceneSelection()->ClearSelection();
-
-			std::span<const std::pair<uint32_t, std::shared_ptr<SceneObject>>>  createdObjects = command->GetObjects();
-			for (const std::pair<uint32_t, std::shared_ptr<SceneObject>>& p : createdObjects)
-			{
-				SceneSelection::GetActiveSceneSelection()->AddToSelection(p.first);
-			}
-
-			mySceneObjectList.SetSceneDirty();
+			PlaceObject(definitionPath, displayName);
 		};
 
 		if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(".tgo"))

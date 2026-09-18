@@ -21,6 +21,7 @@ namespace Tga
 { 
 class SpriteShader;
 class InputManager;
+class SceneDocument;
 
 
 enum class GlobalWindows
@@ -73,6 +74,10 @@ public:
 	Tga::AssetBrowser& GetAssetBrowser() { return myAssetBrowser; }
 	void FocusDocument(Document* document);
 
+	// The editor always has one level open. Opening another replaces it (after the save prompt
+	// if it has unsaved changes). The path is absolute or relative to the asset root.
+	void OpenLevel(const fs::path& path);
+
 	// Create an asset at the given path (absolute) and open it. Return an error message, or empty.
 	std::string CreateNewScene(const fs::path& path);
 	std::string CreateNewObjectDefinition(const fs::path& path);
@@ -87,6 +92,14 @@ public:
 	const EditorConfiguration& GetEditorConfiguration() { return myEditorConfiguration; }
 	const EditorGraphicsBase& GetEditorGraphics() const  { return *myEditorGraphics; }
 private:
+	void OpenLevelNow(const std::string& relativePath);
+	void OpenStartupLevel();
+	SceneDocument* GetLevelDocument();
+
+	bool myStartupLevelOpened = false;
+	std::string myPendingLevel;          // the level to open once the current one has closed
+	bool myPendingLevelSawClose = false; // the current level went through its close prompt
+
 	bool ShowSavePromptModal();
 	void DrawUndoHistoryPanel();
 

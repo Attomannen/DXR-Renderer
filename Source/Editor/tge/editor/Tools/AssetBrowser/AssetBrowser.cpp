@@ -430,23 +430,8 @@ void AssetBrowser::Draw()
 						{
 							if (itemStatus.doubleClicked)
 							{
-								// todo: check if already open!
-								// move this logic somewhere else?
-
-								// SceneDocument::Init() throws if the .tgs no longer exists on
-								// disk (deleted/moved since this listing was scanned) -- same
-								// guard as the .tgmat case below, so a stale double-click
-								// reports a status message instead of crashing the editor.
-								try
-								{
-									std::unique_ptr<SceneDocument> sceneDocument = std::make_unique<SceneDocument>();
-									sceneDocument->Init(path.string());
-									Editor::GetEditor()->AddDocument(std::move(sceneDocument));
-								}
-								catch (const std::exception& e)
-								{
-									myAssetOperationError = std::string("Could not open scene '") + path.string() + "': " + e.what();
-								}
+								// The editor always has one level open; this replaces it.
+								Editor::GetEditor()->OpenLevel(path);
 							}
 						}
 
@@ -628,6 +613,11 @@ void AssetBrowser::DrawBreadcrumbs()
 			ImGui::SameLine(0.f, 4.f);
 		}
 	}
+}
+
+void AssetBrowser::RequestNewLevel()
+{
+	RequestCreate(CreateKind::Level);
 }
 
 void AssetBrowser::RequestCreate(CreateKind kind)

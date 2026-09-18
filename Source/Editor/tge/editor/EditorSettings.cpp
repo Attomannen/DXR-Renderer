@@ -51,6 +51,7 @@ void EditorSettings::Load()
 
 		if (auto it = j.find("viewportGridVisible"); it != j.end() && it->is_boolean()) s.viewportGridVisible = it->get<bool>();
 		if (auto it = j.find("viewportCollisionVisible"); it != j.end() && it->is_boolean()) s.viewportCollisionVisible = it->get<bool>();
+		if (auto it = j.find("lastLevel"); it != j.end() && it->is_string()) s.lastLevel = it->get<std::string>();
 		if (auto it = j.find("dockLayoutVersion"); it != j.end() && it->is_number_integer()) s.dockLayoutVersion = it->get<int>();
 
 		if (auto it = j.find("fbxImport"); it != j.end() && it->is_object())
@@ -85,6 +86,7 @@ void EditorSettings::Save()
 		{"version", 1},
 		{"viewportGridVisible", s.viewportGridVisible},
 		{"viewportCollisionVisible", s.viewportCollisionVisible},
+		{"lastLevel", s.lastLevel},
 		{"dockLayoutVersion", s.dockLayoutVersion},
 		{"fbxImport", {
 			{"normalsOpenGL", s.fbxNormalsOpenGL},

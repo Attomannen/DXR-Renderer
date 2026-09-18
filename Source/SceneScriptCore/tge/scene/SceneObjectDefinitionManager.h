@@ -15,6 +15,8 @@ namespace Tga
 
 		SceneObjectDefinition* CreateOrGet(const std::filesystem::path& aPath);
 		SceneObjectDefinition* Get(StringId name);
+		// Every known definition, sorted by name (for menus that place them).
+		std::vector<SceneObjectDefinition*> GetAll() const;
 
 		// Re-reads a definition from disk after something outside the editor
 		// rewrote its file (the FBX converter regenerating a .tgo with its material

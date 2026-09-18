@@ -1,5 +1,6 @@
 ﻿#include <stdafx.h>
 #include "SceneObjectDefinitionManager.h"
+#include <algorithm>
 
 #include <fstream>
 #include <filesystem>
@@ -126,4 +127,16 @@ SceneObjectDefinition* SceneObjectDefinitionManager::Get(StringId name)
 		return nullptr;
 
 	return it->second.get();
+}
+
+std::vector<SceneObjectDefinition*> SceneObjectDefinitionManager::GetAll() const
+{
+	std::vector<SceneObjectDefinition*> all;
+	for (const auto& entry : mySceneObjectDefinitions)
+		all.push_back(entry.second.get());
+	std::sort(all.begin(), all.end(), [](const SceneObjectDefinition* a, const SceneObjectDefinition* b)
+	{
+		return std::string_view(a->GetName().GetString()) < std::string_view(b->GetName().GetString());
+	});
+	return all;
 }

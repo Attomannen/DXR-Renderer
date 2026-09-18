@@ -57,7 +57,11 @@ public:
 
 	virtual bool HasTransformableSelection() override;
 
+	// Puts an instance of a TGO in front of the viewport camera and selects it.
+	void PlaceObject(const std::string& definitionPath, const std::string& displayName);
+
 private:
+	void DrawAddMenu();
 
 	EditorViewport myViewport;
 	SceneObjectProperties myProperties;
