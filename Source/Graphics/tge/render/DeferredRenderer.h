@@ -450,6 +450,17 @@ namespace Tga
 			// a fixed 48 taps, so past a certain radius the disc is sampled too
 			// sparsely and bokeh breaks into separate dots.
 			float dofMaxRadius    = 24.f;
+			// --- motion blur ---
+			bool  mbEnabled       = false;
+			// Shutter angle in degrees, the film convention: 180 is the classic
+			// "shutter open for half the frame" look. Used instead of the
+			// camera's shutter SPEED because that is tied to exposure, and at
+			// 1/125 s against a 60 Hz frame the blur would be almost nothing.
+			// Same reasoning as the separate blur f-number for depth of field.
+			float mbShutterAngle  = 180.f;
+			// Clamp on the trail length in display pixels. The gather is a fixed
+			// 15 taps, so past a point the trail breaks into separate ghosts.
+			float mbMaxRadius     = 48.f;
 			int   tonemapper      = 0;       // 0 AgX, 1 AgX Punchy, 2 ACES (fitted), 3 none
 			// DXR renderer: write lighting already multiplied by the previous
 			// frame's exposure, so moonlit and sunlit scenes both stay inside
@@ -970,6 +981,18 @@ namespace Tga
 		const PixelShader* myDofCompositePs  = nullptr;
 		RenderTarget myDofHalf, myDofBlur, myDofFull;
 		Vector2ui myDofHalfSize{ 1, 1 };
+		// Compute, not pixel. The velocity target is written as a UAV by the ray
+		// pass and every other consumer reads it from compute; reading it from a
+		// pixel shader reproducibly blacked out the whole frame even with the
+		// transitions in place and tracked. See MotionTileMaxCS.hlsl.
+		const ComputeShader* myMbTileMaxCs   = nullptr;
+		const ComputeShader* myMbNeighbourCs = nullptr;
+		const ComputeShader* myMbBlurCs      = nullptr;
+		rhi::ConstantBuffer myMbCb;
+		rhi::TextureHandle myMbTileTex, myMbNeighbourTex, myMbOutTex;
+		rhi::SrvHandle myMbTileSrv, myMbNeighbourSrv, myMbOutSrv;
+		rhi::UavHandle myMbTileUav, myMbNeighbourUav, myMbOutUav;
+		Vector2ui myMbTileCount{ 1, 1 };
 		const PixelShader* myCompositePs      = nullptr;
 		std::array<RenderTarget, kBloomMips> myBloomMip;   // [0] = half res, each next halved
 		std::array<Vector2ui, kBloomMips>    myBloomSize{};

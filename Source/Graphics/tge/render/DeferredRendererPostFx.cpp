@@ -34,6 +34,35 @@ bool DeferredRenderer::CreatePostFxTargets(Vector2ui aResolution)
 	myDofBlur = RenderTarget::Create(myDofHalfSize, rhi::Format::R16G16B16A16_Float);
 	myDofFull = RenderTarget::Create(aResolution, rhi::Format::R16G16B16A16_Float);
 
+	// Motion blur. 16 display pixels a tile: small enough that one velocity is a
+	// fair summary of what is in it, large enough that the tile pass is cheap
+	// and the neighbour dilation reaches a useful distance.
+	{
+		rhi::IDevice* dev = DX11::Rhi();
+		const uint32_t kMbTile = 16;
+		myMbTileCount = { std::max(1u, (aResolution.x + kMbTile - 1) / kMbTile),
+		                  std::max(1u, (aResolution.y + kMbTile - 1) / kMbTile) };
+		auto make = [&](Vector2ui size, rhi::Format fmt, const char* name,
+		                rhi::TextureHandle& tex, rhi::SrvHandle& srv, rhi::UavHandle& uav)
+		{
+			if (uav.IsValid()) dev->Destroy(uav);
+			if (srv.IsValid()) dev->Destroy(srv);
+			if (tex.IsValid()) dev->Destroy(tex);
+			rhi::TextureDesc td{};
+			td.width = size.x; td.height = size.y; td.mipLevels = 1;
+			td.dimension = rhi::TextureDimension::Tex2D;
+			td.format = fmt;
+			td.bind = rhi::TextureBind::ShaderResource | rhi::TextureBind::UnorderedAccess;
+			td.debugName = name;
+			tex = dev->CreateTexture(td);
+			srv = dev->CreateSrv(tex, rhi::SrvDesc{});
+			uav = dev->CreateUav(tex, rhi::UavDesc{});
+		};
+		make(myMbTileCount, rhi::Format::R16G16_Float, "MotionTileMax", myMbTileTex, myMbTileSrv, myMbTileUav);
+		make(myMbTileCount, rhi::Format::R16G16_Float, "MotionNeighbourMax", myMbNeighbourTex, myMbNeighbourSrv, myMbNeighbourUav);
+		make(aResolution, rhi::Format::R16G16B16A16_Float, "MotionBlurOut", myMbOutTex, myMbOutSrv, myMbOutUav);
+	}
+
 	return true;
 }
 
@@ -74,6 +103,20 @@ void DeferredRenderer::PostFxFullscreen(const PixelShader* aPs, RenderTarget& aD
 			c.dofMaxRadius = std::max(1.f, t.dofMaxRadius);
 			c.dofEnabled = t.dofEnabled ? 1.f : 0.f;
 			c.dofNear = myNear; c.dofFar = myFar;
+		}
+		{
+			// Shutter angle over a full rotation is the fraction of the frame
+			// the shutter is open, and the velocity buffer already spans exactly
+			// one frame -- so the trail length is just that fraction of it.
+			c.mbEnabled = t.mbEnabled ? 1.f : 0.f;
+			const float shutterFraction = std::clamp(t.mbShutterAngle, 0.f, 360.f) / 360.f;
+			// Render pixels to display pixels: the velocity buffer is written at
+			// render resolution and this pass runs at display resolution.
+			const float renderToDisplay = myDxrRenderResolution.x > 0
+				? (float)myResolution.x / (float)myDxrRenderResolution.x : 1.f;
+			c.mbVelocityScale = shutterFraction * renderToDisplay;
+			c.mbTileSize = 16.f;
+			c.mbMaxRadius = std::max(1.f, t.mbMaxRadius);
 		}
 		c.deltaTime = std::min(Application::GetInstance()->GetDeltaTime(), 0.1f);
 		myPostFxCb.Update(DX11::Rhi()->GetContext(), c);
@@ -139,6 +182,76 @@ void DeferredRenderer::RenderPostFx()
 		PostFxFullscreen(myDofCompositePs, myDofFull, myResolution, compositeSrvs, 2, hdrTexel);
 		// The composite reads the sharp frame, so it cannot write to it.
 		ctx.CopyTexture(myHdr.GetTextureHandle(), myDofFull.GetTextureHandle());
+	}
+
+	// --- motion blur: tile max -> neighbour max -> reconstruction gather ---
+	//
+	// After depth of field and before bloom. After, because a defocused
+	// highlight that is also moving should smear as a disc, not as a point that
+	// is blurred twice; before, for the same reason depth of field is -- bloom
+	// is the lens scattering the image it actually forms.
+	//
+	// All three passes are COMPUTE. The velocity target is a UAV written by the
+	// ray pass, and reading it from a pixel shader blacked out the entire frame:
+	// with the tile pass reading it the frame was black, with the identical pass
+	// reading nothing it was correct, and the barriers were present and tracked
+	// either way. Compute is the path every other consumer of that buffer uses.
+	//
+	// DXR path only -- the raster path writes no velocity.
+	if (myTunables.mbEnabled && myMbTileMaxCs && myMbNeighbourCs && myMbBlurCs && myMbCb.IsValid()
+		&& myMbOutUav.IsValid() && myTemporalSrv[0].IsValid() && myTemporalSrv[1].IsValid())
+	{
+		TGA_PROFILE_SCOPE(myProfiler, "Motion blur");
+		rhi::IDevice* dev = DX11::Rhi();
+		rhi::ICommandContext& ctx = dev->GetContext();
+
+		MotionBlurCb cb{};
+		cb.tileCount[0] = myMbTileCount.x; cb.tileCount[1] = myMbTileCount.y;
+		cb.sourceSize[0] = myDxrRenderResolution.x; cb.sourceSize[1] = myDxrRenderResolution.y;
+		cb.outputSize[0] = myResolution.x; cb.outputSize[1] = myResolution.y;
+		cb.tileSize = 16;
+		// Shutter angle over a full rotation is the fraction of the frame the
+		// shutter is open, and the velocity buffer already spans exactly one
+		// frame, so the trail is that fraction of it. Times render-to-display,
+		// because the velocity is in render pixels and this runs at display.
+		cb.velocityScale = (std::clamp(myTunables.mbShutterAngle, 0.f, 360.f) / 360.f)
+			* (myDxrRenderResolution.x > 0 ? (float)myResolution.x / (float)myDxrRenderResolution.x : 1.f);
+		cb.nearPlane = myNear; cb.farPlane = myFar;
+		cb.maxRadius = std::max(1.f, myTunables.mbMaxRadius);
+		myMbCb.Update(ctx, cb);
+
+		const auto dispatch = [&](const ComputeShader* cs, Vector2ui size)
+		{
+			rhi::ComputePipelineDesc pd; pd.cs = cs->module;
+			ctx.SetComputePipeline(dev->CreateComputePipeline(pd));
+			myMbCb.Bind(ctx);
+			ctx.Dispatch((size.x + 7) / 8, (size.y + 7) / 8, 1);
+			ctx.SetComputePipeline({});
+		};
+
+		ctx.SetShaderResource(rhi::ShaderStage::Compute, 0, myTemporalSrv[0]);
+		ctx.SetUnorderedAccess(0, myMbTileUav);
+		dispatch(myMbTileMaxCs, myMbTileCount);
+		ctx.SetUnorderedAccess(0, {});
+
+		ctx.SetShaderResource(rhi::ShaderStage::Compute, 0, myMbTileSrv);
+		ctx.SetUnorderedAccess(0, myMbNeighbourUav);
+		dispatch(myMbNeighbourCs, myMbTileCount);
+		ctx.SetUnorderedAccess(0, {});
+
+		ctx.SetShaderResource(rhi::ShaderStage::Compute, 0, myHdr.GetSrv());
+		ctx.SetShaderResource(rhi::ShaderStage::Compute, 1, myTemporalSrv[0]);
+		ctx.SetShaderResource(rhi::ShaderStage::Compute, 2, myMbNeighbourSrv);
+		ctx.SetShaderResource(rhi::ShaderStage::Compute, 3, myTemporalSrv[1]);
+		ctx.SetSampler(rhi::ShaderStage::Compute, 0, myLinearSampler);
+		ctx.SetUnorderedAccess(0, myMbOutUav);
+		dispatch(myMbBlurCs, myResolution);
+		ctx.SetUnorderedAccess(0, {});
+		const rhi::SrvHandle nulls[4] = {};
+		ctx.SetShaderResources(rhi::ShaderStage::Compute, 0, 4, nulls);
+
+		// The gather reads the unblurred frame, so it cannot write to it.
+		ctx.CopyTexture(myHdr.GetTextureHandle(), myMbOutTex);
 	}
 
 	// --- bloom: prefilter HDR -> mip[0], downsample chain, additive tent upsample ---

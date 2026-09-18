@@ -184,6 +184,9 @@ void ApplyRendererOverrides(DeferredRenderer::Tunables& tun)
 	tun.dofFocusDistance = std::max(0.01f, EnvFloat("BENCH_DOF_FOCUS", tun.dofFocusDistance));
 	tun.dofFocalLength = std::clamp(EnvFloat("BENCH_DOF_FOCAL", tun.dofFocalLength), 5.f, 400.f);
 	tun.dofMaxRadius = std::clamp(EnvFloat("BENCH_DOF_MAXRADIUS", tun.dofMaxRadius), 1.f, 64.f);
+	tun.mbEnabled = EnvInt("BENCH_MOTIONBLUR", tun.mbEnabled ? 1 : 0) != 0;
+	tun.mbShutterAngle = std::clamp(EnvFloat("BENCH_MB_SHUTTER", tun.mbShutterAngle), 0.f, 360.f);
+	tun.mbMaxRadius = std::clamp(EnvFloat("BENCH_MB_MAXRADIUS", tun.mbMaxRadius), 1.f, 128.f);
 	tun.nrdCheckerboard = EnvInt("BENCH_NRD_CHECKERBOARD", tun.nrdCheckerboard ? 1 : 0) != 0;
 	tun.nrdDenoiser = std::clamp(EnvInt("BENCH_NRD_DENOISER", tun.nrdDenoiser), 0, 1);
 	tun.nrdValidation = EnvInt("BENCH_NRD_VALIDATION", 0) != 0;

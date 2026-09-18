@@ -292,6 +292,10 @@ bool DeferredRenderer::Init(Vector2ui aResolution)
 	myDofCocPs         = DX11::LoadPixelShader("Shaders/DofCocPS");
 	myDofBlurPs        = DX11::LoadPixelShader("Shaders/DofBlurPS");
 	myDofCompositePs   = DX11::LoadPixelShader("Shaders/DofCompositePS");
+	myMbTileMaxCs      = DX11::LoadComputeShaderDxil("Shaders/MotionTileMaxCS");
+	myMbNeighbourCs    = DX11::LoadComputeShaderDxil("Shaders/MotionNeighbourMaxCS");
+	myMbBlurCs         = DX11::LoadComputeShaderDxil("Shaders/MotionBlurCS");
+	myMbCb.Create(*DX11::Rhi(), sizeof(MotionBlurCb), rhi::ShaderStage::Compute, 0, "MotionBlurCb");
 	myCompositePs      = DX11::LoadPixelShader("Shaders/DeferredCompositePS");
 	if (!myBloomPrefilterPs || !myBloomDownPs || !myBloomUpPs || !myExposureLumaPs ||
 	    !myExposureDownPs || !myExposureAdaptPs || !myCompositePs)

@@ -36,6 +36,13 @@ cbuffer PostFxParams : register(b10)
 
 	float  gDofNear, gDofFar;
 	float2 _postFxPad3;
+
+	// Motion blur. gMbVelocityScale converts the velocity buffer's RENDER-pixel
+	// vectors into display pixels, which differ under upscaling.
+	float  gMbEnabled;
+	float  gMbVelocityScale;
+	float  gMbTileSize;
+	float  gMbMaxRadius;
 };
 
 #include "Exposure.hlsli"

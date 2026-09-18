@@ -161,8 +161,22 @@ namespace
 
 		float dofCocScale, dofFocusDistance, dofMaxRadius, dofEnabled;
 		float dofNear, dofFar; float pad2[2];
+		float mbEnabled, mbVelocityScale, mbTileSize, mbMaxRadius;
 	};
-	static_assert(sizeof(PostFxCb) == 96);   // +32 depth of field
+	static_assert(sizeof(PostFxCb) == 112);   // +32 depth of field, +16 motion blur
+
+	// Shared by all three motion-blur compute passes. Layout must match
+	// MotionBlurCb in MotionTileMaxCS / MotionNeighbourMaxCS / MotionBlurCS.
+	struct alignas(16) MotionBlurCb
+	{
+		uint32_t tileCount[2];
+		uint32_t sourceSize[2];
+		uint32_t outputSize[2];
+		uint32_t tileSize;
+		float velocityScale;
+		float nearPlane, farPlane, maxRadius; uint32_t pad;
+	};
+	static_assert(sizeof(MotionBlurCb) == 48);
 
 	// CS b0 of the DXR lighting pass; the layout lives in the shared header.
 	using DxrLightingConstants = Tga::DxrShared::DxrLightingConstants;
