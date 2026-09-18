@@ -36,6 +36,9 @@ Run ReadRun()
 	r.camMode = EnvOptStr("BENCH_CAM");
 	r.camFile = EnvOptStr("BENCH_CAMFILE");
 	r.spinDeg = EnvOptFloat("BENCH_SPIN");
+	r.bobCm = EnvOptFloat("BENCH_BOB");
+	r.bobPitch = EnvOptFloat("BENCH_BOB_PITCH");
+	if (const char* v = std::getenv("BENCH_BOB_HOLD")) r.bobHold = atoi(v);
 	r.orbitRadius = EnvOptFloat("BENCH_ORBIT");
 	r.exposure = EnvOptFloat("BENCH_EXPOSURE");
 	r.modelRotX = EnvOptFloat("BENCH_ROT_X");
@@ -188,6 +191,9 @@ void ApplyRendererOverrides(DeferredRenderer::Tunables& tun)
 	if (const char* v = std::getenv("BENCH_APERTURE")) tun.cameraAperture = std::max(0.5f, (float)atof(v));
 	if (const char* v = std::getenv("BENCH_SHUTTER")) tun.cameraShutter = std::max(1e-6f, (float)atof(v));
 	if (const char* v = std::getenv("BENCH_ISO")) tun.cameraIso = std::max(1.f, (float)atof(v));
+	tun.cloudsEnabled = EnvInt("BENCH_CLOUDS", tun.cloudsEnabled ? 1 : 0) != 0;
+	tun.cloudCoverage = std::clamp(EnvFloat("BENCH_CLOUD_COVERAGE", tun.cloudCoverage), 0.f, 1.f);
+	tun.cloudDensity = std::max(0.f, EnvFloat("BENCH_CLOUD_DENSITY", tun.cloudDensity));
 	tun.contactShadows = EnvInt("BENCH_CONTACT", 1) != 0;
 	tun.contactViz = EnvInt("BENCH_CONTACT_VIZ", 0) != 0;
 	tun.localShadowViz = EnvInt("BENCH_LOCALSH_VIZ", 0) != 0;

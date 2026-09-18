@@ -30,6 +30,18 @@ void GameWorld::Impl::SetScriptedCamera()
 		return;
 	}
 
+	if (camLoaded && camMode == CamMode::Bob)
+	{
+		// Pitched at the sky, translating straight up and down: two full
+		// bobs over the run, starting and ending at the saved height.
+		const int moving = std::max(0, cameraFrame - camBobHoldFrames);
+		const int span = std::max(1, benchFrames - 1 - camBobHoldFrames);
+		const float ub = (float)moving / (float)span;
+		const float yOff = camBobCm * std::sin(ub * 6.28318530718f * 2.0f);
+		camera.GetTransform().SetRotation(Vector3f{ camRot.x + camBobPitch, camRot.y, camRot.z });
+		camera.GetTransform().SetPosition(Vector3f{ camPos.x, camPos.y + yOff, camPos.z });
+		return;
+	}
 	const float ang = u * 6.28318530718f * 2.0f;   // two full orbits over the run
 
 	// Orbit around the saved viewpoint if there is one (unless BENCH_CAM=room),

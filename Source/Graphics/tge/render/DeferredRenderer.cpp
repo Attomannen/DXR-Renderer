@@ -333,6 +333,17 @@ bool DeferredRenderer::Init(Vector2ui aResolution)
 		myTunables.proceduralSkyEnabled = false;
 	}
 
+	myCloudShapeNoiseCS = DX11::LoadComputeShader("Shaders/CloudShapeNoiseCS");
+	myCloudDetailNoiseCS = DX11::LoadComputeShader("Shaders/CloudDetailNoiseCS");
+	myCloudsVolumeCS = DX11::LoadComputeShader("Shaders/CloudsVolumeCS");
+	myCloudsConstantsCb.Create(*DX11::Rhi(), sizeof(CloudsConstants), rhi::ShaderStage::Compute, 13, "CloudsConstants");
+	if (!myCloudShapeNoiseCS || !myCloudDetailNoiseCS || !myCloudsVolumeCS ||
+	    !myCloudsConstantsCb.IsValid() || !CreateCloudTargets(aResolution))
+	{
+		ERROR_PRINT("DeferredRenderer: volumetric cloud shaders/targets failed; sky will render without clouds.");
+		myTunables.cloudsEnabled = false;
+	}
+
 	myReady = true;
 	INFO_PRINT("DeferredRenderer: %ux%u G-buffer ready", aResolution.x, aResolution.y);
 	return true;

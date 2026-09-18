@@ -1,5 +1,12 @@
 #include "AtmosphereCommon.hlsli"
+#include "CloudsCommon.hlsli"
 RWTexture2D<float4> FogVolume : register(u0);
+// Cloud shadow onto the existing sunlight shafts (see CloudShadowFactor in
+// CloudsCommon.hlsli) -- a separate binding from the hero cloud raymarch's
+// own textures in CloudsVolumeCS.hlsl, but the same underlying baked noise.
+Texture3D<float4> FogCloudShapeNoise : register(t2);
+Texture3D<float> FogCloudDetailNoise : register(t3);
+SamplerState FogCloudSampler : register(s1);
 [numthreads(8,8,1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
@@ -59,7 +66,10 @@ void main(uint3 tid : SV_DispatchThreadID)
             // rays were fired outside the fog volume entirely, and every sample
             // was paired with a `weight` belonging to a different segment.
             const float t = a + offset * stepLength;
-            scatter += weight * FogSunVisibility(FogCamera + direction * (t * 100));
+            const float3 samplePos = FogCamera + direction * (t * 100);
+            const float cloudShadow = CloudShadowFactor(FogCloudShapeNoise, FogCloudDetailNoise, FogCloudSampler,
+                samplePos * 0.01f, FogSunDirection);
+            scatter += weight * FogSunVisibility(samplePos) * cloudShadow;
         }
         if (transmittance < kMinRemaining) break;
     }

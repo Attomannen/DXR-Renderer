@@ -165,6 +165,13 @@ struct GameWorld::Impl
 	// contain GGX specular and cosine-convolved diffuse lighting. Unlike the
 	// dynamic local probe, it is safe to use for the DXR sky as well as IBL.
 	CubemapData worldEnvironmentPrefiltered;
+	// Prefiltered environment cubemaps replaced by a rebuild, kept alive until
+	// every frame in flight that was recorded against them has retired. The
+	// old rebuild Reset() the live cubemap first, so the GPU read a destroyed
+	// texture for a frame or two: that was the black / raw-blue sky flash on
+	// every sky refresh. Second = the frame at which it may be destroyed.
+	std::vector<std::pair<CubemapData, int>> retiredEnvironmentCubemaps;
+	void ReleaseRetiredEnvironmentCubemaps();
 	std::unique_ptr<RenderTarget> probeFaceRt;
 	std::unique_ptr<DepthBuffer>  probeFaceDepth;
 	TextureResource* fallbackCube = nullptr;   // the env_* cube, used when the probe is off
@@ -298,8 +305,14 @@ struct GameWorld::Impl
 	// image), "spin" holds the position and sweeps yaw in place, "orbit" circles
 	// the saved point. Default when a camera is saved is "spin". No saved camera
 	// -> auto orbit around a point low in the scene.
-	enum class CamMode { Fixed, Spin, Orbit } camMode = CamMode::Orbit;
+	// "bob" holds the saved position, pitches it by camBobPitch and moves it
+	// up and down by +/- camBobCm over the run (vertical translation only, for
+	// sky / cloud reprojection tests).
+	enum class CamMode { Fixed, Spin, Orbit, Bob } camMode = CamMode::Orbit;
 	float camSpinDeg = 35.f;   // BENCH_SPIN: half-sweep for "spin" mode
+	float camBobCm = 300.f;    // BENCH_BOB: half-amplitude of the vertical bob, cm
+	int   camBobHoldFrames = 200; // BENCH_BOB_HOLD: frames held still (history converges, first screenshot) before the bob starts
+	float camBobPitch = -35.f; // BENCH_BOB_PITCH: degrees added to the saved pitch (negative = up, matching the orbit camera)
 	float camOrbitHeight = -1.f;  // BENCH_ORBIT_HEIGHT: fraction of sceneExtents.y; <0 = oscillate
 	bool  orbitRoom = false;   // BENCH_CAM=room: orbit the scene centre even with a saved camera
 

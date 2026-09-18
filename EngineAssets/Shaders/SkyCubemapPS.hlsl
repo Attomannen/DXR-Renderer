@@ -1,4 +1,5 @@
 #include "SkyAtmosphereCommon.hlsli"
+#include "CloudsCommon.hlsli"
 
 // Renders one face of the base sky cubemap by sampling the sky-view LUT
 // along each pixel's view ray, adding the sun disk, and blending in the
@@ -18,6 +19,8 @@ cbuffer SkyCubemapFaceCb : register(b12)
 
 Texture2D<float4> SkyViewLut : register(t2);
 TextureCube<float4> NightSkyCube : register(t3);
+Texture3D<float4> SkyCloudShapeNoise : register(t4);
+Texture3D<float> SkyCloudDetailNoise : register(t5);
 SamplerState LutSampler : register(s0);
 SamplerState CubeSampler : register(s1);
 
@@ -60,6 +63,46 @@ float4 main(FsIn input) : SV_TARGET
 	float nightBlend = saturate(-gSunDirToLight.y * 4.0f + 0.15f) * gNightSkyIntensity;
 	if (nightBlend > 0.0f)
 		sky += NightSkyCube.SampleLevel(CubeSampler, dir, 0).rgb * nightBlend;
+
+	// Clouds are deliberately NOT baked into this cubemap. The cubemap is
+	// only re-rendered when the sun or the camera height changes, so a cloud
+	// layer baked here is a frozen snapshot: it does not scroll with the
+	// wind, and it jumps to a new snapshot whenever the camera moves up or
+	// down. The DXR miss path shows this cubemap as the sky background, so
+	// that snapshot was visible behind the live hero raymarch as a second,
+	// stale cloud layer. Clouds now come only from CloudsVolumeCS.hlsl,
+	// composited over the sky per frame; IBL and reflections see a clear
+	// sky, which is a far smaller error than a stuck cloud deck.
+#if CLOUDS_IN_SKY_CUBEMAP
+	if (gCloudsEnabled != 0 && dir.y > 1e-4f)
+	{
+		float3 cloudOrigin = float3(0.0f, gCameraHeight, 0.0f);
+		float t0 = (gCloudBaseAltitude - cloudOrigin.y) / dir.y;
+		float t1 = (gCloudTopAltitude - cloudOrigin.y) / dir.y;
+		float tEnter = max(0.0f, min(t0, t1));
+		float tExit = max(t0, t1);
+		if (tExit > tEnter)
+		{
+			const int kCheapSteps = 8;
+			float stepLen = (tExit - tEnter) / kCheapSteps;
+			float transmittance = 1.0f;
+			float3 accum = 0.0f;
+			for (int i = 0; i < kCheapSteps; ++i)
+			{
+				float3 samplePos = cloudOrigin + dir * (tEnter + (i + 0.5f) * stepLen);
+				float density = SampleCloudDensity(SkyCloudShapeNoise, SkyCloudDetailNoise, LutSampler, samplePos, true);
+				if (density > 0.001f)
+				{
+					float3 litColor = gSunIlluminance * saturate(dot(gSunDirToLight, float3(0, 1, 0)) * 0.5f + 0.5f) + sky;
+					float segT = exp(-density * stepLen * 0.015f);
+					accum += transmittance * (1.0f - segT) * litColor;
+					transmittance *= segT;
+				}
+			}
+			sky = sky * transmittance + accum;
+		}
+	}
+#endif
 
 	return float4(max(sky, 0.0f), 1.0f);
 }

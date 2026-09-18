@@ -160,8 +160,11 @@ void DeferredRenderer::RenderSkyCubemap(rhi::SrvHandle aNightSkyCubeSrv)
 	gss.SetBlendState(BlendState::Disabled);
 
 	mySkyConstantsCb.Bind(ctx, rhi::ShaderStage::Pixel, 11);
+	myCloudsConstantsCb.Bind(ctx, rhi::ShaderStage::Pixel, 13);
 	ctx.SetShaderResource(rhi::ShaderStage::Pixel, 2, mySkyViewLutSrv);
 	ctx.SetShaderResource(rhi::ShaderStage::Pixel, 3, aNightSkyCubeSrv);
+	ctx.SetShaderResource(rhi::ShaderStage::Pixel, 4, myCloudShapeNoiseSrv);
+	ctx.SetShaderResource(rhi::ShaderStage::Pixel, 5, myCloudDetailNoiseSrv);
 	ctx.SetSampler(rhi::ShaderStage::Pixel, 0, mySkyLutSampler);
 	ctx.SetSampler(rhi::ShaderStage::Pixel, 1, mySkyCubeSampler);
 
@@ -176,8 +179,8 @@ void DeferredRenderer::RenderSkyCubemap(rhi::SrvHandle aNightSkyCubeSrv)
 	}
 
 	ctx.SetRenderTargets(0, nullptr, {});
-	const rhi::SrvHandle nulls[2] = {};
-	ctx.SetShaderResources(rhi::ShaderStage::Pixel, 2, 2, nulls);
+	const rhi::SrvHandle nulls[4] = {};
+	ctx.SetShaderResources(rhi::ShaderStage::Pixel, 2, 4, nulls);
 }
 
 bool DeferredRenderer::UpdateProceduralSky(const Vector3f& aSunDirToLight, const Vector3f& aSunIlluminance,
@@ -205,7 +208,12 @@ bool DeferredRenderer::UpdateProceduralSky(const Vector3f& aSunDirToLight, const
 		std::abs(aSunIlluminance.x - myLastSkySunIlluminance.x) > 1e-6f ||
 		std::abs(aSunIlluminance.y - myLastSkySunIlluminance.y) > 1e-6f ||
 		std::abs(aSunIlluminance.z - myLastSkySunIlluminance.z) > 1e-6f;
-	const bool heightChanged = std::abs(cameraHeightM - myLastSkyCameraHeight) > 1.0f;   // 1m dead zone
+	// Camera height only changes the sky-view LUT on the scale of the
+	// atmosphere's own density falloff (kilometres), while re-rendering the
+	// cubemap also re-prefilters the IBL and re-measures the environment (a
+	// CPU readback stall). A 1 m dead zone re-ran all of that every frame the
+	// camera moved vertically.
+	const bool heightChanged = std::abs(cameraHeightM - myLastSkyCameraHeight) > std::max(50.0f, 0.1f * myLastSkyCameraHeight);
 	const bool skyViewDirty = fixedLutsDirty || sunMoved || illuminanceChanged || heightChanged;
 
 	if (!fixedLutsDirty && !skyViewDirty) return false;

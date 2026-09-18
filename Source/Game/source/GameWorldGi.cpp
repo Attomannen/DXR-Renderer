@@ -6,9 +6,21 @@
 
 // GameWorld: Reflection probe and GI irradiance-volume capture.
 
+void GameWorld::Impl::ReleaseRetiredEnvironmentCubemaps()
+{
+	for (size_t i = 0; i < retiredEnvironmentCubemaps.size();)
+	{
+		if (retiredEnvironmentCubemaps[i].second <= frame)
+		{
+			retiredEnvironmentCubemaps[i].first.Reset();
+			retiredEnvironmentCubemaps.erase(retiredEnvironmentCubemaps.begin() + i);
+		}
+		else ++i;
+	}
+}
+
 bool GameWorld::Impl::RebuildWorldEnvironmentPrefilter()
 {
-	worldEnvironmentPrefiltered.Reset();
 	if (!probePrefilter) return false;
 
 	// Procedural sky (DeferredRendererSky.cpp) takes priority when it's on and
@@ -35,12 +47,17 @@ bool GameWorld::Impl::RebuildWorldEnvironmentPrefilter()
 	}
 	if (!baseSrv.IsValid()) return false;
 
-	if (!probePrefilter->GeneratePrefilteredCubemap(
-		baseSrv, sourceResolution, 128, 128, worldEnvironmentPrefiltered))
+	// Build into a fresh cubemap and swap: the live one stays bound and intact
+	// for the frames still in flight (and is kept if the rebuild fails).
+	CubemapData next;
+	if (!probePrefilter->GeneratePrefilteredCubemap(baseSrv, sourceResolution, 256, 128, next))
 	{
-		ERROR_PRINT("environment IBL: prefilter failed; DXR will use the source cubemap.");
+		ERROR_PRINT("environment IBL: prefilter failed; keeping the previous environment.");
 		return false;
 	}
+	if (worldEnvironmentPrefiltered.IsValid())
+		retiredEnvironmentCubemaps.emplace_back(std::move(worldEnvironmentPrefiltered), frame + 4);   // > frames in flight
+	worldEnvironmentPrefiltered = std::move(next);
 	return true;
 }
 

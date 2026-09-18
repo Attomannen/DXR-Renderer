@@ -31,7 +31,10 @@ float RaySphereIntersectNearest(float3 origin, float3 dir, float r)
 
 bool HitsGround(float3 origin, float3 dir)
 {
-	return RaySphereIntersectNearest(origin, dir, gBottomRadius) >= 0.0f;
+	// > 1 m, not >= 0: a point ON the ground sphere (the LUT's own ground hit,
+	// asking for sun transmittance) otherwise reports the sphere it sits on as
+	// a hit at distance zero and gets zero sunlight at every time of day.
+	return RaySphereIntersectNearest(origin, dir, gBottomRadius) > 1.0f;
 }
 
 // Distance to the atmosphere's outer boundary along `dir`, or to the ground
@@ -125,25 +128,27 @@ float3 SunTransmittance(Texture2D<float4> transmittanceLut, SamplerState samp, f
 }
 
 // ---- Sky-view LUT parameterization ---------------------------------------
-// Deliberately a plain linear (zenith angle, azimuth-from-sun) mapping
-// rather than Hillaire's non-linear horizon-concentrating one: it spends a
-// few more texels than strictly necessary on directions far from the
-// horizon, but the LUT already feeds a 128px cubemap that's GGX-prefiltered
-// immediately afterward, so that slight inefficiency is invisible in the
-// final image while the mapping itself stays simple and unambiguous.
+// Hillaire's horizon-concentrating mapping: v is quadratic in elevation on
+// either side of the horizon, so texel density is highest exactly where the
+// sky changes fastest (the horizon glow and the sky/ground edge) and lowest
+// at the zenith and nadir, where it is nearly flat. The old linear mapping
+// spent 1.7 degrees per row at the horizon and read as a blurred band.
 float2 SkyViewDirToUv(float3 dir)
 {
-	float zenithAngle = acos(clamp(dir.y, -1.0f, 1.0f));            // 0 = up, pi = down
+	float elevation = asin(clamp(dir.y, -1.0f, 1.0f));               // +pi/2 up .. -pi/2 down
 	float azimuth = atan2(dir.z, dir.x);                            // -pi..pi
-	return float2(azimuth / (2.0f * kSkyPi) + 0.5f, zenithAngle / kSkyPi);
+	float f = sqrt(abs(elevation) / (0.5f * kSkyPi));
+	float v = elevation >= 0.0f ? 0.5f - 0.5f * f : 0.5f + 0.5f * f;
+	return float2(azimuth / (2.0f * kSkyPi) + 0.5f, v);
 }
 
 float3 SkyViewUvToDir(float2 uv)
 {
 	float azimuth = (uv.x - 0.5f) * 2.0f * kSkyPi;
-	float zenithAngle = uv.y * kSkyPi;
-	float sinZenith = sin(zenithAngle);
-	return float3(sinZenith * cos(azimuth), cos(zenithAngle), sinZenith * sin(azimuth));
+	float f = abs(uv.y - 0.5f) * 2.0f;
+	float elevation = (uv.y <= 0.5f ? 1.0f : -1.0f) * f * f * (0.5f * kSkyPi);
+	float cosE = cos(elevation);
+	return float3(cosE * cos(azimuth), sin(elevation), cosE * sin(azimuth));
 }
 
 #endif

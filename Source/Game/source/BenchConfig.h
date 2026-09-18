@@ -35,6 +35,9 @@ namespace BenchConfig
 		std::optional<std::string> camMode;   // BENCH_CAM: fixed | spin | orbit | room
 		std::optional<std::string> camFile;   // BENCH_CAMFILE
 		std::optional<float> spinDeg;         // BENCH_SPIN
+		std::optional<float> bobCm;           // BENCH_BOB
+		std::optional<float> bobPitch;        // BENCH_BOB_PITCH
+		std::optional<int> bobHold;           // BENCH_BOB_HOLD
 		std::optional<float> orbitRadius;     // BENCH_ORBIT
 		std::optional<float> exposure;        // BENCH_EXPOSURE
 		std::optional<float> modelRotX;       // BENCH_ROT_X

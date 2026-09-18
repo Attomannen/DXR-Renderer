@@ -203,6 +203,7 @@ void GameWorld::Update(float aDeltaTime)
 		PostQuitMessage(0);
 	}
 	++s.frame;
+	s.ReleaseRetiredEnvironmentCubemaps();
 }
 
 
@@ -363,8 +364,12 @@ void GameWorld::Render()
 			// The physical sky scale is only known once the environment map has
 			// been measured (a frame or two in), and the probes must be traced
 			// with it; hash it separately so a tiny night sky still registers.
+			// The measured environment average drifts by a few percent on every
+			// sky refresh (camera height, sun creep); at 8 steps per stop that
+			// re-primed -- i.e. blacked out -- the whole GI volume each time.
+			// One step per half-stop only reacts to real lighting changes.
 			const float skyH = std::round(std::log2(std::max(s.deferred->GetTunables().skyLuminanceNits, 1e-6f)) * 8.f
-				+ std::log2(std::max(s.deferred->GetEnvironmentAverageLuminance(), 1e-9f)) * 8.f
+				+ std::log2(std::max(s.deferred->GetEnvironmentAverageLuminance(), 1e-9f)) * 2.f
 				+ std::log2(std::max(s.sunIlluminanceLux, 1e-6f)) * 8.f);
 			const float lightHash = h + skyH * 7919.f;
 			if (lightHash != s.giLightHash)

@@ -1799,7 +1799,19 @@ namespace Tga::rhi::dx12
 		if (!t || !t->res) return {};
 		D3D12_UNORDERED_ACCESS_VIEW_DESC vd = {};
 		vd.Format = d.formatOverride != Format::Unknown ? ToDxgi(d.formatOverride) : ToDxgi(t->desc.format);
-		if (t->desc.dimension == TextureDimension::Tex2DArray || t->desc.dimension == TextureDimension::TexCube)
+		if (t->desc.dimension == TextureDimension::Tex3D)
+		{
+			// A Texture3D UAV needs D3D12_UAV_DIMENSION_TEXTURE3D specifically --
+			// falling through to the TEXTURE2D case below silently created a
+			// dimension-mismatched view (2D view over a 3D resource), which
+			// looked fine at creation time but corrupted GPU memory the moment
+			// a compute shader wrote through it (device removal on first use).
+			vd.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+			vd.Texture3D.MipSlice = d.mipSlice;
+			vd.Texture3D.FirstWSlice = d.firstArraySlice;
+			vd.Texture3D.WSize = (d.arraySize == kAllSlices) ? t->desc.depthOrArraySize : d.arraySize;
+		}
+		else if (t->desc.dimension == TextureDimension::Tex2DArray || t->desc.dimension == TextureDimension::TexCube)
 		{
 			vd.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
 			vd.Texture2DArray.MipSlice = d.mipSlice;

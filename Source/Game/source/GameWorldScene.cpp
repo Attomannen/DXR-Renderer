@@ -370,6 +370,9 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 	                                              : ("bench_camera_" + camKey + ".json");
 	camFile = aEnv ? bench.camFile.value_or(defCamFile) : defCamFile;
 	if (aEnv && bench.spinDeg) camSpinDeg = *bench.spinDeg;
+	if (aEnv && bench.bobCm) camBobCm = *bench.bobCm;
+	if (aEnv && bench.bobPitch) camBobPitch = *bench.bobPitch;
+	if (aEnv && bench.bobHold) camBobHoldFrames = *bench.bobHold;
 	camLoaded = false;
 	if (LoadCamera())
 	{
@@ -379,6 +382,7 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 			if      (mode == "fixed") camMode = CamMode::Fixed;
 			else if (mode == "orbit") camMode = CamMode::Orbit;
 			else if (mode == "room")  { camMode = CamMode::Orbit; orbitRoom = true; }
+			else if (mode == "bob")   camMode = CamMode::Bob;
 			else                      camMode = CamMode::Spin;
 		}
 		INFO_PRINT("bench: camera '%s'", camFile.c_str());

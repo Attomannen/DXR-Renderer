@@ -75,7 +75,36 @@ void main(uint3 id : SV_DispatchThreadID)
 		float3 up = normalize(groundPos);
 		float sunCosAtGround = saturate(dot(up, gSunDirToLight));
 		float3 sunT = SunTransmittance(TransmittanceLut, LutSampler, groundPos, gSunDirToLight);
-		radiance += throughput * sunT * sunCosAtGround * (gGroundAlbedo / kSkyPi);
+		// Direct sun on a Lambertian ground.
+		float3 groundRadiance = sunT * sunCosAtGround * (gGroundAlbedo / kSkyPi);
+		// Sky light on the ground: without it the ground is black whenever the
+		// sun is at or below the horizon, while the sky above is still lit by
+		// multiple scattering. A short march straight up from the ground point
+		// gives the zenith sky radiance; treating the sky as uniform at that
+		// radiance, a Lambertian ground reflects albedo * radiance.
+		{
+			const uint kZenithSteps = 8;
+			// Start a metre above the surface: from a point exactly on the ground
+			// sphere the march-distance helper reports an immediate ground hit.
+			float3 marchStart = groundPos + up * 1.0f;
+			float tUp = AtmosphereMarchDistance(marchStart, 0.0f, up);
+			float dz = tUp / kZenithSteps;
+			float3 zenith = 0.0f, tp = 1.0f;
+			float cosSunUp = dot(up, gSunDirToLight);
+			for (uint z = 0; z < kZenithSteps; ++z)
+			{
+				float3 p = marchStart + up * ((z + 0.5f) * dz);
+				float3 rs, ms, ex;
+				SampleAtmosphereMedium(length(p) - gBottomRadius, rs, ms, ex);
+				float3 st = SunTransmittance(TransmittanceLut, LutSampler, p, gSunDirToLight);
+				float3 single = st * (rs * RayleighPhase(cosSunUp) + ms * MiePhase(gMiePhaseG, cosSunUp));
+				float3 multi = SampleMultiScatterLut(length(p), dot(p / max(length(p), 1.0f), gSunDirToLight)) * (rs + ms);
+				zenith += tp * (single + multi) * dz;
+				tp *= exp(-ex * dz);
+			}
+			groundRadiance += gGroundAlbedo * zenith;
+		}
+		radiance += throughput * groundRadiance;
 	}
 
 	SkyViewLutOut[id.xy] = float4(radiance * gSunIlluminance, 1.0f);

@@ -70,7 +70,7 @@ namespace Tga
 		rhi::SrvHandle GetMotionValiditySrv() const { return myTemporalSrv[2]; }
 		Vector2f GetProjectionJitterPixels() const { return myTaaJitter; }
 		void SetRaySceneStationary(bool stationary) { myRaySceneStationary = stationary; }
-		void ResetTemporalHistory() { myTemporalHistoryValid = false; myTaaHistoryValid = false; myTaaFrameIndex = 0; myNrdHistoryValid = false; }
+		void ResetTemporalHistory() { myTemporalHistoryValid = false; myTaaHistoryValid = false; myTaaFrameIndex = 0; myNrdHistoryValid = false; myCloudHistoryValid = false; }
 
 		const ModelShader& GetGeometryShader() const { return *myGeometryShader; }
 		// Forward glass uses the opaque HDR snapshot made immediately before the
@@ -299,6 +299,25 @@ namespace Tga
 			// authored brightness", for anyone who swaps in an actual night asset.
 			float nightSkyIntensity = 0.05f;
 
+			// --- volumetric clouds (DeferredRendererClouds.cpp) ---
+			bool  cloudsEnabled = true;
+			float cloudCoverage = 0.5f;         // 0..1, fraction of sky covered
+			float cloudDensity = 1.f;           // extinction multiplier
+			float cloudBaseAltitude = 1500.f;   // meters; realistic cumulus base
+			float cloudTopAltitude = 3000.f;    // meters
+			float cloudScale = 6000.f;          // meters per noise tile
+			float cloudSpeed[2] = { 40.f, 15.f };  // wind, m/s (world X, Z)
+			int   cloudLightSteps = 6;          // self-shadow light-march samples
+			float cloudDetailStrength = 0.6f;   // erosion-noise contribution, 0 = smooth blobs
+			int   cloudResolution = 1;          // hero raymarch target divisor, mirrors volumetricResolution
+			// On by default. The "snapping on camera movement" this used to be
+			// blamed for was the sky cubemap's frozen cloud snapshot being
+			// re-baked on camera height change (see SkyCubemapPS.hlsl), and
+			// the blotchiness was the old mismatch-rejection blend; the
+			// accumulation itself is what makes a 48-step jittered march
+			// look smooth.
+			bool  cloudTemporalEnabled = true;
+
 			// --- post FX (bloom + exposure) ---
 			bool  bloomEnabled    = true;
 			float bloomThreshold  = 2.0f;    // HDR luma where bloom starts
@@ -524,8 +543,10 @@ namespace Tga
 		// --- procedural sky (DeferredRendererSky.cpp) ---
 		static constexpr uint32_t kTransmittanceLutW = 256, kTransmittanceLutH = 64;
 		static constexpr uint32_t kMultiScatterLutRes = 32;
-		static constexpr uint32_t kSkyViewLutW = 192, kSkyViewLutH = 108;
-		static constexpr uint32_t kSkyCubemapRes = 128;
+		static constexpr uint32_t kSkyViewLutW = 256, kSkyViewLutH = 192;
+		// 512: the DXR miss path shows this cubemap as the sky, and at 128 a
+		// texel was 0.7 degrees -- the horizon read as a blurred band.
+		static constexpr uint32_t kSkyCubemapRes = 512;
 		bool CreateSkyTargets();
 		void ReleaseSkyTargets();
 		void DispatchSkyViewLut();   // always: cheap, tracks the sun every frame it's dirty
@@ -551,6 +572,41 @@ namespace Tga
 		Vector3f myLastSkySunDir{ 0.f, 0.f, 0.f };
 		Vector3f myLastSkySunIlluminance{ -1.f, -1.f, -1.f };
 		float myLastSkyCameraHeight = -1e9f;
+
+		// --- volumetric clouds (DeferredRendererClouds.cpp) ---
+		// 128^3, matching Schneider/HZD's own base-shape resolution: the
+		// baked shape now carries a third Worley octave up to a period of 16
+		// cells (see CloudShapeNoiseCS.hlsl), and 64^3 undersamples that to
+		// ~4 texels/cell -- visibly blocky. 128^3 gives it ~8.
+		static constexpr uint32_t kCloudShapeNoiseRes = 128;
+		static constexpr uint32_t kCloudDetailNoiseRes = 32;
+		bool CreateCloudTargets(Vector2ui aResolution);
+		void ReleaseCloudTargets();
+		void BakeCloudNoise();          // once, at Init -- not resolution-dependent
+		void DispatchClouds(rhi::SrvHandle aDepthSrv);   // hero raymarch; called from RenderAtmosphere
+		bool myCloudNoiseBaked = false;
+		const ComputeShader* myCloudShapeNoiseCS = nullptr;
+		const ComputeShader* myCloudDetailNoiseCS = nullptr;
+		const ComputeShader* myCloudsVolumeCS = nullptr;
+		rhi::ConstantBuffer myCloudsConstantsCb;   // b13, shared by every cloud-consuming pass
+		rhi::TextureHandle myCloudShapeNoiseTex; rhi::SrvHandle myCloudShapeNoiseSrv; rhi::UavHandle myCloudShapeNoiseUav;
+		rhi::TextureHandle myCloudDetailNoiseTex; rhi::SrvHandle myCloudDetailNoiseSrv; rhi::UavHandle myCloudDetailNoiseUav;
+		// Ping-ponged: each DispatchClouds writes the [current] slot while
+		// reading [1-current] as temporal history (reprojected -- see
+		// CloudsVolumeCS.hlsl), then flips which is "current" for next frame.
+		// myCloudVolumeTex/Srv/Uav below always alias whichever slot was just
+		// written, so every existing external reader (the atmosphere
+		// composite pass) needs no changes.
+		std::array<rhi::TextureHandle, 2> myCloudVolumeTexArr;
+		std::array<rhi::SrvHandle, 2> myCloudVolumeSrvArr;
+		std::array<rhi::UavHandle, 2> myCloudVolumeUavArr;
+		uint32_t myCloudVolumeIndex = 0;
+		rhi::TextureHandle myCloudVolumeTex; rhi::SrvHandle myCloudVolumeSrv; rhi::UavHandle myCloudVolumeUav;
+		uint32_t myCloudVolumeDivisor = 2;
+		rhi::SamplerHandle myCloudSampler;
+		rhi::SamplerHandle myCloudHistorySampler;   // clamp, not wrap -- history UV can miss [0,1] on disocclusion
+		Matrix4x4f myCloudPrevWorldToClip;
+		bool myCloudHistoryValid = false;   // false right after (re)creation/resize -- there is no history yet
 
 		void RenderLocalShadows(const std::function<void(const Camera&)>& aDrawShadowCasters);
 		bool CreatePostFxTargets(Vector2ui aResolution);

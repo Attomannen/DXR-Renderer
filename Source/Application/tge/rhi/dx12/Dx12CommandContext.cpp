@@ -174,6 +174,16 @@ namespace Tga::rhi::dx12
 		uint32_t* permSlot = myDevice.GetUavSlot(h);
 		if (!rec || !permSlot) return;
 
+		// ClearUnorderedAccessView requires the resource to already be in the
+		// UNORDERED_ACCESS state -- SetUnorderedAccess auto-transitions its
+		// owner texture/buffer there (see above), but this entry point never
+		// went through that, so a resource last left in SHADER_RESOURCE state
+		// (e.g. read by another pass since the last time it was written)
+		// silently no-ops or clears the wrong state's contents instead of
+		// actually clearing what's visibly bound.
+		if (rec->texture) TransitionResource(rec->texture, ResourceState::UnorderedAccess);
+		if (rec->buffer)  TransitionResource(rec->buffer, ResourceState::UnorderedAccess);
+
 		ID3D12Resource* resource = nullptr;
 		if (rec->texture) { if (TextureRec* t = myDevice.GetTexture(rec->texture)) resource = t->res.Get(); }
 		if (rec->buffer)  { if (BufferRec* b = myDevice.GetBuffer(rec->buffer))  resource = b->res.Get(); }

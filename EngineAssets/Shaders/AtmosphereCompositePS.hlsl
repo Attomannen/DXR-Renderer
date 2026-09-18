@@ -4,6 +4,10 @@ Texture2D<float4> FogHdr : register(t1);
 Texture2D<float4> FogSunlight : register(t2);
 SamplerState FogLinear : register(s3);
 Texture2D<float> FogPreviousEv100 : register(t5);
+// Hero volumetric clouds (CloudsVolumeCS.hlsl): premultiplied color in rgb,
+// transmittance in a. Composited onto the sky first, fog/shafts on top of
+// that -- clouds are the far background layer, fog is near the camera.
+Texture2D<float4> FogClouds : register(t6);
 #include "Exposure.hlsli"
 float4 main(FsIn input) : SV_TARGET
 {
@@ -33,6 +37,15 @@ float4 main(FsIn input) : SV_TARGET
     if (FogDebugView == 1) return float4(transmittance.xxx,1);
     if (FogDebugView == 2) return float4(sunlight,1);
     float3 hdr = FogHdr.SampleLevel(FogLinear,input.uv,0).rgb;
+    if (depth >= 0.999999f)
+    {
+        // Bilinear upsample from the clouds' own (reduced) resolution -- point
+        // sampling the reduced target with a linear filter already does this;
+        // FogClouds is written at whatever size CreateVolumeTexture chose, and
+        // SampleLevel over [0,1] uv resolves that regardless of the mismatch.
+        float4 clouds = FogClouds.SampleLevel(FogLinear, input.uv, 0);
+        hdr = hdr * clouds.a + clouds.rgb;
+    }
     // The DXR HDR carries pre-exposure; bring this pass's own light to match.
     const float preExposure = FogPreExposed > 0.5f ? PreExposureFromEv100(FogPreviousEv100.Load(int3(0,0,0))) : 1.0f;
     sunlight *= preExposure;

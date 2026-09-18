@@ -122,6 +122,11 @@ bool DeferredRenderer::RenderAtmosphere(bool beforeTemporal, bool aRenderResolut
 	if (rayDepth && myTaaWasEnabled) { cb.jitter[0]=-myTaaJitter.x; cb.jitter[1]=-myTaaJitter.y; }
 	myAtmosphereCb.Update(ctx,cb);
 	const rhi::SrvHandle depth = rayDepth ? myTemporalSrv[1] : DX11::DepthBuffer->GetSrv();
+	// Refreshes CloudsConstants (gTime/wind/coverage) every call, including
+	// the render-resolution DLSS variant's, and re-renders the hero cloud
+	// volume once for the display-resolution pass -- the DLSS variant reuses
+	// that same volume rather than re-marching it a second time per frame.
+	if (!aRenderResolution) DispatchClouds(depth);
 	ctx.SetRenderTargets(0,nullptr,{});
 	if (volumeActive) {
 		TGA_PROFILE_SCOPE(myProfiler, "Fog volume march");
@@ -129,6 +134,10 @@ bool DeferredRenderer::RenderAtmosphere(bool beforeTemporal, bool aRenderResolut
 		ctx.SetComputePipeline(dev->CreateComputePipeline(pd));
 		myAtmosphereCb.Bind(ctx);
 		ctx.SetShaderResource(rhi::ShaderStage::Compute,4,depth);
+		myCloudsConstantsCb.Bind(ctx,rhi::ShaderStage::Compute,13);
+		ctx.SetShaderResource(rhi::ShaderStage::Compute,2,myCloudShapeNoiseSrv);
+		ctx.SetShaderResource(rhi::ShaderStage::Compute,3,myCloudDetailNoiseSrv);
+		ctx.SetSampler(rhi::ShaderStage::Compute,1,myCloudSampler);
 		if (rayDepth) {
 			ctx.SetShaderResource(rhi::ShaderStage::Compute,0,RayTracingMaterialTable::Upload(*dev,ctx));
 			ctx.SetSampler(rhi::ShaderStage::Compute,0,myDxrMaterialSampler);
@@ -154,10 +163,11 @@ bool DeferredRenderer::RenderAtmosphere(bool beforeTemporal, bool aRenderResolut
 	ctx.SetShaderResources(rhi::ShaderStage::Pixel,1,2,inputs);
 	ctx.SetShaderResource(rhi::ShaderStage::Pixel,4,depth);
 	ctx.SetShaderResource(rhi::ShaderStage::Pixel,5,myExposure[myExposureSrc].GetSrv());
+	ctx.SetShaderResource(rhi::ShaderStage::Pixel,6,myCloudVolumeSrv);
 	ctx.SetSampler(rhi::ShaderStage::Pixel,3,myLinearSampler);
 	myAtmosphereCb.Bind(ctx,rhi::ShaderStage::Pixel,8);
 	BindFullscreen(myAtmospherePs); ctx.Draw(3,0);
-	const rhi::SrvHandle nulls[6]={}; ctx.SetShaderResources(rhi::ShaderStage::Pixel,0,6,nulls);
+	const rhi::SrvHandle nulls[7]={}; ctx.SetShaderResources(rhi::ShaderStage::Pixel,0,7,nulls);
 	ctx.SetRenderTargets(0,nullptr,{});
 	if (!aRenderResolution) std::swap(myHdr,myAtmosphereHdr);
 	return true;

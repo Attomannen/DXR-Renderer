@@ -26,6 +26,7 @@
 #include <tge/render/GpuProfiler.h>
 #include "../../../../EngineAssets/Shaders/DxrLightingConstants.hlsli"
 #include "../../../../EngineAssets/Shaders/SkyAtmosphereConstants.hlsli"
+#include "../../../../EngineAssets/Shaders/CloudsConstants.hlsli"
 #include <tge/graphics/Camera.h>
 #include <tge/shaders/ModelShader.h>
 #include <tge/render/RenderGraph.h>
@@ -199,6 +200,16 @@ namespace
 	// b12. Layout must match SkyCubemapFaceCb in SkyCubemapPS.hlsl.
 	struct alignas(16) SkyCubemapFaceCb { uint32_t faceIndex; float nightSkyIntensity; float pad[2]; };
 	static_assert(sizeof(SkyCubemapFaceCb) == 16);
+
+	// b13, shared by the cloud noise bake, the hero raymarch, the sky
+	// cubemap's coarse cloud contribution and the fog-shaft cloud-shadow
+	// lookup -- same shared-header pattern as SkyAtmosphereConstants above.
+	using CloudsConstants = Tga::CloudsShared::CloudsConstants;
+	static_assert(offsetof(CloudsConstants, gCloudTopAltitude) == 16);
+	static_assert(offsetof(CloudsConstants, gTime) == 32);
+	static_assert(offsetof(CloudsConstants, gCloudPrevWorldToClip) == 48);
+	static_assert(offsetof(CloudsConstants, gCloudCamRight) == 112);
+	static_assert(sizeof(CloudsConstants) == 160);
 
 	inline Tga::Vector3f Lerp(const Tga::Vector3f& a, const Tga::Vector3f& b, float t)
 	{
