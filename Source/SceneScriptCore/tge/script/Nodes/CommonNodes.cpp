@@ -9,6 +9,7 @@
 #include <tge/script/BaseProperties.h>
 #include <tge/scene/ScenePropertyTypes.h>
 #include <tge/log/Log.h>
+#include "CommentNode.h"
 
 using namespace Tga;
 
@@ -48,6 +49,7 @@ public:
 class TickNode : public ScriptNodeBase
 {
 	ScriptPinId myOutTickPinId;
+	ScriptPinId myDeltaPinId;
 
 public:
 	void Init(const ScriptCreationContext& ctx) override
@@ -58,6 +60,20 @@ public:
 		outputPin.node = ctx.GetNodeId();
 		outputPin.role = ScriptPinRole::Output;
 		myOutTickPinId = ctx.FindOrCreatePin(outputPin);
+
+		// Seconds since the previous frame, so a script does not need a separate node for it.
+		ScriptPin deltaPin = {};
+		deltaPin.type = ScriptLinkType::Property;
+		deltaPin.dataType = GetPropertyType<float>();
+		deltaPin.name = "Delta Seconds"_tgaid;
+		deltaPin.node = ctx.GetNodeId();
+		deltaPin.role = ScriptPinRole::Output;
+		myDeltaPinId = ctx.FindOrCreatePin(deltaPin);
+	}
+
+	Property ReadPin(ScriptExecutionContext& ctx, ScriptPinId) const override
+	{
+		return Property::Create<float>(ctx.GetUpdateContext().deltaTime);
 	}
 
 	ScriptNodeResult Execute(ScriptExecutionContext& ctx, ScriptPinId) const override
@@ -66,6 +82,42 @@ public:
 		return ScriptNodeResult::KeepRunning;
 	}
 	bool ShouldExecuteAtStart() const override { return true; }
+};
+
+// Runs its outputs one after another, top to bottom.
+class SequenceNode : public ScriptNodeBase
+{
+	static constexpr int kOutputCount = 3;
+	ScriptPinId myOutputPins[kOutputCount];
+
+public:
+	void Init(const ScriptCreationContext& context) override
+	{
+		ScriptPin inputPin = {};
+		inputPin.type = ScriptLinkType::Flow;
+		inputPin.name = "Execute"_tgaid;
+		inputPin.node = context.GetNodeId();
+		inputPin.role = ScriptPinRole::Input;
+		context.FindOrCreatePin(inputPin);
+
+		static const StringId names[kOutputCount] = { "Then 0"_tgaid, "Then 1"_tgaid, "Then 2"_tgaid };
+		for (int i = 0; i < kOutputCount; i++)
+		{
+			ScriptPin outputPin = {};
+			outputPin.type = ScriptLinkType::Flow;
+			outputPin.name = names[i];
+			outputPin.node = context.GetNodeId();
+			outputPin.role = ScriptPinRole::Output;
+			myOutputPins[i] = context.FindOrCreatePin(outputPin);
+		}
+	}
+
+	ScriptNodeResult Execute(ScriptExecutionContext& context, ScriptPinId) const override
+	{
+		for (int i = 0; i < kOutputCount; i++)
+			context.TriggerOutputPin(myOutputPins[i]);
+		return ScriptNodeResult::Finished;
+	}
 };
 
 class TriggerNode : public ScriptNodeBase
@@ -379,6 +431,8 @@ void Tga::RegisterCommonNodes()
 	ScriptNodeTypeRegistry::RegisterType<TriggerNode>("Common/Trigger", "A node that executes when triggered");
 
 
+	ScriptNodeTypeRegistry::RegisterType<SequenceNode>("Common/Sequence", "Runs its outputs one after another, top to bottom");
+	ScriptNodeTypeRegistry::RegisterType<CommentNode>("Common/Comment", "A titled box around nodes, for explaining them. Select nodes and press C to make one");
 	ScriptNodeTypeRegistry::RegisterType<TickNode>("Common/Tick", "A node that executes every frame");
 	ScriptNodeTypeRegistry::RegisterType<DelayNode>("Common/Delay", "A node that executes after a delays");
 	ScriptNodeTypeRegistry::RegisterType<BranchNode>("Common/Branch", "A node that branches depending on a condition");

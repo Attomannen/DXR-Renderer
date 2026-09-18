@@ -3,6 +3,8 @@
 #include <tge/editor/ScriptEditor/ScriptEditorSelection.h>
 #include <tge/script/ScriptCommon.h>
 #include <map>
+#include <unordered_map>
+#include <vector>
 
 namespace ax { namespace NodeEditor { struct EditorContext; } }
 
@@ -32,6 +34,16 @@ namespace Tga
 			bool hasBeenRemoved = false;
 
 			std::shared_ptr<MoveNodesCommand> inProgressMove;
+
+			// Editor state that is not part of the script.
+			ScriptNodeId pendingFocusNode = { ScriptNodeId::InvalidId }; // select and frame this node next frame
+			std::vector<ScriptNodeId> pendingSelect;                     // select these next frame (just created)
+			bool showIssues = false;                                     // the compile results list is open
+			std::unordered_map<unsigned int, float> pinCanvasY;          // where each pin was drawn this frame
+			ScriptNodeId editingComment = { ScriptNodeId::InvalidId };
+			ScriptPinId contextPin = { ScriptPinId::InvalidId };         // pin the right-click menu is about
+			ScriptPinId dragPin = { ScriptPinId::InvalidId };            // pin a wire was dragged off into empty space
+			bool searchJustOpened = false;
 		};
 	
 		std::map<std::string, EditorScriptData, std::less<>> myOpenScripts;

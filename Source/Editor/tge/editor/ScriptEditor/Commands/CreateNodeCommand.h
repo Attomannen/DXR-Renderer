@@ -21,6 +21,9 @@ namespace Tga
 			myNodeData.typeId = typeId;
 		}
 
+		// The node this command created (valid after it has run).
+		ScriptNodeId GetNodeId() const { return myNodeId; }
+
 		void ExecuteImpl() override;
 		void UndoImpl() override;
 	};
