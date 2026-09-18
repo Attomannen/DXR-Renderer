@@ -51,6 +51,10 @@ namespace Tga
 			ScriptPinId contextPin = { ScriptPinId::InvalidId };         // pin the right-click menu is about
 			ScriptPinId dragPin = { ScriptPinId::InvalidId };            // pin a wire was dragged off into empty space
 			bool searchJustOpened = false;
+			// Where the node editor last had each node. A node is only moved into place when the
+			// script says something else (undo, paste, first draw): moving it every frame would
+			// undo any drag before the library could apply it.
+			std::unordered_map<unsigned int, std::pair<float, float>> lastKnownNodePos;
 		} myState;
 	};
 

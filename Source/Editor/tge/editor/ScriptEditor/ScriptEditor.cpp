@@ -858,8 +858,13 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 	// position is read back before the library has ever had it BeginNode()'d.
 	for (ScriptNodeId currentNodeId = script.GetFirstNodeId(); currentNodeId.id != ScriptNodeId::InvalidId; currentNodeId = script.GetNextNodeId(currentNodeId))
 	{
-		Vector2f pos = script.GetPosition(currentNodeId);
-		ed::SetNodePosition(EdNode(currentNodeId.id), ImVec2(pos.x, pos.y));
+		const Vector2f pos = script.GetPosition(currentNodeId);
+		const auto known = activeScript.lastKnownNodePos.find(currentNodeId.id);
+		if (known == activeScript.lastKnownNodePos.end() || known->second.first != pos.x || known->second.second != pos.y)
+		{
+			ed::SetNodePosition(EdNode(currentNodeId.id), ImVec2(pos.x, pos.y));
+			activeScript.lastKnownNodePos[currentNodeId.id] = { pos.x, pos.y };
+		}
 	}
 
 	ed::Begin("ScriptGraph");
@@ -952,6 +957,7 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 			activeScript.pinCanvasY[pinId.id] = iconCenter.y;
 			ImGui::SameLine();
 			ImGui::TextUnformatted(pinName.data());
+			const ImVec2 labelMax = ImGui::GetItemRectMax();
 
 			if (connectionCount == 0)
 			{
@@ -967,7 +973,9 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 				}
 			}
 
-			ed::PinRect(iconMin, iconMax);
+			// Grab area: the icon plus its label and some margin, so a wire can be started or dropped
+			// on the pin without aiming at the small circle. Links still attach at the circle.
+			ed::PinRect(ImVec2(iconMin.x - 16.f, iconMin.y - 6.f), ImVec2(labelMax.x + 8.f, iconMax.y + 6.f));
 			ed::PinPivotRect(iconCenter, iconCenter);
 			ed::EndPin();
 			contentWidth = std::max(contentWidth, ImGui::GetItemRectMax().x - nodeLeftScreenX);
@@ -997,13 +1005,14 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 			ed::BeginPin(EdPin(pinId.id), ed::PinKind::Output);
 			ImGui::SetCursorPosX(rowPos.x + (widthRight - ImGui::CalcTextSize(pinName.data()).x));
 			ImGui::TextUnformatted(pinName.data());
+			const ImVec2 labelMin = ImGui::GetItemRectMin();
 			ImGui::SameLine();
 			NodeEditorPinIcon(iconColor, connectionCount > 0);
 			const ImVec2 iconMin = ImGui::GetItemRectMin();
 			const ImVec2 iconMax = ImGui::GetItemRectMax();
 			const ImVec2 iconCenter((iconMin.x + iconMax.x) * 0.5f, (iconMin.y + iconMax.y) * 0.5f);
 			activeScript.pinCanvasY[pinId.id] = iconCenter.y;
-			ed::PinRect(iconMin, iconMax);
+			ed::PinRect(ImVec2(labelMin.x - 8.f, iconMin.y - 6.f), ImVec2(iconMax.x + 16.f, iconMax.y + 6.f));
 			ed::PinPivotRect(iconCenter, iconCenter);
 			ed::EndPin();
 			rowPos.y = ImGui::GetCursorPosY();
@@ -1171,6 +1180,7 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 			script.SetPosition(currentNodeId, { newPos.x, newPos.y });
 			activeScript.inProgressMove->SetPosition(currentNodeId, oldPos, { newPos.x, newPos.y });
 		}
+		activeScript.lastKnownNodePos[currentNodeId.id] = { newPos.x, newPos.y };
 	}
 
 	// clear in progress move if dragging ends
