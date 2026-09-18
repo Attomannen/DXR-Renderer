@@ -15,6 +15,13 @@ namespace Tga
 		virtual Vector3f GetLocation() const = 0;
 		virtual void SetLocation(const Vector3f& location) = 0;
 
+		// Rotation as Euler degrees (X, Y = yaw, Z), the same values a scene file stores.
+		// Scale and location are kept.
+		virtual void SetRotation(const Vector3f& eulerDegrees) = 0;
+		virtual Vector3f GetForward() const = 0;
+		virtual Vector3f GetRight() const = 0;
+		virtual Vector3f GetUp() const = 0;
+
 		// True when the object has a physics body that is currently simulated.
 		virtual bool HasPhysicsBody() const = 0;
 		virtual void AddImpulse(const Vector3f& impulse) = 0;

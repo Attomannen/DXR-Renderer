@@ -45,6 +45,7 @@
 #include <tge/script/Nodes/ExampleNodes.h>
 #include <tge/script/Nodes/CommonMathNodes.h>
 #include <tge/script/Nodes/GameObjectNodes.h>
+#include <tge/script/Nodes/MathExtraNodes.h>
 #include <tge/script/Nodes/SceneObjectNodes.h>
 #include <tge/scene/ScenePropertyTypes.h>
 
@@ -135,6 +136,7 @@ void Tga::Editor::Init(const EditorConfiguration& aEditorConfiguration, std::uni
 	}
 	Tga::RegisterCommonNodes();
 	Tga::RegisterCommonMathNodes();
+	Tga::RegisterMathExtraNodes();
 	Tga::RegisterGameObjectNodes();
 	Tga::RegisterAnimationNodes();
 

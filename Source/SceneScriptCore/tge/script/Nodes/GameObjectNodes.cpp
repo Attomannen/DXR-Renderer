@@ -80,6 +80,49 @@ public:
 	}
 };
 
+class SetRotationNode : public ScriptNodeBase
+{
+	ScriptPinId myInPin, myRotationPin, myOutPin;
+
+public:
+	void Init(const ScriptCreationContext& context) override
+	{
+		myInPin = AddPin(context, ScriptPinRole::Input, ScriptLinkType::Flow, "Set");
+		myRotationPin = AddVector3Input(context, "Rotation (degrees)");
+		myOutPin = AddPin(context, ScriptPinRole::Output, ScriptLinkType::Flow, "Out");
+	}
+
+	ScriptNodeResult Execute(ScriptExecutionContext& context, ScriptPinId) const override
+	{
+		if (GameScriptContext* game = GetGameContext(context))
+			game->SetRotation(*context.ReadInputPin(myRotationPin).Get<Vector3f>());
+		context.TriggerOutputPin(myOutPin);
+		return ScriptNodeResult::Finished;
+	}
+};
+
+// Forward, right and up of the object as it is turned right now.
+class GetDirectionsNode : public ScriptNodeBase
+{
+	ScriptPinId myForward, myRight, myUp;
+
+public:
+	void Init(const ScriptCreationContext& context) override
+	{
+		myForward = AddPin(context, ScriptPinRole::Output, ScriptLinkType::Property, "Forward", GetPropertyType<Vector3f>());
+		myRight = AddPin(context, ScriptPinRole::Output, ScriptLinkType::Property, "Right", GetPropertyType<Vector3f>());
+		myUp = AddPin(context, ScriptPinRole::Output, ScriptLinkType::Property, "Up", GetPropertyType<Vector3f>());
+	}
+
+	Property ReadPin(ScriptExecutionContext& context, ScriptPinId pin) const override
+	{
+		const GameScriptContext* game = GetGameContext(context);
+		if (!game)
+			return Property::Create<Vector3f>(Vector3f{ 0.f, 0.f, 0.f });
+		return Property::Create<Vector3f>(pin == myForward ? game->GetForward() : (pin == myRight ? game->GetRight() : game->GetUp()));
+	}
+};
+
 class AddImpulseNode : public ScriptNodeBase
 {
 	ScriptPinId myInPin, myImpulsePin, myOutPin;
@@ -293,6 +336,8 @@ void Tga::RegisterGameObjectNodes()
 {
 	ScriptNodeTypeRegistry::RegisterType<GetLocationNode>("Object/Get Location", "The location of the object this script runs on (cm)");
 	ScriptNodeTypeRegistry::RegisterType<SetLocationNode>("Object/Set Location", "Moves the object this script runs on (cm)");
+	ScriptNodeTypeRegistry::RegisterType<SetRotationNode>("Object/Set Rotation", "Turns the object this script runs on. Euler degrees; Y is the yaw");
+	ScriptNodeTypeRegistry::RegisterType<GetDirectionsNode>("Object/Get Directions", "Forward, right and up of the object as it is turned now");
 	ScriptNodeTypeRegistry::RegisterType<AddImpulseNode>("Object/Add Impulse", "Gives the object's physics body a push, in kg m/s. Needs a Rigidbody and a running simulation");
 	ScriptNodeTypeRegistry::RegisterType<GetVelocityNode>("Object/Get Velocity", "The object's physics velocity (cm/s). Zero without a simulated Rigidbody");
 	ScriptNodeTypeRegistry::RegisterType<SetVelocityNode<false>>("Object/Set Velocity", "Sets the object's physics velocity (cm/s)");

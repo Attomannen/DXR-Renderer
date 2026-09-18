@@ -8,6 +8,7 @@
 #include <tge/script/Nodes/CommonNodes.h>
 #include <tge/script/Nodes/CommonMathNodes.h>
 #include <tge/script/Nodes/GameObjectNodes.h>
+#include <tge/script/Nodes/MathExtraNodes.h>
 #include <DirectXTex/ScreenGrab/ScreenGrab11.h>
 #pragma comment(lib, "windowscodecs.lib")
 
@@ -30,6 +31,7 @@ void GameWorld::Init()
 	// Node types must exist before any script is loaded (the editor does the same at startup).
 	Tga::RegisterCommonNodes();
 	Tga::RegisterCommonMathNodes();
+	Tga::RegisterMathExtraNodes();
 	Tga::RegisterGameObjectNodes();
 	INFO_PRINT("physics: Jolt %s, smoke test %s", Tga::GetPhysicsVersion(), Tga::PhysicsSmokeTest() ? "ok" : "FAILED");
 
