@@ -82,6 +82,51 @@ namespace
 		Vector3f GetRight() const override { return myWorld.models[myInstance].GetTransform().GetRight(); }
 		Vector3f GetUp() const override { return myWorld.models[myInstance].GetTransform().GetUp(); }
 
+		bool HasCamera() const override { return FindCamera() >= 0; }
+
+		void SetCameraActive(bool active) override
+		{
+			const int index = FindCamera();
+			if (index < 0)
+				return;
+			if (active)
+				myWorld.SetSceneCameraActive(index);
+			else if (myWorld.activeSceneCamera == index)
+				myWorld.SetSceneCameraActive(-1);
+		}
+
+		void SetCameraPitch(float degrees) override
+		{
+			const int index = FindCamera();
+			if (index >= 0)
+				myWorld.sceneCameras[index].pitch = std::clamp(degrees, -89.f, 89.f);
+		}
+
+		float GetCameraPitch() const override
+		{
+			const int index = FindCamera();
+			return index >= 0 ? myWorld.sceneCameras[index].pitch : 0.f;
+		}
+
+		void SetCameraFov(float degrees) override
+		{
+			const int index = FindCamera();
+			if (index < 0)
+				return;
+			myWorld.sceneCameras[index].fov = std::clamp(degrees, 10.f, 170.f);
+			if (myWorld.activeSceneCamera == index)
+				myWorld.ApplyCameraFov(myWorld.sceneCameras[index].fov);
+		}
+
+		Vector3f GetCameraForward() const override
+		{
+			const int index = FindCamera();
+			const Vector3f forward = myWorld.models[myInstance].GetTransform().GetForward();
+			const float yaw = GameScene::Rad2Deg(std::atan2(forward.x, forward.z));
+			const float pitch = index >= 0 ? myWorld.sceneCameras[index].pitch : 0.f;
+			return Matrix4x4f::CreateFromRollPitchYaw(Vector3f{ pitch, yaw, 0.f }).GetForward();
+		}
+
 		Vector3f GetVelocity() const override
 		{
 			if (const GameWorld::Impl::ScenePhysicsObject* object = FindBody())
@@ -126,6 +171,14 @@ namespace
 		}
 
 	private:
+		int FindCamera() const
+		{
+			for (size_t i = 0; i < myWorld.sceneCameras.size(); ++i)
+				if (myWorld.sceneCameras[i].instance == myInstance)
+					return (int)i;
+			return -1;
+		}
+
 		static bool UiWantsKeys(int keyCode)
 		{
 			// Mouse buttons (VK 1-6) belong to the mouse, everything else to the keyboard.
@@ -259,4 +312,69 @@ void GameWorld::Impl::UpdateSceneScripts(float deltaSeconds)
 		for (std::unique_ptr<ScriptRuntimeInstance>& script : object.scripts)
 			script->Update(context);
 	}
+}
+
+void GameWorld::Impl::RegisterSceneCamera(const GameScene::SceneEntry& entry, size_t instanceIndex)
+{
+	if (!entry.camera.has)
+		return;
+
+	SceneCameraObject object;
+	object.instance = instanceIndex;
+	object.offset = entry.camera.offset;
+	object.fov = std::clamp(entry.camera.fov, 10.f, 170.f);
+	sceneCameras.push_back(object);
+
+	if (entry.camera.activeOnStart && activeSceneCamera < 0)
+		SetSceneCameraActive((int)sceneCameras.size() - 1);
+}
+
+void GameWorld::Impl::ApplyCameraFov(float fov)
+{
+	cameraFov = fov;
+	if (cameraProjectionSize.x == 0 || cameraProjectionSize.y == 0) return;
+	camera.SetPerspectiveProjection(cameraFov, { (float)cameraProjectionSize.x, (float)cameraProjectionSize.y }, 1.f, 100000.f);
+}
+
+void GameWorld::Impl::SetSceneCameraActive(int index)
+{
+	if (index == activeSceneCamera)
+		return;
+	activeSceneCamera = index;
+
+	if (index >= 0)
+	{
+		ApplyCameraFov(sceneCameras[index].fov);
+		// A look-around camera wants the cursor: hidden and confined to the window.
+		if (input && !mouseTrapped)
+		{
+			input->HideMouse();
+			input->CaptureMouse();
+			mouseTrapped = true;
+		}
+	}
+	else
+	{
+		ApplyCameraFov(90.f);
+	}
+}
+
+void GameWorld::Impl::UpdateSceneCamera()
+{
+	if (activeSceneCamera < 0 || activeSceneCamera >= (int)sceneCameras.size())
+		return;
+	const SceneCameraObject& c = sceneCameras[activeSceneCamera];
+	if (c.instance >= models.size())
+		return;
+
+	const Matrix4x4f transform = models[c.instance].GetTransform();
+	const Vector3f forward = transform.GetForward();
+	const float yaw = GameScene::Rad2Deg(std::atan2(forward.x, forward.z));
+
+	// The eye sits at the offset turned with the object's heading; pitch is the script's.
+	const Matrix4x4f heading = Matrix4x4f::CreateFromRollPitchYaw(Vector3f{ 0.f, yaw, 0.f });
+	camPos = transform.GetPosition() + c.offset * heading;
+	camRot = { c.pitch, yaw, 0.f };
+	camera.GetTransform().SetRotation(camRot);
+	camera.GetTransform().SetPosition(camPos);
 }

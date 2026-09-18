@@ -123,6 +123,101 @@ public:
 	}
 };
 
+class SetCameraActiveNode : public ScriptNodeBase
+{
+	ScriptPinId myInPin, myActivePin, myOutPin;
+
+public:
+	void Init(const ScriptCreationContext& context) override
+	{
+		myInPin = AddPin(context, ScriptPinRole::Input, ScriptLinkType::Flow, "Set Camera");
+		ScriptPin active = {};
+		active.type = ScriptLinkType::Property;
+		active.role = ScriptPinRole::Input;
+		active.dataType = GetPropertyType<bool>();
+		active.name = StringRegistry::RegisterOrGetString("Active");
+		active.node = context.GetNodeId();
+		active.defaultValue = Property::Create<bool>(true);
+		myActivePin = context.FindOrCreatePin(active);
+		myOutPin = AddPin(context, ScriptPinRole::Output, ScriptLinkType::Flow, "Out");
+	}
+
+	ScriptNodeResult Execute(ScriptExecutionContext& context, ScriptPinId) const override
+	{
+		if (GameScriptContext* game = GetGameContext(context))
+			game->SetCameraActive(*context.ReadInputPin(myActivePin).Get<bool>());
+		context.TriggerOutputPin(myOutPin);
+		return ScriptNodeResult::Finished;
+	}
+};
+
+class SetCameraFloatNode : public ScriptNodeBase
+{
+	ScriptPinId myInPin, myValuePin, myOutPin;
+	bool myIsPitch;
+
+public:
+	explicit SetCameraFloatNode(bool isPitch) : myIsPitch(isPitch) {}
+
+	void Init(const ScriptCreationContext& context) override
+	{
+		myInPin = AddPin(context, ScriptPinRole::Input, ScriptLinkType::Flow, myIsPitch ? "Set Pitch" : "Set FOV");
+		ScriptPin value = {};
+		value.type = ScriptLinkType::Property;
+		value.role = ScriptPinRole::Input;
+		value.dataType = GetPropertyType<float>();
+		value.name = StringRegistry::RegisterOrGetString(myIsPitch ? "Pitch (degrees)" : "FOV (degrees)");
+		value.node = context.GetNodeId();
+		value.defaultValue = Property::Create<float>(myIsPitch ? 0.f : 90.f);
+		myValuePin = context.FindOrCreatePin(value);
+		myOutPin = AddPin(context, ScriptPinRole::Output, ScriptLinkType::Flow, "Out");
+	}
+
+	ScriptNodeResult Execute(ScriptExecutionContext& context, ScriptPinId) const override
+	{
+		if (GameScriptContext* game = GetGameContext(context))
+		{
+			const float value = *context.ReadInputPin(myValuePin).Get<float>();
+			if (myIsPitch) game->SetCameraPitch(value); else game->SetCameraFov(value);
+		}
+		context.TriggerOutputPin(myOutPin);
+		return ScriptNodeResult::Finished;
+	}
+};
+
+class SetCameraPitchNode : public SetCameraFloatNode { public: SetCameraPitchNode() : SetCameraFloatNode(true) {} };
+class SetCameraFovNode : public SetCameraFloatNode { public: SetCameraFovNode() : SetCameraFloatNode(false) {} };
+
+class GetCameraPitchNode : public ScriptNodeBase
+{
+public:
+	void Init(const ScriptCreationContext& context) override
+	{
+		AddPin(context, ScriptPinRole::Output, ScriptLinkType::Property, "Pitch", GetPropertyType<float>());
+	}
+
+	Property ReadPin(ScriptExecutionContext& context, ScriptPinId) const override
+	{
+		const GameScriptContext* game = GetGameContext(context);
+		return Property::Create<float>(game ? game->GetCameraPitch() : 0.f);
+	}
+};
+
+class GetCameraForwardNode : public ScriptNodeBase
+{
+public:
+	void Init(const ScriptCreationContext& context) override
+	{
+		AddPin(context, ScriptPinRole::Output, ScriptLinkType::Property, "Forward", GetPropertyType<Vector3f>());
+	}
+
+	Property ReadPin(ScriptExecutionContext& context, ScriptPinId) const override
+	{
+		const GameScriptContext* game = GetGameContext(context);
+		return Property::Create<Vector3f>(game ? game->GetCameraForward() : Vector3f{ 0.f, 0.f, 1.f });
+	}
+};
+
 class AddImpulseNode : public ScriptNodeBase
 {
 	ScriptPinId myInPin, myImpulsePin, myOutPin;
@@ -338,6 +433,11 @@ void Tga::RegisterGameObjectNodes()
 	ScriptNodeTypeRegistry::RegisterType<SetLocationNode>("Object/Set Location", "Moves the object this script runs on (cm)");
 	ScriptNodeTypeRegistry::RegisterType<SetRotationNode>("Object/Set Rotation", "Turns the object this script runs on. Euler degrees; Y is the yaw");
 	ScriptNodeTypeRegistry::RegisterType<GetDirectionsNode>("Object/Get Directions", "Forward, right and up of the object as it is turned now");
+	ScriptNodeTypeRegistry::RegisterType<SetCameraActiveNode>("Camera/Set Active Camera", "Looks through this object's Camera component (true) or goes back to the free-fly camera (false)");
+	ScriptNodeTypeRegistry::RegisterType<SetCameraPitchNode>("Camera/Set Camera Pitch", "Looks up or down. Degrees, positive looks down");
+	ScriptNodeTypeRegistry::RegisterType<SetCameraFovNode>("Camera/Set Field Of View", "Horizontal field of view in degrees");
+	ScriptNodeTypeRegistry::RegisterType<GetCameraPitchNode>("Camera/Get Camera Pitch", "Current pitch in degrees");
+	ScriptNodeTypeRegistry::RegisterType<GetCameraForwardNode>("Camera/Get Camera Forward", "The direction the camera looks, pitch included");
 	ScriptNodeTypeRegistry::RegisterType<AddImpulseNode>("Object/Add Impulse", "Gives the object's physics body a push, in kg m/s. Needs a Rigidbody and a running simulation");
 	ScriptNodeTypeRegistry::RegisterType<GetVelocityNode>("Object/Get Velocity", "The object's physics velocity (cm/s). Zero without a simulated Rigidbody");
 	ScriptNodeTypeRegistry::RegisterType<SetVelocityNode<false>>("Object/Set Velocity", "Sets the object's physics velocity (cm/s)");

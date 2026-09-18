@@ -106,6 +106,16 @@ namespace Tga
 		float angularDamping = 0.05f;
 	};
 
+	// A view the object carries: the game looks through it while it is the active camera.
+	// It sits at offset (cm, turned with the object's yaw) and looks along the object's
+	// heading; scripts add pitch.
+	struct SceneCamera
+	{
+		Vector3f offset = { 0.f, 170.f, 0.f };  // eye height for a standing character
+		float fov = 90.f;                       // horizontal, degrees
+		bool activeOnStart = true;
+	};
+
 	struct SceneSprite
 	{
 		StringId textures[4];
@@ -127,6 +137,7 @@ namespace Tga
 	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<SceneSprite>)
 	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<SceneCollider>)
 	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<SceneRigidBody>)
+	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<SceneCamera>)
 	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<SceneReference>)
 	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<AnimationClipReference>)
 	DECLARE_PROPERTY_TYPE(PoseAndMotion)

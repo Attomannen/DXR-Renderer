@@ -90,6 +90,10 @@ void GameWorld::Impl::UpdateFreeFly(float dt)
 		input->ShowMouse(); input->ReleaseMouse(); mouseTrapped = false;
 	}
 
+	// A camera component owns the view: the free-fly controls stay out of its way (the panel,
+	// F-keys and Esc below still work).
+	const bool freeFly = activeSceneCamera < 0;
+
 	Matrix4x4f rot = Matrix4x4f::CreateFromRollPitchYaw(camRot);
 	Vector3f fwd = rot.GetForward();
 	Vector3f right = rot.GetRight();
@@ -101,9 +105,9 @@ void GameWorld::Impl::UpdateFreeFly(float dt)
 	if (input->IsKeyHeld('E')) move.y += 1.f;
 	if (input->IsKeyHeld('Q')) move.y -= 1.f;
 	const float speed = flySpeed * (input->IsKeyHeld(VK_SHIFT) ? 4.f : .4f);
-	camPos = camPos + move * speed * dt;
+	if (freeFly) camPos = camPos + move * speed * dt;
 
-	if (mouseTrapped && !uiMouse)
+	if (freeFly && mouseTrapped && !uiMouse)
 	{
 		const Vector2f md = input->GetMouseDelta();
 		camRot.y += md.x * 0.15f;
@@ -118,8 +122,11 @@ void GameWorld::Impl::UpdateFreeFly(float dt)
 			camPos.x, camPos.y, camPos.z, camRot.x, camRot.y, camRot.z);
 	if (input->IsKeyPressed(VK_ESCAPE)) PostQuitMessage(0);
 
-	camera.GetTransform().SetRotation(camRot);
-	camera.GetTransform().SetPosition(camPos);
+	if (freeFly)
+	{
+		camera.GetTransform().SetRotation(camRot);
+		camera.GetTransform().SetPosition(camPos);
+	}
 }
 
 void GameWorld::Impl::SaveCamera()

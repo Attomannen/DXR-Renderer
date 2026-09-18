@@ -446,6 +446,22 @@ struct GameWorld::Impl
 	void RegisterSceneScripts(const GameScene::SceneEntry& entry, size_t instanceIndex);
 	void UpdateSceneScripts(float deltaSeconds);
 
+	// --- Camera components (GameWorldScripts.cpp) ---
+	struct SceneCameraObject
+	{
+		size_t instance = 0;
+		Vector3f offset{ 0.f, 170.f, 0.f };
+		float fov = 90.f;
+		float pitch = 0.f;
+	};
+	std::vector<SceneCameraObject> sceneCameras;
+	int activeSceneCamera = -1;          // index into sceneCameras, -1 = free-fly
+	float cameraFov = 90.f;
+	void RegisterSceneCamera(const GameScene::SceneEntry& entry, size_t instanceIndex);
+	void SetSceneCameraActive(int index);
+	void UpdateSceneCamera();
+	void ApplyCameraFov(float fov);
+
 	bool showPhysicsWireframe = false;    // draw collision edges (green static, orange awake, blue asleep)
 	float physicsWireRadius = 3000.f;     // only near the camera; a level mesh has far too many edges
 	Tga::PhysicsDebugLines physicsWireLines;

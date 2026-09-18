@@ -166,6 +166,8 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 	anyTransparent = false;
 	ClearScenePhysics();
 	ClearSceneScripts();
+	SetSceneCameraActive(-1);
+	sceneCameras.clear();
 
 	ModelFactory& mf = ModelFactory::GetInstance();
 	auto& texMgr = GraphicsEngine::GetInstance()->GetTextureManager();
@@ -300,6 +302,7 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 			instanceOffsets.push_back(Vector3f{ ox, 0.f, oz });
 			RegisterScenePhysics(e, model, xf, models.size() - 1);
 			RegisterSceneScripts(e, models.size() - 1);
+			RegisterSceneCamera(e, models.size() - 1);
 
 			std::vector<int> op, tr;
 			for (int m = 0; m < meshCount; ++m)

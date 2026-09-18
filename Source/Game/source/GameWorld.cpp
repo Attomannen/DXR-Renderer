@@ -65,7 +65,7 @@ void GameWorld::Init()
 	s.fallbackCube = s.ambient.cubemap;
 
 	const Vector2ui res = Application::GetInstance()->GetRenderSize();
-	s.camera.SetPerspectiveProjection(90.f, { (float)res.x, (float)res.y }, 1.f, 100000.f);
+	s.camera.SetPerspectiveProjection(s.cameraFov, { (float)res.x, (float)res.y }, 1.f, 100000.f);
 	s.cameraProjectionSize = res;
 
 	// Load the scene (instances, bounds, light rig, start camera). Runtime scene
@@ -196,6 +196,7 @@ void GameWorld::Update(float aDeltaTime)
 	s.animTime += aDeltaTime;
 	s.UpdateSceneScripts(aDeltaTime);
 	s.UpdatePhysicsTest(aDeltaTime);
+	s.UpdateSceneCamera();
 	if (s.showOrbitBalls)
 		s.orbitAngle += aDeltaTime * s.orbitSpeed;
 
@@ -236,7 +237,7 @@ void GameWorld::Render()
 	const Vector2ui renderSize = Application::GetInstance()->GetRenderSize();
 	if (renderSize != s.cameraProjectionSize && renderSize.x != 0 && renderSize.y != 0)
 	{
-		s.camera.SetPerspectiveProjection(90.f, { static_cast<float>(renderSize.x), static_cast<float>(renderSize.y) }, 1.f, 100000.f);
+		s.camera.SetPerspectiveProjection(s.cameraFov, { static_cast<float>(renderSize.x), static_cast<float>(renderSize.y) }, 1.f, 100000.f);
 		s.cameraProjectionSize = renderSize;
 	}
 

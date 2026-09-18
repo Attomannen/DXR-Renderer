@@ -25,6 +25,15 @@ namespace Tga
 		// True when the object has a physics body that is currently simulated.
 		virtual bool HasPhysicsBody() const = 0;
 		virtual void AddImpulse(const Vector3f& impulse) = 0;
+		// The object's Camera component. While a camera is active the game looks through
+		// it instead of the free-fly camera. Pitch is degrees, positive looks down.
+		virtual bool HasCamera() const = 0;
+		virtual void SetCameraActive(bool active) = 0;
+		virtual void SetCameraPitch(float degrees) = 0;
+		virtual float GetCameraPitch() const = 0;
+		virtual void SetCameraFov(float degrees) = 0;
+		virtual Vector3f GetCameraForward() const = 0;
+
 		// cm/s. Zero / ignored without a simulated body.
 		virtual Vector3f GetVelocity() const = 0;
 		virtual void SetVelocity(const Vector3f& velocity) = 0;

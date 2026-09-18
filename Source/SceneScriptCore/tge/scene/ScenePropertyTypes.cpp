@@ -551,6 +551,59 @@ namespace Tga
 	IMPLEMENT_COMPONENT_PROPERTY_TYPE(CopyOnWriteWrapper<SceneRigidBody>, "Rigidbody")
 
 	template<>
+	void LoadFromJson<CopyOnWriteWrapper<SceneCamera>>(CopyOnWriteWrapper<SceneCamera>& value, const JsonData& jsonData)
+	{
+		value = CopyOnWriteWrapper<SceneCamera>::Create();
+		SceneCamera& camera = value.Edit();
+		const nlohmann::json& json = jsonData.json;
+
+		camera.offset = ReadVector3(json, "offset", camera.offset);
+		camera.fov = json.value("fov", camera.fov);
+		camera.activeOnStart = json.value("activeOnStart", camera.activeOnStart);
+	}
+
+	template<>
+	void WriteToJson<CopyOnWriteWrapper<SceneCamera>>(const CopyOnWriteWrapper<SceneCamera>& value, JsonData& jsonData)
+	{
+		const SceneCamera& camera = value.Get();
+		nlohmann::json& json = jsonData.json;
+
+		json["offset"] = { camera.offset.x, camera.offset.y, camera.offset.z };
+		json["fov"] = camera.fov;
+		json["activeOnStart"] = camera.activeOnStart;
+	}
+
+	template<>
+	bool ShowImGuiEditor<CopyOnWriteWrapper<SceneCamera>>(CopyOnWriteWrapper<SceneCamera>& value, const char* name, const char* description)
+	{
+		const SceneCamera& camera = value.Get();
+
+		if (name == nullptr)
+		{
+			ImGui::Text("%.0f degrees", camera.fov);
+			return false;
+		}
+
+		PropertyHeader(name, description);
+
+		SceneCamera edited = camera;
+		bool changed = false;
+
+		changed |= Vector3Row("Offset", edited.offset, 1.f);
+		changed |= FloatRow("Field of view", edited.fov, 0.5f, 10.f, 170.f);
+
+		BeginRow("Active on start");
+		changed |= ImGui::Checkbox("##v", &edited.activeOnStart);
+		EndRow();
+
+		if (changed)
+			value.Edit() = edited;
+		return changed;
+	}
+
+	IMPLEMENT_COMPONENT_PROPERTY_TYPE(CopyOnWriteWrapper<SceneCamera>, "Camera")
+
+	template<>
 	void LoadFromJson<CopyOnWriteWrapper<SceneSprite>>(CopyOnWriteWrapper<SceneSprite>& value, const JsonData& jsonData)
 	{
 		value = CopyOnWriteWrapper<SceneSprite>::Create();

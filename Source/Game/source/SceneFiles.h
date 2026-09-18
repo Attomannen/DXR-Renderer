@@ -55,11 +55,20 @@ namespace GameScene
 		bool Any() const { return hasCollider || modelCollision != "None"; }
 	};
 
+	struct SceneEntryCamera
+	{
+		bool has = false;
+		Vector3f offset{ 0.f, 170.f, 0.f };
+		float fov = 90.f;
+		bool activeOnStart = true;
+	};
+
 	struct SceneEntry
 	{
 		std::string fbx;
 		std::vector<std::string> materials;
 		SceneEntryPhysics physics;
+		SceneEntryCamera camera;
 		json instanceProperties;                            // per-instance property values written in the scene file
 		std::string tgoPath;                                // "Folder/Name" of the .tgo (no extension); scripts live in <tgoPath>/
 		Matrix4x4f transform;                               // identity by default

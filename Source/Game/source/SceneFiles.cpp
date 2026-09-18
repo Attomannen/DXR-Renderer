@@ -130,6 +130,22 @@ namespace GameScene
 		}
 	}
 
+	// The Camera component from a .tgo's "properties" array.
+	void ParseCameraProperty(const json& propsHolder, SceneEntryCamera& out)
+	{
+		if (!propsHolder.contains("properties")) return;
+		for (const json& p : propsHolder["properties"])
+		{
+			if (p.value("type", "") != "Camera" || !p.contains("value") || !p["value"].is_object()) continue;
+			const json& v = p["value"];
+			out.has = true;
+			if (v.contains("offset") && v["offset"].is_array() && v["offset"].size() >= 3)
+				out.offset = { v["offset"][0].get<float>(), v["offset"][1].get<float>(), v["offset"][2].get<float>() };
+			out.fov = v.value("fov", out.fov);
+			out.activeOnStart = v.value("activeOnStart", out.activeOnStart);
+		}
+	}
+
 	std::optional<SceneEntry> LoadTgo(const fs::path& tgoPath)
 	{
 		std::ifstream in(tgoPath);
@@ -138,6 +154,7 @@ namespace GameScene
 		SceneEntry e;
 		if (!ParseModelProperty(j, e)) { ERROR_PRINT("bench: no Model property in %s", tgoPath.string().c_str()); return std::nullopt; }
 		ParsePhysicsProperties(j, e.physics);
+		ParseCameraProperty(j, e.camera);
 		{
 			std::error_code pathEc;
 			fs::path relative = fs::relative(tgoPath, Tga::Settings::GameAssetRoot(), pathEc);
@@ -217,7 +234,7 @@ namespace GameScene
 
 			SceneEntry e;
 			bool haveModel = ParseModelProperty(obj, e);
-			if (haveModel) ParsePhysicsProperties(obj, e.physics);
+			if (haveModel) { ParsePhysicsProperties(obj, e.physics); ParseCameraProperty(obj, e.camera); }
 			if (!haveModel && obj.contains("path") && !obj["path"].get<std::string>().empty())
 			{
 				std::string tgoRel = obj["path"].get<std::string>();
