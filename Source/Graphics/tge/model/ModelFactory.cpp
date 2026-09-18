@@ -1026,7 +1026,18 @@ namespace
 	//  unaffected.
 	// ---------------------------------------------------------------------
 	constexpr uint32_t kMeshCacheMagic   = 0x434D4754u; // 'TGMC'
-	constexpr uint32_t kMeshCacheVersion = 4u;           // v4: layout 2 (compact + colour0 + uv1); GPU packing happens at load
+	// v5: layout 3 stores vertices ALREADY PACKED as MeshVertex.
+	//
+	// v4 stored 15 or 21 floats per vertex and packed them on every load, which
+	// measured 246 ms for the Bistro even after the decode was threaded across
+	// meshes. Packing is deterministic and depends only on the source mesh, so
+	// it is cook-time work that was being repeated on every single load. Doing
+	// it once at cook time turns the load into a memcpy, and MeshVertex is 40
+	// bytes against 60 or 84, so the cache file shrinks as well.
+	//
+	// The version bump invalidates existing caches: the first load of each model
+	// after this re-imports its FBX once, then every load after is fast.
+	constexpr uint32_t kMeshCacheVersion = 5u;
 
 	// Most static meshes only use position / normal / tangent / binormal / uv0.
 	// Those are stored as 15 floats/vertex instead of the full ~208-byte Vertex.
@@ -1242,14 +1253,15 @@ namespace
 			md.materialName = Tga::StringRegistry::RegisterOrGetString(in.ReadStr());
 			md.bounds = in.Read<Tga::BoxSphereBounds>();
 
-			const uint8_t layout = in.Read<uint8_t>();   // 0 compact, 1 full, 2 compact + colour/uv1
+			const uint8_t layout = in.Read<uint8_t>();   // 0/2 legacy float forms, 1 full, 3 pre-packed
 			const uint32_t vc = in.Read<uint32_t>();
-			const uint64_t vertexBytes = layout == 1 ? (uint64_t)vc * sizeof(Tga::Vertex)
+			const uint64_t vertexBytes = layout == 3 ? (uint64_t)vc * sizeof(Tga::MeshVertex)
+				: layout == 1 ? (uint64_t)vc * sizeof(Tga::Vertex)
 				: (uint64_t)vc * (layout == 2 ? kCompactColorFloats : kCompactFloats) * sizeof(float);
 			const uint8_t* vertexData = in.Take(vertexBytes);
 			const uint32_t ic = in.Read<uint32_t>();
 			const uint8_t* indexData = in.Take((uint64_t)ic * sizeof(unsigned int));
-			if (!in.ok || layout > 2) return false;
+			if (!in.ok || layout > 3) return false;
 
 			Tga::Model::SetVertexFormat(md, Tga::Model::VertexFormat::Compact);
 			if (vc == 0 || ic == 0) continue;   // a mesh without geometry keeps null buffers and is skipped at draw time
@@ -1315,11 +1327,11 @@ namespace
 		// those cost more than the decode they were meant to parallelise.
 		// new[] on a trivial type default-initialises, which does no work.
 		uint64_t totalVertices = 0;
-		for (const PendingMesh& pm : pending) totalVertices += pm.vertexCount;
+		for (const PendingMesh& pm : pending) if (pm.layout != 3) totalVertices += pm.vertexCount;
 		std::unique_ptr<Tga::MeshVertex[]> decodeArena(totalVertices ? new Tga::MeshVertex[totalVertices] : nullptr);
 		{
 			uint64_t offset = 0;
-			for (PendingMesh& pm : pending) { pm.decoded = decodeArena.get() + offset; offset += pm.vertexCount; }
+			for (PendingMesh& pm : pending) { if (pm.layout == 3) continue; pm.decoded = decodeArena.get() + offset; offset += pm.vertexCount; }
 		}
 		{
 			TGA_CPU_SCOPE("Mesh vertex decode (parallel)");
@@ -1330,6 +1342,8 @@ namespace
 				for (size_t i = next++; i < pending.size(); i = next++)
 				{
 					PendingMesh& pm = pending[i];
+					// Layout 3 is already in GPU form; nothing to decode.
+					if (pm.layout == 3) continue;
 					DecodeVertices(pm.layout, pm.vertexData, pm.vertexCount, pm.decoded, /*allowThreads*/ false);
 				}
 			};
@@ -1346,7 +1360,11 @@ namespace
 				Tga::Model::MeshData& md = meshes[pm.mesh];
 				// The cache only holds static meshes, which always upload compact.
 				Tga::Model::CreateVertexBuffer(md, pm.vertexCount,
-					[&](Tga::MeshVertex* mapped) { memcpy(mapped, pm.decoded, (size_t)pm.vertexCount * sizeof(Tga::MeshVertex)); }, "Mesh_VB");
+					[&](Tga::MeshVertex* mapped)
+					{
+						const void* src = pm.layout == 3 ? static_cast<const void*>(pm.vertexData) : static_cast<const void*>(pm.decoded);
+						memcpy(mapped, src, (size_t)pm.vertexCount * sizeof(Tga::MeshVertex));
+					}, "Mesh_VB");
 				const Tga::rhi::BufferHandle vb = md.vertexBuffer;
 
 				Tga::rhi::BufferDesc ibd{};
@@ -1405,11 +1423,14 @@ namespace
 			const uint8_t layout = in.Read<uint8_t>();
 			const uint32_t vc = in.Read<uint32_t>();
 			const uint32_t floats = layout == 2 ? kCompactColorFloats : kCompactFloats;
-			const uint64_t stride = layout == 1 ? sizeof(Tga::Vertex) : (uint64_t)floats * sizeof(float);
+			// MeshVertex also begins with a float3 position, so the extraction
+			// below works unchanged for layout 3 -- only the stride differs.
+			const uint64_t stride = layout == 3 ? sizeof(Tga::MeshVertex)
+				: layout == 1 ? sizeof(Tga::Vertex) : (uint64_t)floats * sizeof(float);
 			const uint8_t* vertexData = in.Take((uint64_t)vc * stride);
 			const uint32_t ic = in.Read<uint32_t>();
 			const uint8_t* indexData = in.Take((uint64_t)ic * sizeof(unsigned int));
-			if (!in.ok || layout > 2) return false;
+			if (!in.ok || layout > 3) return false;
 			if (vc == 0 || ic == 0) continue;
 
 			const uint32_t base = (uint32_t)(out.positions.size() / 3);
@@ -1448,6 +1469,7 @@ namespace
 		CacheW(out, fbxTime); CacheW(out, fbxSize);
 		const uint32_t meshCount = (uint32_t)meshes.size(); CacheW(out, meshCount);
 		std::vector<float> scratch;
+		std::vector<Tga::MeshVertex> packed;
 		for (const auto& md : meshes)
 		{
 			CacheWStr(out, std::string(md.name.GetStringView()));
@@ -1461,10 +1483,19 @@ namespace
 				compactColor = compactColor && VertexIsCompactColorSafe(v);
 				if (!compactColor) break;
 			}
-			const uint8_t layout = compact ? 0u : compactColor ? 2u : 1u; CacheW(out, layout);
+			// Layout 3 whenever the mesh is compact enough for MeshVertex to
+			// represent it -- which is what the loader was converting to anyway.
+			// Layout 1 (full Tga::Vertex) stays, for meshes that are not.
+			const uint8_t layout = (compact || compactColor) ? 3u : 1u; CacheW(out, layout);
 
 			const uint32_t vc = (uint32_t)md.vertices.size(); CacheW(out, vc);
-			if (layout != 1)
+			if (layout == 3)
+			{
+				packed.resize(vc);
+				for (uint32_t v = 0; v < vc; ++v) packed[v] = Tga::PackMeshVertex(md.vertices[v]);
+				if (vc) out.write(reinterpret_cast<const char*>(packed.data()), (std::streamsize)vc * sizeof(Tga::MeshVertex));
+			}
+			else if (layout != 1)
 			{
 				const uint32_t floats = layout == 2 ? kCompactColorFloats : kCompactFloats;
 				scratch.assign((size_t)vc * floats, 0.0f);
