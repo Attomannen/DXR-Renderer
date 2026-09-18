@@ -289,6 +289,9 @@ bool DeferredRenderer::Init(Vector2ui aResolution)
 	myExposureLumaPs   = DX11::LoadPixelShader("Shaders/ExposureLumaPS");
 	myExposureDownPs   = DX11::LoadPixelShader("Shaders/ExposureDownPS");
 	myExposureAdaptPs  = DX11::LoadPixelShader("Shaders/ExposureAdaptPS");
+	myDofCocPs         = DX11::LoadPixelShader("Shaders/DofCocPS");
+	myDofBlurPs        = DX11::LoadPixelShader("Shaders/DofBlurPS");
+	myDofCompositePs   = DX11::LoadPixelShader("Shaders/DofCompositePS");
 	myCompositePs      = DX11::LoadPixelShader("Shaders/DeferredCompositePS");
 	if (!myBloomPrefilterPs || !myBloomDownPs || !myBloomUpPs || !myExposureLumaPs ||
 	    !myExposureDownPs || !myExposureAdaptPs || !myCompositePs)

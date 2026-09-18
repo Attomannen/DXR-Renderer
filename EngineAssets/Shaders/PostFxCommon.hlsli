@@ -25,6 +25,17 @@ cbuffer PostFxParams : register(b10)
 	uint   gHdrPreExposed;   // 1 = the HDR input carries the previous frame's exposure
 	float  gAdaptStrength;   // 0 = fixed camera, 1 = fully compensating meter
 	float  _postFxPad2;
+
+	// Depth of field. gDofCocScale folds all the camera geometry (focal length
+	// squared, over f-number, over focus distance, times pixels per mm of
+	// sensor) into one number so the shaders have no opinion about sensor size.
+	float  gDofCocScale;
+	float  gDofFocusDistance;   // ENGINE units (cm), matching gDofNear/gDofFar
+	float  gDofMaxRadius;       // full-resolution pixels
+	float  gDofEnabled;
+
+	float  gDofNear, gDofFar;
+	float2 _postFxPad3;
 };
 
 #include "Exposure.hlsli"

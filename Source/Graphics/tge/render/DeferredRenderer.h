@@ -433,6 +433,23 @@ namespace Tga
 			// the same screen brightness and so cancels a day-night cycle out
 			// entirely. 0 is a fixed camera. See ExposureAdaptPS.hlsl.
 			float exposureAdaptStrength = 0.25f;
+			// --- depth of field ---
+			// The f-number for BLUR only, separate from cameraAperture.
+			//
+			// On a real camera these are one dial and opening up for shallower
+			// focus also brightens the image, which you then trade back on
+			// shutter or ISO. Tying them here meant dialling in bokeh blew the
+			// exposure out, because the metering is deliberately only partly
+			// compensating. Artists want the look without re-balancing the
+			// exposure every time, so blur gets its own number.
+			float dofAperture     = 2.8f;
+			bool  dofEnabled      = false;
+			float dofFocalLength  = 50.f;    // mm
+			float dofFocusDistance = 12.f;   // metres; see dofAutoFocus
+			// Clamp on the blur radius in full-resolution pixels. The gather is
+			// a fixed 48 taps, so past a certain radius the disc is sampled too
+			// sparsely and bokeh breaks into separate dots.
+			float dofMaxRadius    = 24.f;
 			int   tonemapper      = 0;       // 0 AgX, 1 AgX Punchy, 2 ACES (fitted), 3 none
 			// DXR renderer: write lighting already multiplied by the previous
 			// frame's exposure, so moonlit and sunlit scenes both stay inside
@@ -948,6 +965,11 @@ namespace Tga
 		const PixelShader* myExposureLumaPs   = nullptr;
 		const PixelShader* myExposureDownPs   = nullptr;
 		const PixelShader* myExposureAdaptPs  = nullptr;
+		const PixelShader* myDofCocPs        = nullptr;
+		const PixelShader* myDofBlurPs       = nullptr;
+		const PixelShader* myDofCompositePs  = nullptr;
+		RenderTarget myDofHalf, myDofBlur, myDofFull;
+		Vector2ui myDofHalfSize{ 1, 1 };
 		const PixelShader* myCompositePs      = nullptr;
 		std::array<RenderTarget, kBloomMips> myBloomMip;   // [0] = half res, each next halved
 		std::array<Vector2ui, kBloomMips>    myBloomSize{};

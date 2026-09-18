@@ -26,6 +26,14 @@ bool DeferredRenderer::CreatePostFxTargets(Vector2ui aResolution)
 		myExposure[1] = RenderTarget::Create({ 1, 1 }, rhi::Format::R32_Float);
 		myExposureCleared = false;
 	}
+	// Half resolution: the gather is the expensive part and a defocused image
+	// has no high frequencies left to lose. The full-resolution scratch exists
+	// because the composite reads the sharp frame and cannot write to it.
+	myDofHalfSize = { std::max(1u, aResolution.x / 2), std::max(1u, aResolution.y / 2) };
+	myDofHalf = RenderTarget::Create(myDofHalfSize, rhi::Format::R16G16B16A16_Float);
+	myDofBlur = RenderTarget::Create(myDofHalfSize, rhi::Format::R16G16B16A16_Float);
+	myDofFull = RenderTarget::Create(aResolution, rhi::Format::R16G16B16A16_Float);
+
 	return true;
 }
 
@@ -49,6 +57,24 @@ void DeferredRenderer::PostFxFullscreen(const PixelShader* aPs, RenderTarget& aD
 		c.exposureComp = t.exposureComp;
 		c.adaptRate = t.exposureSpeed;
 		c.adaptStrength = std::clamp(t.exposureAdaptStrength, 0.f, 1.f);
+		{
+			// Thin lens, in full-resolution pixels. Everything here is camera
+			// geometry, so it collapses to one scalar: blur radius equals this
+			// times (z - focus) / z.
+			const float focusMm = std::max(t.dofFocusDistance, t.dofFocalLength * 0.002f) * 1000.f;
+			const float f = std::max(1.f, t.dofFocalLength);
+			const float pixelsPerMm = (float)myResolution.x / 36.f;   // 35 mm sensor width
+			c.dofCocScale = (f * f) / (std::max(0.7f, t.dofAperture) * std::max(1.f, focusMm - f)) * pixelsPerMm;
+			// In ENGINE units, not metres. myNear/myFar are centimetres, so the
+			// shader's linearised depth is centimetres too; handing it a focus
+			// distance in metres made everything a hundred times out of focus
+			// and nothing in the frame was ever sharp. The tunable stays in
+			// metres because that is what a focus dial reads.
+			c.dofFocusDistance = std::max(0.01f, t.dofFocusDistance) * 100.f;
+			c.dofMaxRadius = std::max(1.f, t.dofMaxRadius);
+			c.dofEnabled = t.dofEnabled ? 1.f : 0.f;
+			c.dofNear = myNear; c.dofFar = myFar;
+		}
 		c.deltaTime = std::min(Application::GetInstance()->GetDeltaTime(), 0.1f);
 		myPostFxCb.Update(DX11::Rhi()->GetContext(), c);
 	}
@@ -82,6 +108,38 @@ void DeferredRenderer::RenderPostFx()
 	myPreExposureIndex = myExposureSrc;
 
 	const Vector2f hdrTexel{ 1.f / (float)myResolution.x, 1.f / (float)myResolution.y };
+
+	// --- depth of field: CoC -> half-res bokeh gather -> composite over HDR ---
+	//
+	// Before bloom, deliberately. Bloom is the lens scattering light inside
+	// itself, so it should see the defocused image: a blown-out highlight that
+	// is out of focus blooms as a wide soft disc, not as a sharp point that is
+	// blurred afterwards. Running it the other way round is what makes bokeh
+	// look pasted on.
+	if (myTunables.dofEnabled && myDofCocPs && myDofBlurPs && myDofCompositePs && myDofFull.GetSrv().IsValid())
+	{
+		TGA_PROFILE_SCOPE(myProfiler, "Depth of field");
+		rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
+		// Ray depth when the DXR renderer owns the frame, the raster depth
+		// buffer otherwise. Under upscaling the ray depth is at render
+		// resolution while this pass runs at display resolution; that is fine,
+		// because it is sampled by uv and a circle of confusion is a
+		// low-frequency quantity -- it is the COLOUR that needs full resolution.
+		const rhi::SrvHandle depth = (IsDxrRenderer() || IsDxrFullscreen()) && myTemporalSrv[1].IsValid()
+			? myTemporalSrv[1] : DX11::DepthBuffer->GetSrv();
+
+		const rhi::SrvHandle cocSrvs[2] = { myHdr.GetSrv(), depth };
+		PostFxFullscreen(myDofCocPs, myDofHalf, myDofHalfSize, cocSrvs, 2, hdrTexel);
+
+		const Vector2f halfTexel{ 1.f / (float)myDofHalfSize.x, 1.f / (float)myDofHalfSize.y };
+		rhi::SrvHandle blurSrc = myDofHalf.GetSrv();
+		PostFxFullscreen(myDofBlurPs, myDofBlur, myDofHalfSize, &blurSrc, 1, halfTexel);
+
+		const rhi::SrvHandle compositeSrvs[2] = { myHdr.GetSrv(), myDofBlur.GetSrv() };
+		PostFxFullscreen(myDofCompositePs, myDofFull, myResolution, compositeSrvs, 2, hdrTexel);
+		// The composite reads the sharp frame, so it cannot write to it.
+		ctx.CopyTexture(myHdr.GetTextureHandle(), myDofFull.GetTextureHandle());
+	}
 
 	// --- bloom: prefilter HDR -> mip[0], downsample chain, additive tent upsample ---
 	if (myTunables.bloomEnabled)

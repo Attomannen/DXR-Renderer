@@ -119,7 +119,12 @@ bool DeferredRenderer::RenderAtmosphere(bool beforeTemporal, bool aRenderResolut
 	cb.density=fogWanted ? std::clamp(t.fogDensity,0.f,0.05f) : 0.f;
 	cb.heightFalloff=std::clamp(t.fogHeightFalloff,0.f,0.2f);
 	cb.baseHeight=t.fogBaseHeight; cb.startDistance=std::max(0.f,t.fogStartDistance);
-	cb.maxDistance=std::clamp(t.fogMaxDistance,1.f,1000.f);
+	// Ceiling raised from 1000. The tunable's default is 20 000 m and the slider
+	// runs to 50 000, so every value above a kilometre was being silently
+	// truncated here -- which is exactly the "fog stops at a fixed distance"
+	// failure the default was raised to fix. Units were never wrong on this
+	// path; the clamp was just left behind when the default moved.
+	cb.maxDistance=std::clamp(t.fogMaxDistance,1.f,50000.f);
 	cb.volumeDistance=std::clamp(t.volumetricDistance,1.f,300.f);
 	cb.volumeStrength=std::clamp(t.volumetricStrength,0.f,2.f);
 	cb.anisotropy=std::clamp(t.volumetricAnisotropy,0.f,0.8f);

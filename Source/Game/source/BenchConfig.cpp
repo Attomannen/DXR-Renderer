@@ -178,6 +178,12 @@ void ApplyRendererOverrides(DeferredRenderer::Tunables& tun)
 	if (const char* rc = std::getenv("BENCH_DXR_REFLECTION_CUTOFF")) tun.dxrReflectionRoughnessCutoff = std::clamp((float)atof(rc), 0.f, 1.f);
 	tun.exposureAuto = EnvInt("BENCH_AUTOEXPOSURE", tun.exposureAuto ? 1 : 0) != 0;
 	tun.tonemapper = std::clamp(EnvInt("BENCH_TONEMAP", tun.tonemapper), 0, 3);
+	tun.cameraAperture = std::clamp(EnvFloat("BENCH_APERTURE", tun.cameraAperture), 0.7f, 32.f);
+	tun.dofAperture = std::clamp(EnvFloat("BENCH_DOF_APERTURE", tun.dofAperture), 0.7f, 32.f);
+	tun.dofEnabled = EnvInt("BENCH_DOF", tun.dofEnabled ? 1 : 0) != 0;
+	tun.dofFocusDistance = std::max(0.01f, EnvFloat("BENCH_DOF_FOCUS", tun.dofFocusDistance));
+	tun.dofFocalLength = std::clamp(EnvFloat("BENCH_DOF_FOCAL", tun.dofFocalLength), 5.f, 400.f);
+	tun.dofMaxRadius = std::clamp(EnvFloat("BENCH_DOF_MAXRADIUS", tun.dofMaxRadius), 1.f, 64.f);
 	tun.nrdCheckerboard = EnvInt("BENCH_NRD_CHECKERBOARD", tun.nrdCheckerboard ? 1 : 0) != 0;
 	tun.nrdDenoiser = std::clamp(EnvInt("BENCH_NRD_DENOISER", tun.nrdDenoiser), 0, 1);
 	tun.nrdValidation = EnvInt("BENCH_NRD_VALIDATION", 0) != 0;

@@ -158,8 +158,11 @@ namespace
 		uint32_t hdrPreExposed;
 		float adaptStrength;   // 0 = fixed camera, 1 = fully compensating
 		float pad1;
+
+		float dofCocScale, dofFocusDistance, dofMaxRadius, dofEnabled;
+		float dofNear, dofFar; float pad2[2];
 	};
-	static_assert(sizeof(PostFxCb) == 64);
+	static_assert(sizeof(PostFxCb) == 96);   // +32 depth of field
 
 	// CS b0 of the DXR lighting pass; the layout lives in the shared header.
 	using DxrLightingConstants = Tga::DxrShared::DxrLightingConstants;
