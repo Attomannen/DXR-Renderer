@@ -33,6 +33,8 @@
 #include <tge/log/Log.h>
 #include <tge/EngineDefines.h>
 #include <tge/physics/PhysicsWorld.h>
+#include <tge/script/ScriptRuntimeInstance.h>
+#include <tge/script/Contexts/GameScriptContext.h>
 #include <Windows.h>
 #include <d3d11.h>
 #include <dxgi.h>
@@ -419,6 +421,31 @@ struct GameWorld::Impl
 	bool physicsAutoStart = false;
 	float physicsLogTimer = 0.f;
 	int physicsLogCount = 0;
+	// --- per-object scripts (GameWorldScripts.cpp) ---
+	// A .tgo's scripts are the .tgscript files in the folder named after it
+	// (Folder/Name.tgo -> Folder/Name/*.tgscript). They start when the scene loads and
+	// run every frame.
+	struct SceneScriptObject
+	{
+		size_t instance = 0;                                   // index into models
+		std::string name;                                      // for logs
+		std::vector<std::unique_ptr<Tga::ScriptRuntimeInstance>> scripts;
+		std::unordered_map<StringId, Tga::Property> dynamicProperties;
+		std::unordered_map<StringId, Tga::Property> staticProperties;
+
+		SceneScriptObject() = default;
+		SceneScriptObject(const SceneScriptObject&) = delete;
+		SceneScriptObject& operator=(const SceneScriptObject&) = delete;
+		SceneScriptObject(SceneScriptObject&&) noexcept = default;
+		SceneScriptObject& operator=(SceneScriptObject&&) noexcept = default;
+	};
+	std::vector<SceneScriptObject> sceneScripts;
+	bool scriptsEnabled = true;
+	int scriptFrame = 0;
+	void ClearSceneScripts();
+	void RegisterSceneScripts(const GameScene::SceneEntry& entry, size_t instanceIndex);
+	void UpdateSceneScripts(float deltaSeconds);
+
 	bool showPhysicsWireframe = false;    // draw collision edges (green static, orange awake, blue asleep)
 	float physicsWireRadius = 3000.f;     // only near the camera; a level mesh has far too many edges
 	Tga::PhysicsDebugLines physicsWireLines;

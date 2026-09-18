@@ -5,6 +5,9 @@
 #include "GameWorldImpl.h"
 #include "BenchConfig.h"
 #include <tge/physics/PhysicsWorld.h>
+#include <tge/script/Nodes/CommonNodes.h>
+#include <tge/script/Nodes/CommonMathNodes.h>
+#include <tge/script/Nodes/GameObjectNodes.h>
 #include <DirectXTex/ScreenGrab/ScreenGrab11.h>
 #pragma comment(lib, "windowscodecs.lib")
 
@@ -24,6 +27,10 @@ void GameWorld::Init()
 	Impl& s = *myImpl;
 
 	BenchConfig::ApplyStartupOverrides(s);
+	// Node types must exist before any script is loaded (the editor does the same at startup).
+	Tga::RegisterCommonNodes();
+	Tga::RegisterCommonMathNodes();
+	Tga::RegisterGameObjectNodes();
 	INFO_PRINT("physics: Jolt %s, smoke test %s", Tga::GetPhysicsVersion(), Tga::PhysicsSmokeTest() ? "ok" : "FAILED");
 
 	// Materials rendered in the forward transparent pass (substring match, after
@@ -185,6 +192,7 @@ void GameWorld::Update(float aDeltaTime)
 		s.UpdateFreeFly(aDeltaTime);
 
 	s.animTime += aDeltaTime;
+	s.UpdateSceneScripts(aDeltaTime);
 	s.UpdatePhysicsTest(aDeltaTime);
 	if (s.showOrbitBalls)
 		s.orbitAngle += aDeltaTime * s.orbitSpeed;

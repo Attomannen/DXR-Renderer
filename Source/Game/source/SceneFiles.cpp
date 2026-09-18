@@ -138,6 +138,11 @@ namespace GameScene
 		SceneEntry e;
 		if (!ParseModelProperty(j, e)) { ERROR_PRINT("bench: no Model property in %s", tgoPath.string().c_str()); return std::nullopt; }
 		ParsePhysicsProperties(j, e.physics);
+		{
+			std::error_code pathEc;
+			fs::path relative = fs::relative(tgoPath, Tga::Settings::GameAssetRoot(), pathEc);
+			if (!pathEc) e.tgoPath = relative.replace_extension("").generic_string();
+		}
 		return e;
 	}
 

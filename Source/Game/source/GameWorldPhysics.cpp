@@ -415,6 +415,14 @@ void GameWorld::Impl::DrawPhysicsTab()
 		dynamicProps += object.dynamic ? 1 : 0;
 
 	ImGui::Text("Scene collision: %d static, %d prop(s)", scenePhysicsStaticCount, dynamicProps);
+	{
+		size_t scriptCount = 0;
+		for (const SceneScriptObject& object : sceneScripts)
+			scriptCount += object.scripts.size();
+		ImGui::Text("Scripts: %zu on %zu object(s)", scriptCount, sceneScripts.size());
+		ImGui::SameLine();
+		ImGui::Checkbox("Run scripts", &scriptsEnabled);
+	}
 	ImGui::TextWrapped("Objects get collision from the .tgo Model 'Collision' setting or a Collider component; "
 		"add a Rigidbody to make one fall. Start drops everything, Reset puts it back.");
 	ImGui::Checkbox("Show collision", &showPhysicsWireframe);
