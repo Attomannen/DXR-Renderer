@@ -367,6 +367,10 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 			debugBall.Init(sph);
 			debugBallValid = true;
 			debugBallModelRadius = std::max(sph->GetBounds().radius, 0.001f);
+			{
+				const Vector3f& e = sph->GetBounds().boxExtents;
+				debugBallModelExtent = std::max({ e.x, e.y, e.z, 0.001f });
+			}
 			orbitBalls.clear();
 			orbitBalls.resize(kMaxOrbitBalls);
 			for (ModelInstance& mi : orbitBalls) mi.Init(sph);

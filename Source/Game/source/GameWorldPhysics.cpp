@@ -269,7 +269,9 @@ void GameWorld::Impl::StartPhysicsTest()
 
 		PhysicsShapeDesc ballShape;
 		ballShape.type = PhysicsShapeType::Sphere;
-		ballShape.radius = debugBallRadius;
+		// The sphere is drawn scaled so the model's bounds radius equals debugBallRadius, but that
+		// radius is the box diagonal; the surface is at the box half-size.
+		ballShape.radius = debugBallRadius * (debugBallModelExtent / debugBallModelRadius);
 		PhysicsBodyDesc ball;
 		ball.shape = physics.CreateShape(ballShape);
 		ball.motion = PhysicsMotion::Dynamic;

@@ -221,6 +221,7 @@ struct GameWorld::Impl
 	Vector3f debugBallPos{ 0.f, 0.f, 0.f };
 	float debugBallRadius = 45.f;      // desired world-space radius
 	float debugBallModelRadius = 1.f;  // FBX bounds radius (from the model)
+	float debugBallModelExtent = 1.f;  // FBX half-size of the sphere itself; the bounds radius is larger (box diagonal)
 	bool debugBallFollowCam = true;
 	bool debugBallEmitsLight = true;   // emissive -> real area light
 	float debugEmissiveLightGain = 0.03f;
