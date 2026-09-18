@@ -49,6 +49,38 @@ namespace
 			myWorld.models[myInstance].SetTransform(transform);
 		}
 
+		Vector3f GetVelocity() const override
+		{
+			if (const GameWorld::Impl::ScenePhysicsObject* object = FindBody())
+			{
+				const Tga::PhysicsVec3 v = myWorld.physics.GetLinearVelocity(object->body);
+				return { v.x, v.y, v.z };
+			}
+			return { 0.f, 0.f, 0.f };
+		}
+
+		void SetVelocity(const Vector3f& velocity) override
+		{
+			if (const GameWorld::Impl::ScenePhysicsObject* object = FindBody())
+				myWorld.physics.SetLinearVelocity(object->body, { velocity.x, velocity.y, velocity.z });
+		}
+
+		// Scripts get no input while the debug UI is using it (typing in a field must not walk the player).
+		bool IsKeyDown(int keyCode) const override
+		{
+			return myWorld.input && !UiWantsKeys(keyCode) && myWorld.input->IsKeyHeld(keyCode);
+		}
+
+		bool WasKeyPressed(int keyCode) const override
+		{
+			return myWorld.input && !UiWantsKeys(keyCode) && myWorld.input->IsKeyPressed(keyCode);
+		}
+
+		Vector2f GetMouseDelta() const override
+		{
+			return myWorld.input && !ImGui::GetIO().WantCaptureMouse ? myWorld.input->GetMouseDelta() : Vector2f{ 0.f, 0.f };
+		}
+
 		bool HasPhysicsBody() const override
 		{
 			return FindBody() != nullptr;
@@ -61,6 +93,13 @@ namespace
 		}
 
 	private:
+		static bool UiWantsKeys(int keyCode)
+		{
+			// Mouse buttons (VK 1-6) belong to the mouse, everything else to the keyboard.
+			const ImGuiIO& io = ImGui::GetIO();
+			return keyCode <= 6 ? io.WantCaptureMouse : io.WantCaptureKeyboard;
+		}
+
 		const GameWorld::Impl::ScenePhysicsObject* FindBody() const
 		{
 			if (!myWorld.physicsActive)

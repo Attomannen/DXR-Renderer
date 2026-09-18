@@ -2,6 +2,7 @@
 
 #include <tge/script/Contexts/ScriptUpdateContext.h>
 #include <tge/math/Vector.h>
+#include <tge/math/vector2.h>
 
 namespace Tga
 {
@@ -17,5 +18,14 @@ namespace Tga
 		// True when the object has a physics body that is currently simulated.
 		virtual bool HasPhysicsBody() const = 0;
 		virtual void AddImpulse(const Vector3f& impulse) = 0;
+		// cm/s. Zero / ignored without a simulated body.
+		virtual Vector3f GetVelocity() const = 0;
+		virtual void SetVelocity(const Vector3f& velocity) = 0;
+
+		// Keys are Windows virtual-key codes (see KeyNameToCode in the node library).
+		// All false / zero while the debug UI has the keyboard or mouse.
+		virtual bool IsKeyDown(int keyCode) const = 0;
+		virtual bool WasKeyPressed(int keyCode) const = 0;
+		virtual Vector2f GetMouseDelta() const = 0;
 	};
 }
