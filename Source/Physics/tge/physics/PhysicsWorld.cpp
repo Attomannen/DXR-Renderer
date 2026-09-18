@@ -14,6 +14,7 @@
 #include <Jolt/Physics/Collision/BroadPhase/BroadPhaseLayer.h>
 #include <Jolt/Physics/Collision/ObjectLayer.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
+#include <Jolt/Physics/Collision/TransformedShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
@@ -450,6 +451,58 @@ namespace Tga
 	uint32_t PhysicsWorld::GetBodyCount() const
 	{
 		return myImpl ? myImpl->system->GetNumBodies() : 0;
+	}
+
+	void PhysicsWorld::CollectDebugLines(const PhysicsVec3& center, float radius, size_t maxLines, PhysicsDebugLines& out) const
+	{
+		if (!myImpl)
+			return;
+		const Impl& s = *myImpl;
+
+		const JPH::Vec3 c = ToJolt(center);
+		const float r = radius * kCmToM;
+		const JPH::AABox region(c - JPH::Vec3::sReplicate(r), c + JPH::Vec3::sReplicate(r));
+
+		JPH::BodyIDVector ids;
+		s.system->GetBodies(ids);
+		for (const JPH::BodyID& id : ids)
+		{
+			const JPH::TransformedShape shape = s.system->GetBodyInterface().GetTransformedShape(id);
+			if (!shape.mShape || !shape.GetWorldSpaceBounds().Overlaps(region))
+				continue;
+
+			PhysicsDebugLines::Kind kind = PhysicsDebugLines::Static;
+			if (s.Bodies().GetMotionType(id) != JPH::EMotionType::Static)
+				kind = s.Bodies().IsActive(id) ? PhysicsDebugLines::Awake : PhysicsDebugLines::Asleep;
+
+			JPH::Shape::GetTrianglesContext context;
+			shape.GetTrianglesStart(context, region, JPH::RVec3(c));
+
+			constexpr int kBatch = 64;
+			JPH::Float3 triangles[kBatch * 3];
+			for (;;)
+			{
+				const int count = shape.GetTrianglesNext(context, kBatch, triangles);
+				if (count == 0)
+					break;
+				for (int t = 0; t < count; ++t)
+				{
+					for (int e = 0; e < 3; ++e)
+					{
+						if (out.from.size() >= maxLines)
+						{
+							out.truncated = true;
+							return;
+						}
+						const JPH::Float3& a = triangles[t * 3 + e];
+						const JPH::Float3& b = triangles[t * 3 + (e + 1) % 3];
+						out.from.push_back(ToEngine(c + JPH::Vec3(a)));
+						out.to.push_back(ToEngine(c + JPH::Vec3(b)));
+						out.kind.push_back(kind);
+					}
+				}
+			}
+		}
 	}
 
 	bool PhysicsSmokeTest()

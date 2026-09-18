@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 // Jolt wrapper. No Jolt type appears in this header, so only the Physics project
 // includes Jolt.
@@ -95,6 +96,17 @@ namespace Tga
 		uint64_t userData = 0;                       // handed back by GetUserData, e.g. an object id
 	};
 
+	// Wireframe of the collision near a point, for drawing. Every shape type comes out as
+	// triangle edges, so a mesh shows its real triangles and a sphere its tessellation.
+	struct PhysicsDebugLines
+	{
+		enum Kind : uint8_t { Static, Awake, Asleep };
+		std::vector<PhysicsVec3> from;
+		std::vector<PhysicsVec3> to;
+		std::vector<Kind> kind;
+		bool truncated = false; // hit the line cap; shrink the radius to see the rest
+	};
+
 	class PhysicsWorld
 	{
 	public:
@@ -145,6 +157,9 @@ namespace Tga
 		PhysicsVec3 GetLinearVelocity(PhysicsBodyId body) const;
 
 		uint32_t GetBodyCount() const;
+
+		// Appends the collision edges of every body within radius (cm) of center.
+		void CollectDebugLines(const PhysicsVec3& center, float radius, size_t maxLines, PhysicsDebugLines& out) const;
 
 	private:
 		struct Impl;

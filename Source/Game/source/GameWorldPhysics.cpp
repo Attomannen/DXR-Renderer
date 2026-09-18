@@ -45,6 +45,7 @@ void GameWorld::Impl::ClearScenePhysics()
 	scenePhysicsShapes.clear();
 	scenePhysicsStaticCount = 0;
 	physicsAutoStart = GameScene::EnvInt("BENCH_PHYSICS", 0) != 0;
+	if (GameScene::EnvInt("BENCH_PHYSICS_WIRE", 0) != 0) showPhysicsWireframe = true;
 	physicsLogTimer = 0.f;
 	physicsLogCount = 0;
 }
@@ -367,6 +368,44 @@ void GameWorld::Impl::UpdatePhysicsTest(float deltaSeconds)
 		debugBallPos = { position.x, position.y, position.z };
 }
 
+void GameWorld::Impl::DrawPhysicsOverlay()
+{
+	if (!showPhysicsWireframe || !physics.IsInitialized())
+		return;
+
+	const Matrix4x4f camXf = camera.GetTransform();
+	const Vector3f eye = camXf.GetPosition();
+	physicsWireLines = {};
+	physics.CollectDebugLines(ToPhysics(eye), physicsWireRadius, 120000, physicsWireLines);
+
+	const Matrix4x4f viewProj = Matrix4x4f::GetFastInverse(camXf) * camera.GetProjection();
+	const ImVec2 size = ImGui::GetIO().DisplaySize;
+	ImDrawList* draw = ImGui::GetBackgroundDrawList();
+
+	auto project = [&](const PhysicsVec3& p, Vector4f& clip) { clip = Vector4f(p.x, p.y, p.z, 1.f) * viewProj; };
+	const ImU32 colors[3] = { IM_COL32(70, 230, 100, 200), IM_COL32(255, 160, 50, 230), IM_COL32(110, 150, 255, 200) };
+
+	for (size_t i = 0; i < physicsWireLines.from.size(); ++i)
+	{
+		Vector4f a, b;
+		project(physicsWireLines.from[i], a);
+		project(physicsWireLines.to[i], b);
+
+		// Clip against the near plane (w = 1) so lines crossing behind the camera still draw.
+		if (a.w <= 1.f && b.w <= 1.f)
+			continue;
+		if (a.w <= 1.f) { const float t = (1.f - a.w) / (b.w - a.w); a = a + (b - a) * t; }
+		else if (b.w <= 1.f) { const float t = (1.f - b.w) / (a.w - b.w); b = b + (a - b) * t; }
+
+		const ImVec2 sa((a.x / a.w * 0.5f + 0.5f) * size.x, (1.f - (a.y / a.w * 0.5f + 0.5f)) * size.y);
+		const ImVec2 sb((b.x / b.w * 0.5f + 0.5f) * size.x, (1.f - (b.y / b.w * 0.5f + 0.5f)) * size.y);
+		draw->AddLine(sa, sb, colors[physicsWireLines.kind[i]], 1.f);
+	}
+
+	if (physicsWireLines.truncated)
+		draw->AddText(ImVec2(12.f, size.y - 28.f), IM_COL32(255, 200, 80, 255), "Physics wireframe: line limit reached, lower the radius");
+}
+
 void GameWorld::Impl::DrawPhysicsTab()
 {
 	int dynamicProps = 0;
@@ -376,6 +415,13 @@ void GameWorld::Impl::DrawPhysicsTab()
 	ImGui::Text("Scene collision: %d static, %d prop(s)", scenePhysicsStaticCount, dynamicProps);
 	ImGui::TextWrapped("Objects get collision from the .tgo Model 'Collision' setting or a Collider component; "
 		"add a Rigidbody to make one fall. Start drops everything, Reset puts it back.");
+	ImGui::Checkbox("Show collision", &showPhysicsWireframe);
+	if (showPhysicsWireframe)
+	{
+		ImGui::SameLine();
+		ImGui::SetNextItemWidth(160.f);
+		ImGui::SliderFloat("Radius", &physicsWireRadius, 200.f, 20000.f, "%.0f cm", ImGuiSliderFlags_Logarithmic);
+	}
 	ImGui::Separator();
 
 	if (!physicsActive)

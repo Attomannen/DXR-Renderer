@@ -271,6 +271,9 @@ void GameWorld::Render()
 		TGA_CPU_SCOPE("Debug UI");
 		DrawDebugUI();
 		s.DrawPerfOverlayImpl();
+#ifndef _RETAIL
+		s.DrawPhysicsOverlay();
+#endif
 	}
 
 	// Rebuild the sun / ambient from live state so slider tweaks take effect.

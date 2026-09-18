@@ -418,6 +418,10 @@ struct GameWorld::Impl
 	bool physicsAutoStart = false;
 	float physicsLogTimer = 0.f;
 	int physicsLogCount = 0;
+	bool showPhysicsWireframe = false;    // draw collision edges (green static, orange awake, blue asleep)
+	float physicsWireRadius = 3000.f;     // only near the camera; a level mesh has far too many edges
+	Tga::PhysicsDebugLines physicsWireLines;
+	void DrawPhysicsOverlay();
 	bool physicsIncludeBall = true;       // drop the debug sphere with the scene's props
 	void StartPhysicsTest();
 	void ResetPhysicsTest();
