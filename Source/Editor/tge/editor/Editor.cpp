@@ -154,6 +154,7 @@ void Tga::Editor::Init(const EditorConfiguration& aEditorConfiguration, std::uni
 
 	EditorSettings::Load();
 	myIsViewportGridVisible = EditorSettings::Get().viewportGridVisible;
+	myForceDockLayoutRebuild = EditorSettings::Get().dockLayoutVersion != DockLayoutVersion;
 	myIsCollisionVisible = EditorSettings::Get().viewportCollisionVisible;
 
 	ImGuiIO& io = ImGui::GetIO(); (void)io;
@@ -218,96 +219,81 @@ bool Tga::Editor::ShowSavePromptModal()
 }
 
 
-void Tga::Editor::CreateNewScene()
+std::string Tga::Editor::CreateNewScene(const fs::path& path)
 {
-	const std::string initialFolder = myAssetBrowser.GetCurrentFolder().string();
-	FileDialog::SaveFile(
-		FileDialog::FileType::tgs,
-		[this](const char* path) {
-			fs::path p = path;
-			if (p.extension().empty())
-			{
-				p = p.replace_extension(".tgs");
-			}
+	fs::path p = path;
+	if (p.extension().empty())
+		p.replace_extension(".tgs");
+	if (fs::exists(p))
+		return "'" + p.filename().string() + "' already exists";
 
-			fs::path relativePath = fs::relative(p, Settings::GameAssetRoot());
+	const fs::path relativePath = fs::relative(p, Settings::GameAssetRoot());
 
-			Scene scene;
-			scene.SetName(p.filename().string().c_str());
-			scene.SetPath(relativePath.string().c_str());
+	Scene scene;
+	scene.SetName(p.filename().string().c_str());
+	scene.SetPath(relativePath.string().c_str());
+	SaveScene(scene);
 
-			SaveScene(scene);
-			std::unique_ptr<SceneDocument> sceneDocument = std::make_unique<SceneDocument>();
-			sceneDocument->Init(relativePath.string());
-			AddDocument(std::move(sceneDocument));
-		}, initialFolder.c_str());
+	std::unique_ptr<SceneDocument> sceneDocument = std::make_unique<SceneDocument>();
+	sceneDocument->Init(relativePath.string());
+	AddDocument(std::move(sceneDocument));
+	return {};
 }
 
-void Tga::Editor::CreateNewObjectDefinition()
+std::string Tga::Editor::CreateNewObjectDefinition(const fs::path& path)
 {
-	const std::string initialFolder = myAssetBrowser.GetCurrentFolder().string();
-	FileDialog::SaveFile(
-		FileDialog::FileType::tgo,
-		[this](const char* path) {
-			
-			fs::path p = path;
-			if (p.extension().empty())
-			{
-				p = p.replace_extension(".tgo");
-			}
+	fs::path p = path;
+	if (p.extension().empty())
+		p.replace_extension(".tgo");
+	if (fs::exists(p))
+		return "'" + p.filename().string() + "' already exists";
 
-			fs::path relativePath = fs::relative(p, Settings::GameAssetRoot());
+	const fs::path relativePath = fs::relative(p, Settings::GameAssetRoot());
 
-			mySceneObjectDefinitionManager.CreateOrGet(relativePath.string());
+	// Written right away, so the new TGO shows in the Content Browser before anything is edited.
+	SceneObjectDefinition* definition = mySceneObjectDefinitionManager.CreateOrGet(relativePath.string());
+	if (!definition)
+		return "Could not create '" + p.filename().string() + "'";
+	definition->Save();
 
-			std::unique_ptr<ObjectDefinitionDocument> sceneDocument = std::make_unique<ObjectDefinitionDocument>();
-			sceneDocument->Init(p.string());
-			AddDocument(std::move(sceneDocument));
-		}, initialFolder.c_str());
+	std::unique_ptr<ObjectDefinitionDocument> document = std::make_unique<ObjectDefinitionDocument>();
+	document->Init(p.string());
+	AddDocument(std::move(document));
+	return {};
 }
 
-void Tga::Editor::CreateNewMaterial()
+std::string Tga::Editor::CreateNewMaterial(const fs::path& path)
 {
-	const std::string initialFolder = myAssetBrowser.GetCurrentFolder().string();
-	FileDialog::SaveFile(
-		FileDialog::FileType::tgmat,
-		[this](const char* path) {
+	fs::path p = path;
+	if (p.extension().empty())
+		p.replace_extension(".tgmat");
+	if (fs::exists(p))
+		return "'" + p.filename().string() + "' already exists";
 
-			fs::path p = path;
-			if (p.extension().empty())
-				p = p.replace_extension(".tgmat");
+	// Write a default material so the file exists before the document loads it.
+	MaterialAsset{}.Save(p.string());
 
-			// Write a default material so the file exists before the doc loads it.
-			MaterialAsset{}.Save(p.string());
-
-			std::unique_ptr<MaterialDocument> document = std::make_unique<MaterialDocument>();
-			document->Init(p.string());
-			AddDocument(std::move(document));
-		}, initialFolder.c_str());
+	std::unique_ptr<MaterialDocument> document = std::make_unique<MaterialDocument>();
+	document->Init(p.string());
+	AddDocument(std::move(document));
+	return {};
 }
 
-void Tga::Editor::CreateNewAnimationClip()
+std::string Tga::Editor::CreateNewAnimationClip(const fs::path& path)
 {
-	const std::string initialFolder = myAssetBrowser.GetCurrentFolder().string();
-	FileDialog::SaveFile(
-		FileDialog::FileType::tgac,
-		[this](const char* path) {
+	fs::path p = path;
+	if (p.extension().empty())
+		p.replace_extension(".tgac");
+	if (fs::exists(p))
+		return "'" + p.filename().string() + "' already exists";
 
-			fs::path p = path;
-			if (p.extension().empty())
-			{
-				p = p.replace_extension(".tgac");
-			}
+	const fs::path relativePath = fs::relative(p, Settings::GameAssetRoot());
+	GetOrCreateAnimationClip(StringRegistry::RegisterOrGetString(relativePath.string()));
 
-			fs::path relativePath = fs::relative(p, Settings::GameAssetRoot());
-
-			StringId s = StringRegistry::RegisterOrGetString(relativePath.string());
-			GetOrCreateAnimationClip(s);
-
-			std::unique_ptr<AnimationClipDocument> sceneDocument = std::make_unique<AnimationClipDocument>();
-			sceneDocument->Init(p.string());
-			AddDocument(std::move(sceneDocument));
-		}, initialFolder.c_str());
+	std::unique_ptr<AnimationClipDocument> document = std::make_unique<AnimationClipDocument>();
+	document->Init(p.string());
+	AddDocument(std::move(document));
+	return {};
 }
 
 static void OpenTextureImporterFromSelection()
@@ -426,7 +412,7 @@ void Tga::Editor::Update(float aTimeDelta, InputManager& inputManager)
 			ImGui::DockSpace(myGlobalDockSpaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_PassthruCentralNode, &myTopLevelWindowClass);
 			//ImGui::DockSpaceOverViewport(ImGui::GetMainViewport(), ImGuiDockNodeFlags_AutoHideTabBar | ImGuiDockNodeFlags_PassthruCentralNode);
 
-			ImGuiID center = 0, top = 0, bottomLeft = 0, bottomRight = 0;
+			ImGuiID center = 0, bottom = 0;
 			if (!myIsDockingInitialized)
 			{
 				// ImGui::DockSpace() above already auto-creates an empty leaf
@@ -438,7 +424,7 @@ void Tga::Editor::Update(float aTimeDelta, InputManager& inputManager)
 				// on a genuine first run, or after View > Reset Layout clears
 				// myIsDockingInitialized.
 				ImGuiDockNode* existingNode = ImGui::DockBuilderGetNode(myGlobalDockSpaceId);
-				if (existingNode && existingNode->IsSplitNode())
+				if (!myForceDockLayoutRebuild && existingNode && existingNode->IsSplitNode())
 				{
 					myIsDockingInitialized = true;
 				}
@@ -449,17 +435,20 @@ void Tga::Editor::Update(float aTimeDelta, InputManager& inputManager)
 					ImGui::DockBuilderSetNodeSize(myGlobalDockSpaceId, viewport->WorkSize);
 					center = myGlobalDockSpaceId;
 
-					ImGui::DockBuilderSplitNode(center, ImGuiDir_Up, 0.1f, &top, &center);
-					ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.25f, &bottomRight, &center);
-					ImGui::DockBuilderSplitNode(bottomRight, ImGuiDir_Left, 0.2f, &bottomLeft, &bottomRight);
+					ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.28f, &bottom, &center);
 
 					ImGui::DockBuilderDockWindow(GlobalWindowNames[(size_t)GlobalWindows::DocumentDock], center);
-					ImGui::DockBuilderDockWindow(GlobalWindowNames[(size_t)GlobalWindows::AssetBrowserDirectories], bottomLeft);
-					ImGui::DockBuilderDockWindow(GlobalWindowNames[(size_t)GlobalWindows::AssetBrowserFiles], bottomRight);
+					ImGui::DockBuilderDockWindow(ContentBrowserWindowName, bottom);
 
 					ImGui::DockBuilderFinish(myGlobalDockSpaceId);
 
 					myIsDockingInitialized = true;
+					if (myForceDockLayoutRebuild)
+					{
+						myForceDockLayoutRebuild = false;
+						EditorSettings::Get().dockLayoutVersion = DockLayoutVersion;
+						EditorSettings::Save();
+					}
 				}
 			}
 
@@ -516,14 +505,6 @@ void Tga::Editor::Update(float aTimeDelta, InputManager& inputManager)
 							// a fresh install with no saved layout at all.
 							myIsDockingInitialized = false;
 						}
-						ImGui::EndMenu();
-					}
-					if (ImGui::BeginMenu("Create"))
-					{
-						if (ImGui::MenuItem("Scene")) CreateNewScene();
-						if (ImGui::MenuItem("Object Definition")) CreateNewObjectDefinition();
-						if (ImGui::MenuItem("Animation Clip")) CreateNewAnimationClip();
-						if (ImGui::MenuItem("Material")) CreateNewMaterial();
 						ImGui::EndMenu();
 					}
 					if (ImGui::BeginMenu("Assets"))

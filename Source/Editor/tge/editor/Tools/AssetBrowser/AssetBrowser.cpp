@@ -270,41 +270,32 @@ void AssetBrowser::Draw()
 	}
 
 	ImGui::SetNextWindowClass(Editor::GetEditor()->GetGlobalWindowClass());
-	ImGui::Begin("Asset Browser - Directories");
-	{
-		if (ImGui::Button(ICON_LC_FOLDER_PLUS " Create Folder"))
-		{
-			myNewFolderBuffer[0] = '\0';
-			myAssetOperationError.clear();
-			ImGui::OpenPopup("Create Folder");
-		}
-		if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-			ImGui::SetTooltip("Create a folder inside the selected asset directory.");
-		if (!myAssetOperationError.empty())
-		{
-			ImGui::TextColored(ImVec4(1.f, .45f, .25f, 1.f), "%s", myAssetOperationError.c_str());
-		}
+	ImGui::Begin("Content Browser");
 
-		if (ImGui::BeginPopupModal("Create Folder", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-		{
-			ImGui::TextDisabled("Location: %s", _current_path.string().c_str());
-			ImGui::SetNextItemWidth(300.f);
-			ImGui::InputTextWithHint("Name", "New Folder", myNewFolderBuffer, IM_ARRAYSIZE(myNewFolderBuffer), ImGuiInputTextFlags_AutoSelectAll);
-			const bool validName = myNewFolderBuffer[0] != '\0' && std::string_view(myNewFolderBuffer).find_first_of("\\/:*?\"<>|") == std::string_view::npos;
-			ImGui::BeginDisabled(!validName);
-			if (ImGui::Button("Create", ImVec2(120.f, 0.f)))
-			{
-				auto command = std::make_shared<CreateAssetFolderCommand>(_current_path / myNewFolderBuffer);
-				CommandManager::DoCommand(command);
-				if (!command->GetError().empty()) myAssetOperationError = command->GetError();
-				else ImGui::CloseCurrentPopup();
-			}
-			ImGui::EndDisabled();
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel", ImVec2(120.f, 0.f))) ImGui::CloseCurrentPopup();
-			ImGui::EndPopup();
-		}
-		ImGui::Separator();
+	// Top bar: Add, then where you are.
+	if (ImGui::Button(ICON_LC_PLUS " Add"))
+		ImGui::OpenPopup("AddAssetMenu");
+	if (ImGui::BeginPopup("AddAssetMenu"))
+	{
+		DrawAddMenuItems();
+		ImGui::EndPopup();
+	}
+	ImGui::SameLine();
+	DrawBreadcrumbs();
+	if (!myAssetOperationError.empty())
+		ImGui::TextColored(ImVec4(1.f, .45f, .25f, 1.f), "%s", myAssetOperationError.c_str());
+	DrawCreatePopup();
+	ImGui::Separator();
+
+	// Folders on the left, what is in the current folder on the right.
+	if (ImGui::BeginTable("##ContentBrowserBody", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV))
+	{
+		ImGui::TableSetupColumn("Folders", ImGuiTableColumnFlags_WidthFixed, 220.f);
+		ImGui::TableSetupColumn("Assets", ImGuiTableColumnFlags_WidthStretch);
+		ImGui::TableNextRow();
+		ImGui::TableSetColumnIndex(0);
+		ImGui::BeginChild("##Folders", ImVec2(0.f, ImGui::GetContentRegionAvail().y));
+	{
 		ImGuiTreeNodeFlags node_flags = ImGuiTreeNodeFlags_SpanAvailWidth;
 		node_flags |= ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_OpenOnArrow;
 
@@ -318,10 +309,10 @@ void AssetBrowser::Draw()
 			ImGui::TreePop();
 		}
 	}
-	ImGui::End();
+	ImGui::EndChild();
 
-	ImGui::SetNextWindowClass(Editor::GetEditor()->GetGlobalWindowClass());
-	ImGui::Begin("Asset Browser - Files");
+	ImGui::TableSetColumnIndex(1);
+	ImGui::BeginChild("##Assets", ImVec2(0.f, ImGui::GetContentRegionAvail().y));
 	{
 		if (ImGui::Button(myGridView ? ICON_LC_LIST : ICON_LC_LAYOUT_GRID))
 			myGridView = !myGridView;
@@ -371,6 +362,32 @@ void AssetBrowser::Draw()
 		{
 
 			const DirectoryCache& parentCache = parentIt->second;
+
+			// Sub-folders first, as tiles, like the Unreal Content Browser. Hidden while searching or filtering.
+			if (search.empty() && myAssetTypeFilter == 0)
+			{
+				for (const fs::path& directory : parentCache.directories)
+				{
+					if (directory.extension() == ".leveldata")
+						continue;
+					ImGui::PushID(directory.generic_string().c_str());
+					const fs::path relativeDirectory = fs::relative(directory, Tga::Settings::GameAssetRoot());
+					const Tga::AssetListItemStatus folderStatus = myGridView
+						? Tga::AssetGridItem(relativeDirectory, false, ICON_LC_FOLDER, (ImTextureID)0, myGridTileSize)
+						: Tga::AssetListItem(relativeDirectory, false, ICON_LC_FOLDER);
+					if (folderStatus.doubleClicked)
+						_current_path = directory;
+					if (myGridView)
+					{
+						const float nextTileRight = ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + myGridTileSize;
+						if (nextTileRight < ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x)
+							ImGui::SameLine();
+					}
+					ImGui::PopID();
+				}
+				if (myGridView)
+					ImGui::NewLine();
+			}
 
 			for (fs::path absPath : parentCache.files)
 			{
@@ -549,14 +566,140 @@ void AssetBrowser::Draw()
 		if (ImGui::Button("Cancel", ImVec2(120.f, 0.f))) { myPendingDelete.clear(); ImGui::CloseCurrentPopup(); }
 		ImGui::EndPopup();
 	}
+
+	// Right-click on empty space: the same things the Add button makes.
+	if (ImGui::BeginPopupContextWindow("##ContentBrowserContext", ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems))
+	{
+		DrawAddMenuItems();
+		ImGui::EndPopup();
+	}
+	}
+	ImGui::EndChild();
+	ImGui::EndTable();
 	}
 	ImGui::End();
 
-	// Outside both panels' windows, so the dialog's popup id is the same no
+	// Outside the window, so the dialog's popup id is the same no
 	// matter which one opened it.
 	FbxCookRequest requestFromDialog;
 	if (myFbxDialog.Draw(requestFromDialog))
 		StartFbxConversion(requestFromDialog);
+}
+
+void AssetBrowser::DrawBreadcrumbs()
+{
+	const fs::path root = fs::absolute(Tga::Settings::GameAssetRoot());
+
+	std::vector<fs::path> chain;
+	for (fs::path path = _current_path;; path = path.parent_path())
+	{
+		chain.push_back(path);
+		if (path == root || path == path.parent_path())
+			break;
+	}
+	if (chain.back() != root)
+	{
+		// Somewhere outside the game folder: start again at the root.
+		_current_path = root;
+		chain = { root };
+	}
+	std::reverse(chain.begin(), chain.end());
+
+	for (size_t i = 0; i < chain.size(); ++i)
+	{
+		ImGui::PushID((int)i);
+		const std::string label = i == 0 ? std::string(ICON_LC_HOUSE " Game") : chain[i].filename().string();
+		if (ImGui::SmallButton(label.c_str()))
+			_current_path = chain[i];
+		ImGui::PopID();
+		if (i + 1 < chain.size())
+		{
+			ImGui::SameLine(0.f, 4.f);
+			ImGui::TextDisabled(">");
+			ImGui::SameLine(0.f, 4.f);
+		}
+	}
+}
+
+void AssetBrowser::RequestCreate(CreateKind kind)
+{
+	static const char* defaults[] = { "", "NewFolder", "NewTGO", "NewLevel", "NewMaterial", "NewAnimationClip" };
+	myCreateKind = kind;
+	myOpenCreatePopup = true;
+	myAssetOperationError.clear();
+	strncpy_s(myCreateNameBuffer, defaults[(int)kind], _TRUNCATE);
+}
+
+void AssetBrowser::DrawAddMenuItems()
+{
+	ImGui::TextDisabled("Create in %s", _current_path.filename().string().c_str());
+	ImGui::Separator();
+	if (ImGui::MenuItem(ICON_LC_FOLDER_PLUS "  New Folder")) RequestCreate(CreateKind::Folder);
+	ImGui::Separator();
+	if (ImGui::MenuItem(ICON_LC_BOX "  TGO (Blueprint)")) RequestCreate(CreateKind::Tgo);
+	if (ImGui::MenuItem(ICON_LC_MAP "  Level")) RequestCreate(CreateKind::Level);
+	if (ImGui::MenuItem(ICON_LC_PALETTE "  Material")) RequestCreate(CreateKind::Material);
+	if (ImGui::MenuItem(ICON_LC_FILE_CODE "  Animation Clip")) RequestCreate(CreateKind::AnimationClip);
+}
+
+void AssetBrowser::DrawCreatePopup()
+{
+	if (myOpenCreatePopup)
+	{
+		ImGui::OpenPopup("Create Asset");
+		myOpenCreatePopup = false;
+	}
+	if (!ImGui::BeginPopupModal("Create Asset", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+		return;
+
+	static const char* titles[] = { "", "Folder", "TGO", "Level", "Material", "Animation Clip" };
+	static const char* extensions[] = { "", "", ".tgo", ".tgs", ".tgmat", ".tgac" };
+	ImGui::Text("New %s", titles[(int)myCreateKind]);
+	ImGui::TextDisabled("in %s", _current_path.string().c_str());
+	ImGui::SetNextItemWidth(320.f);
+	if (ImGui::IsWindowAppearing())
+		ImGui::SetKeyboardFocusHere();
+	const bool enter = ImGui::InputText("##createname", myCreateNameBuffer, IM_ARRAYSIZE(myCreateNameBuffer), ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_EnterReturnsTrue);
+
+	const bool validName = myCreateNameBuffer[0] != '\0' && std::string_view(myCreateNameBuffer).find_first_of("\\/:*?\"<>|") == std::string_view::npos;
+	ImGui::BeginDisabled(!validName);
+	if ((ImGui::Button("Create", ImVec2(120.f, 0.f)) || enter) && validName)
+	{
+		const fs::path path = _current_path / (std::string(myCreateNameBuffer) + extensions[(int)myCreateKind]);
+		std::string error;
+		try
+		{
+			switch (myCreateKind)
+			{
+			case CreateKind::Folder:
+			{
+				auto command = std::make_shared<CreateAssetFolderCommand>(path);
+				CommandManager::DoCommand(command);
+				error = command->GetError();
+				break;
+			}
+			case CreateKind::Tgo: error = Editor::GetEditor()->CreateNewObjectDefinition(path); break;
+			case CreateKind::Level: error = Editor::GetEditor()->CreateNewScene(path); break;
+			case CreateKind::Material: error = Editor::GetEditor()->CreateNewMaterial(path); break;
+			case CreateKind::AnimationClip: error = Editor::GetEditor()->CreateNewAnimationClip(path); break;
+			default: break;
+			}
+		}
+		catch (const std::exception& e)
+		{
+			error = e.what();
+		}
+		myAssetOperationError = error;
+		if (error.empty())
+			ImGui::CloseCurrentPopup();
+	}
+	ImGui::EndDisabled();
+	ImGui::SameLine();
+	if (ImGui::Button("Cancel", ImVec2(120.f, 0.f)))
+		ImGui::CloseCurrentPopup();
+	if (!myAssetOperationError.empty())
+		ImGui::TextColored(ImVec4(1.f, .45f, .25f, 1.f), "%s", myAssetOperationError.c_str());
+	ImGui::EndPopup();
 }
 
 void AssetBrowser::ConvertFbxToTgo(const fs::path& absoluteFbxPath)

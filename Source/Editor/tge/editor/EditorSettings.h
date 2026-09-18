@@ -20,6 +20,7 @@ namespace Tga
 	{
 		bool viewportGridVisible = true;
 		bool viewportCollisionVisible = false;
+		int dockLayoutVersion = 0; // the layout version imgui.ini was saved with (see DockLayoutVersion)
 
 		// Gizmos::Snap's fields, duplicated flat rather than reusing that
 		// type: Gizmos.h would need to include this header to seed a new

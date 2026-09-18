@@ -33,6 +33,17 @@ namespace Tga
 
 	private:
 		void DrawFileTree(const fs::path& parentPath);
+		void DrawBreadcrumbs();
+		void DrawAddMenuItems();
+		void DrawCreatePopup();
+
+		// What the Add menu can make in the current folder. The name is asked for in a small
+		// popup, then the asset is created and opened.
+		enum class CreateKind { None, Folder, Tgo, Level, Material, AnimationClip };
+		CreateKind myCreateKind = CreateKind::None;
+		bool myOpenCreatePopup = false;
+		char myCreateNameBuffer[128]{};
+		void RequestCreate(CreateKind kind);
 
 		float myThumbSize = 32.0f;
 		// Content-Browser-style tile view toggle, alongside the original flat

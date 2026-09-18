@@ -26,8 +26,6 @@ class InputManager;
 enum class GlobalWindows
 {
 	DocumentDock,
-	AssetBrowserFiles,
-	AssetBrowserDirectories,
 	Count,
 };
 
@@ -35,9 +33,13 @@ enum class GlobalWindows
 constexpr const char* GlobalWindowNames[] =
 {
 	"Documents",
-	"Asset Browser - Files",
-	"Asset Browser - Directories",
 };
+
+// The Content Browser window's name, for docking it.
+constexpr const char* ContentBrowserWindowName = "Content Browser";
+// Bumped whenever the default dock layout changes, so a layout saved by an older editor is
+// rebuilt instead of leaving windows floating.
+constexpr int DockLayoutVersion = 2;
 
 class Editor
 {
@@ -71,10 +73,11 @@ public:
 	Tga::AssetBrowser& GetAssetBrowser() { return myAssetBrowser; }
 	void FocusDocument(Document* document);
 
-	void CreateNewScene();
-	void CreateNewObjectDefinition();
-	void CreateNewAnimationClip();
-	void CreateNewMaterial();
+	// Create an asset at the given path (absolute) and open it. Return an error message, or empty.
+	std::string CreateNewScene(const fs::path& path);
+	std::string CreateNewObjectDefinition(const fs::path& path);
+	std::string CreateNewAnimationClip(const fs::path& path);
+	std::string CreateNewMaterial(const fs::path& path);
 
 	bool IsViewportGridVisible() { return myIsViewportGridVisible; }
 	bool IsCollisionVisible() { return myIsCollisionVisible; }
@@ -119,6 +122,7 @@ private:
 	std::vector<Document*> myRedoActiveDocumentStack;
 
 	bool myIsDockingInitialized = false;
+	bool myForceDockLayoutRebuild = false;
 	bool myIsViewportGridVisible = true;
 	bool myIsCollisionVisible = false;
 	bool myShowUndoHistory = false;
