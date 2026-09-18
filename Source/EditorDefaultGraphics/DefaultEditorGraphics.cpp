@@ -3,7 +3,6 @@
 
 #include <filesystem>
 #include <imgui.h>
-#include <tge/editor/p4/p4.h>
 #include <tge/editor/Scene/ActiveScene.h>
 #include <tge/editor/Scene/SceneSelection.h>
 #include <SceneUtil.h>
@@ -231,7 +230,7 @@ void DefaultObjectDefinitionEditorGraphics::Draw(ObjectDefinitionDrawParameters&
 			{
 				const ScenePropertyDefinition& prop = properties[propertyIndex];
 
-				SetObjectAndSelectionId(1 + propertyIndex, prop.name == parameters.selectedProperty ? 1 + propertyIndex : 0, P4::FileInfo());
+				SetObjectAndSelectionId(1 + propertyIndex, prop.name == parameters.selectedProperty ? 1 + propertyIndex : 0);
 
 				DrawSceneProperty(prop, 1.f, drawParameters);
 			}
@@ -462,12 +461,9 @@ void DefaultSceneEditorGraphics::Draw(const SceneDrawParameters& parameters)
 
 			for (auto& p : GetActiveScene()->GetSceneObjects())
 			{
-				auto& info = P4::GetFileInfo(parameters.scene->GetObjectFilePath(p.first).GetString());
-
 				SetObjectAndSelectionId(
 					p.first,
-					SceneSelection::GetActiveSceneSelection()->Contains(p.first) ? p.first : 0,
-					info
+					SceneSelection::GetActiveSceneSelection()->Contains(p.first) ? p.first : 0
 				);
 
 				DrawSceneObject(*p.second, drawParameters);
@@ -595,7 +591,16 @@ bool DefaultSceneEditorGraphics::DrawDeferredColorPass(const SceneDrawParameters
 	AmbientLight ambient{};
 	ambient.color = Color{ ambientColor[0], ambientColor[1], ambientColor[2] };
 	ambient.type = AmbientLightType::Custom;
-	ambient.cubemap = ge.GetTextureManager().GetTexture("Textures/horizonCubeMap.dds", TextureSrgbMode::None);
+	// The scene's own environment picker (SceneObjectProperties.cpp,
+	// DrawEnvironmentTexturePicker) already saves this path -- the editor
+	// viewport ignoring it and always showing horizonCubeMap instead was
+	// exactly the "what you author is not what you see" gap the roadmap
+	// calls out. Empty (no explicit choice) still falls back to the same
+	// default as before, so every existing scene's look is unchanged; only
+	// scenes that actually pick something now see it take effect.
+	const std::string& envPath = scene->GetEnvironmentTexturePath();
+	ambient.cubemap = ge.GetTextureManager().GetTexture(
+		envPath.empty() ? "Textures/horizonCubeMap.dds" : envPath.c_str(), TextureSrgbMode::None);
 	if (!ambient.cubemap) ambient.type = AmbientLightType::Uniform;
 	gss.SetAmbientLight(ambient);
 
@@ -623,7 +628,10 @@ bool DefaultSceneEditorGraphics::DrawDeferredColorPass(const SceneDrawParameters
 	dr.SetSSAO(true);
 	dr.SetSSR(true);
 	dr.SetClustered(true);
-	dr.SetLocalShadows(false);
+	// Was forced off: point/spot lights placed in the editor cast no shadows
+	// at all, unlike in the game -- one more "what you author is not what
+	// you see" gap (roadmap 1.2/4.4).
+	dr.SetLocalShadows(true);
 	dr.SetPostFx(true);
 	const Vector3f cameraPos = camera.GetTransform().GetPosition();
 	dr.SetShadowLight(sun.transform.GetForward(), cameraPos, 5000.f);
@@ -1108,10 +1116,33 @@ DefaultEditorGraphics::DefaultEditorGraphics()
 		for (int i = 0; i < outMeshInfo.meshCount; i++)
 		{
 			outMeshInfo.meshNames[i] = fbxModel->GetMeshName(i);
+			outMeshInfo.materialNames[i] = fbxModel->GetMaterialName(i);
 		}
 		if (outMeshInfo.meshCount > 0)
 		{
 			outMeshInfo.bounds = fbxModel->GetMeshData(0).bounds;
+		}
+		return true;
+	});
+
+	RegisterGetModelCollisionInfoFunction([](StringId modelPath, size_t maxTriangles, SceneModelCollisionInfo& outInfo) -> bool
+	{
+		if (modelPath.IsEmpty() || !GraphicsEngine::GetInstance())
+			return false;
+
+		// Same rule as the mesh info above: never import synchronously from a UI callback.
+		ModelFactory& factory = ModelFactory::GetInstance();
+		std::shared_ptr<Model> model = factory.GetLoadedModel(modelPath);
+		if (!model)
+			return false;
+
+		outInfo.bounds = model->GetBounds();
+		CollisionGeometry geometry;
+		if (factory.GetCollisionGeometry(modelPath, geometry) && geometry.indices.size() / 3 <= maxTriangles)
+		{
+			outInfo.hasGeometry = true;
+			outInfo.positions = std::move(geometry.positions);
+			outInfo.indices = std::move(geometry.indices);
 		}
 		return true;
 	});

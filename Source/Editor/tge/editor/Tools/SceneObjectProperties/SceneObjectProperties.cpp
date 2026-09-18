@@ -25,10 +25,13 @@ float deg_to_rad(float degree) { return (degree * (pi / 180.0f)); }
 #include <tge/editor/Tools/SceneObjectProperties/ChangePropertyOverridesCommand.h>
 #include <tge/editor/Tools/SceneObjectProperties/ChangeSceneObjectNameCommand.h>
 #include <tge/editor/Tools/SceneObjectProperties/ChangeSceneObjectFolderCommand.h>
-#include <tge/editor/p4/p4.h>
+#include <tge/editor/Tools/SceneObjectProperties/ChangeSceneObjectLightFieldCommand.h>
+#include <tge/editor/Tools/SceneObjectProperties/ChangeSceneLightingFieldCommand.h>
+#include <tge/editor/Tools/SceneObjectProperties/ChangeSceneEnvironmentTextureCommand.h>
 
 #include <vector>
 #include <algorithm>
+#include <cstring>
 
 #include <filesystem>
 
@@ -59,6 +62,9 @@ namespace
 			if (ec) break;
 			if (!it->is_regular_file(ec)) continue;
 			const std::filesystem::path& p = it->path();
+			bool inTrash = false;
+			for (const auto& part : std::filesystem::relative(p, root, ec)) if (part == ".trash") inTrash = true;
+			if (inTrash) continue;
 			std::string ext = p.extension().string();
 			for (char& c : ext) c = (char)tolower((unsigned char)c);
 			if (ext != ".hdr" && ext != ".dds") continue;
@@ -79,16 +85,21 @@ namespace
 		if (options.empty()) RescanEnvironmentTextures();   // first use of this panel
 
 		const std::string current = scene.GetEnvironmentTexturePath();
+		auto choose = [&](const std::string& aNewPath)
+		{
+			if (aNewPath == current) return;
+			CommandManager::DoCommand(std::make_shared<ChangeSceneEnvironmentTextureCommand>(aNewPath, current));
+		};
 		if (ImGui::BeginCombo("##EnvironmentTexture", current.empty() ? "None (uniform ambient)" : current.c_str()))
 		{
 			if (ImGui::Selectable("None (uniform ambient)", current.empty()))
-				scene.SetEnvironmentTexturePath(std::string());
+				choose(std::string());
 			for (size_t i = 0; i < options.size(); ++i)
 			{
 				ImGui::PushID((int)i);
 				const bool isSelected = current == options[i];
 				if (ImGui::Selectable(options[i].c_str(), isSelected))
-					scene.SetEnvironmentTexturePath(options[i]);
+					choose(options[i]);
 				if (isSelected) ImGui::SetItemDefaultFocus();
 				ImGui::PopID();
 			}
@@ -96,6 +107,54 @@ namespace
 		}
 		ImGui::SameLine();
 		if (ImGui::SmallButton("Refresh")) RescanEnvironmentTextures();
+	}
+
+	// Call right after an ImGui widget bound directly to a live light field
+	// (same direct-binding style the Transform block below uses for
+	// position/rotation/scale), so dragging previews in the viewport in real
+	// time. Captures the value from the instant the drag starts and pushes
+	// one undo command covering the whole drag when it ends, rather than one
+	// command per intermediate frame. Only one widget can be mid-drag at a
+	// time -- ImGui itself enforces that -- so a single static capture
+	// buffer is safe to share across every field/object this is called for.
+	void DragLightField(uint32_t aObjectId, LightField aFieldTag, float* aLive, int aCount)
+	{
+		static uint32_t sActiveObjectId = 0;
+		static LightField sActiveField = LightField::Color;
+		static float sOldValue[3] = {};
+
+		if (ImGui::IsItemActivated())
+		{
+			sActiveObjectId = aObjectId;
+			sActiveField = aFieldTag;
+			std::memcpy(sOldValue, aLive, sizeof(float) * aCount);
+		}
+		if (ImGui::IsItemDeactivatedAfterEdit() && sActiveObjectId == aObjectId && sActiveField == aFieldTag)
+		{
+			std::shared_ptr<ChangeSceneObjectLightFieldCommand> command =
+				std::make_shared<ChangeSceneObjectLightFieldCommand>(aObjectId, aFieldTag, aLive, sOldValue, aCount);
+			CommandManager::DoCommand(command);
+		}
+	}
+
+	// Same idea as DragLightField, for the Scene-level sun/ambient fields
+	// (no object id to key on -- only one Scene is ever being edited).
+	void DragSceneLightingField(SceneLightingField aFieldTag, float* aLive, int aCount)
+	{
+		static SceneLightingField sActiveField = SceneLightingField::SunYaw;
+		static float sOldValue[3] = {};
+
+		if (ImGui::IsItemActivated())
+		{
+			sActiveField = aFieldTag;
+			std::memcpy(sOldValue, aLive, sizeof(float) * aCount);
+		}
+		if (ImGui::IsItemDeactivatedAfterEdit() && sActiveField == aFieldTag)
+		{
+			std::shared_ptr<ChangeSceneLightingFieldCommand> command =
+				std::make_shared<ChangeSceneLightingFieldCommand>(aFieldTag, aLive, sOldValue, aCount);
+			CommandManager::DoCommand(command);
+		}
 	}
 }
 
@@ -119,12 +178,17 @@ void SceneObjectProperties::Draw()
 		{
 			if (selectedLight == SceneLightSelection::Sun)
 			{
+				// Direct-bind + apply-on-change already gave live preview;
+				// the Drag*Field call after each widget is what's new -- it
+				// batches the whole drag into one undo entry (ChangeSceneLightingFieldCommand)
+				// instead of leaving these completely outside the undo stack.
 				float yaw = scene->GetSunYaw();
 				PropertyEditor::PropertyLabel();
 				ImGui::Text("Yaw");
 				PropertyEditor::HelpMarker("Sun rotation around the vertical axis, in degrees");
 				PropertyEditor::PropertyValue();
 				if (ImGui::DragFloat("##SunYaw", &yaw, 0.5f)) scene->SetSunYaw(yaw);
+				DragSceneLightingField(SceneLightingField::SunYaw, &yaw, 1);
 
 				float pitch = scene->GetSunPitch();
 				PropertyEditor::PropertyLabel();
@@ -132,12 +196,17 @@ void SceneObjectProperties::Draw()
 				PropertyEditor::HelpMarker("Sun elevation angle, in degrees. Negative points the sun down toward the scene");
 				PropertyEditor::PropertyValue();
 				if (ImGui::DragFloat("##SunPitch", &pitch, 0.5f, -90.f, 90.f)) scene->SetSunPitch(pitch);
+				DragSceneLightingField(SceneLightingField::SunPitch, &pitch, 1);
 
 				PropertyEditor::PropertyLabel();
 				ImGui::Text("Color");
 				PropertyEditor::HelpMarker("Sun light color");
 				PropertyEditor::PropertyValue();
-				ImGui::ColorEdit3("##SunColor", scene->GetSunColor());
+				{
+					float* sunColor = scene->GetSunColor();
+					ImGui::ColorEdit3("##SunColor", sunColor);
+					DragSceneLightingField(SceneLightingField::SunColor, sunColor, 3);
+				}
 
 				float intensity = scene->GetSunIntensity();
 				PropertyEditor::PropertyLabel();
@@ -145,6 +214,7 @@ void SceneObjectProperties::Draw()
 				PropertyEditor::HelpMarker("Sun light intensity multiplier");
 				PropertyEditor::PropertyValue();
 				if (ImGui::DragFloat("##SunIntensity", &intensity, 0.01f, 0.f, 100.f)) scene->SetSunIntensity(intensity);
+				DragSceneLightingField(SceneLightingField::SunIntensity, &intensity, 1);
 			}
 			else // Ambient
 			{
@@ -152,7 +222,11 @@ void SceneObjectProperties::Draw()
 				ImGui::Text("Color");
 				PropertyEditor::HelpMarker("Uniform ambient fill light color, added everywhere regardless of surface normal. Ignored while an Environment texture below is set");
 				PropertyEditor::PropertyValue();
-				ImGui::ColorEdit3("##AmbientColor", scene->GetAmbientColor());
+				{
+					float* ambientColor = scene->GetAmbientColor();
+					ImGui::ColorEdit3("##AmbientColor", ambientColor);
+					DragSceneLightingField(SceneLightingField::AmbientColor, ambientColor, 3);
+				}
 
 				PropertyEditor::PropertyLabel();
 				ImGui::Text("Environment");
@@ -202,9 +276,17 @@ void SceneObjectProperties::Draw()
 		{
 			ImGui::PushID(id);
 
+			// The selection can briefly reference an id the scene no longer has
+			// (e.g. deleted by another panel or an undo this same frame, before
+			// the selection list itself is resynced) -- GetSceneObject() returns
+			// null for that rather than a stale pointer, so guard against it
+			// instead of dereferencing unconditionally.
+			SceneObject* objectPtr = GetActiveScene()->GetSceneObject(id);
+			if (!objectPtr) { ImGui::PopID(); continue; }
+
 			if (PropertyEditor::BeginPropertyTable())
 			{
-				SceneObject& object = *GetActiveScene()->GetSceneObject(id);
+				SceneObject& object = *objectPtr;
 
 				PropertyEditor::PropertyLabel();
 
@@ -375,6 +457,75 @@ void SceneObjectProperties::Draw()
 					}
 				}
 
+				// Lights previously had creation defaults only -- nothing here
+				// let you edit a light once placed. Point and spot lights share
+				// SceneObject's fields (SceneObject.h); inner/outer cone only
+				// mean anything for spot lights, so they're hidden for point
+				// lights rather than shown disabled.
+				if (object.IsLight())
+				{
+					const bool isSpot = object.GetType() == SceneObjectType::SpotLight;
+
+					PropertyEditor::PropertyLabel();
+					ImGui::Text("Light");
+					PropertyEditor::PropertyValue();
+					ImGui::TextDisabled(isSpot ? "Spot Light" : "Point Light");
+
+					PropertyEditor::PropertyLabel();
+					ImGui::Text("Color");
+					PropertyEditor::HelpMarker("HDR: drag a channel above 1.0 for a brighter-than-white light. "
+						"There is no separate intensity field -- this color's own magnitude is the light's brightness.");
+					PropertyEditor::PropertyValue();
+					{
+						float* color = object.GetLightColor();
+						ImGui::ColorEdit3("##LightColor", color, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+						DragLightField(id, LightField::Color, color, 3);
+					}
+
+					PropertyEditor::PropertyLabel();
+					ImGui::Text("Range");
+					PropertyEditor::HelpMarker("Distance in scene units the light's influence extends to.");
+					PropertyEditor::PropertyValue();
+					{
+						float& range = object.GetLightRange();
+						ImGui::DragFloat("##LightRange", &range, 1.f, 0.f, 100000.f, "%.0f");
+						DragLightField(id, LightField::Range, &range, 1);
+					}
+
+					PropertyEditor::PropertyLabel();
+					ImGui::Text("Source radius");
+					PropertyEditor::HelpMarker("Soft-shadow source size; 0 is a hard point/spot light.");
+					PropertyEditor::PropertyValue();
+					{
+						float& radius = object.GetLightRadius();
+						ImGui::DragFloat("##LightRadius", &radius, 0.1f, 0.f, 1000.f, "%.1f");
+						DragLightField(id, LightField::Radius, &radius, 1);
+					}
+
+					if (isSpot)
+					{
+						PropertyEditor::PropertyLabel();
+						ImGui::Text("Inner cone");
+						PropertyEditor::HelpMarker("Degrees. Fully bright inside this cone; fades out to the outer cone.");
+						PropertyEditor::PropertyValue();
+						{
+							float& inner = object.GetLightInnerAngle();
+							ImGui::DragFloat("##LightInnerAngle", &inner, 0.5f, 0.f, object.GetLightOuterAngle(), "%.1f deg");
+							DragLightField(id, LightField::InnerAngle, &inner, 1);
+						}
+
+						PropertyEditor::PropertyLabel();
+						ImGui::Text("Outer cone");
+						PropertyEditor::HelpMarker("Degrees. The spot's total cone angle; no light beyond this.");
+						PropertyEditor::PropertyValue();
+						{
+							float& outer = object.GetLightOuterAngle();
+							ImGui::DragFloat("##LightOuterAngle", &outer, 0.5f, object.GetLightInnerAngle(), 89.f, "%.1f deg");
+							DragLightField(id, LightField::OuterAngle, &outer, 1);
+						}
+					}
+				}
+
 				std::vector<SceneObject::PropertySourceAndOveride> allProperties;
 				object.CalculateEditablePropertySet(Editor::GetEditor()->GetSceneObjectDefinitionManager(), allProperties);
 
@@ -383,16 +534,42 @@ void SceneObjectProperties::Draw()
 					ImGui::PushID(propertySourceAndOverride.source.name.GetString());
 
 					// todo: probably show groups here also
+					const bool isOverridden = propertySourceAndOverride.override.name == propertySourceAndOverride.source.name;
 					SceneProperty newProperty = propertySourceAndOverride.source;
-					if (propertySourceAndOverride.override.name == propertySourceAndOverride.source.name)
+					if (isOverridden)
 					{
 						newProperty.value = propertySourceAndOverride.override.value;
 					}
 
-					// todo: add a way to clear the override
-					// and display if the value is overriden or not somehow
+					// An overridden property's row (ShowImGuiEditor draws its own
+					// label internally, hence tinting via ImGuiCol_Text rather
+					// than a separate label call) reads in the accent colour
+					// instead of the default text colour -- previously there was
+					// no way to tell an inherited value from an overridden one
+					// just by looking at the panel, despite the data to do so
+					// (PropertySourceAndOveride itself) already existing.
+					if (isOverridden) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.7f, 1.0f, 1.0f));
+					const bool changed = newProperty.value.ShowImGuiEditor(newProperty.name.GetString(), propertySourceAndOverride.source.description.GetString());
+					if (isOverridden) ImGui::PopStyleColor();
 
-					if (newProperty.value.ShowImGuiEditor(newProperty.name.GetString(), propertySourceAndOverride.source.description.GetString()))
+					if (isOverridden)
+					{
+						ImGui::SameLine();
+						if (ImGui::SmallButton("Revert"))
+						{
+							// ChangePropertyOverridesCommand::Execute() already
+							// special-cases an empty-named "new" value as "remove
+							// the override matching the old value's name" -- built
+							// for exactly this, just never called with one before.
+							std::shared_ptr<ChangePropertyOverridesCommand> command =
+								std::make_shared<ChangePropertyOverridesCommand>(id, SceneProperty{}, propertySourceAndOverride.override);
+							CommandManager::DoCommand(command);
+						}
+						if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+							ImGui::SetTooltip("Revert to the prefab/definition value");
+					}
+
+					if (changed)
 					{
 						std::shared_ptr<ChangePropertyOverridesCommand> command = std::make_shared<ChangePropertyOverridesCommand>(id, newProperty, propertySourceAndOverride.override);
 						CommandManager::DoCommand(command);
@@ -402,54 +579,6 @@ void SceneObjectProperties::Draw()
 				}
 
 				PropertyEditor::EndPropertyTable();
-				
-				// Perforce file status
-				{
-					if (P4::QueryHasFileInfo(object.GetPath().GetString()))
-					{
-						P4::FileInfo fileinfo = P4::GetFileInfo(object.GetPath().GetString());
-						ImVec4 color = ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
-						ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
-
-						ImGui::Separator();
-						if (ImGui::TreeNodeEx("P4 File Info", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth))
-						{
-							if (fileinfo.action == P4::FileAction::Add)
-							{
-								ImGui::Text("revision ");							ImGui::SameLine();
-								ImGui::TextColored(color, "#%d", fileinfo.revision);
-							}
-
-							ImGui::Text("marked for ");								ImGui::SameLine();
-							ImGui::TextColored(color, "%s", fileinfo.action);		ImGui::SameLine();
-							ImGui::Text(" by ");									ImGui::SameLine();
-							ImGui::TextColored(color, "%s", strcmp(P4::MyUser(), fileinfo.user) == 0 ? "you" : fileinfo.user);
-
-							ImGui::Text("changelist ");								ImGui::SameLine();
-							ImGui::TextColored(color, "%s", fileinfo.changelist);
-
-							ImGui::Text("workspace ");								ImGui::SameLine();
-							ImGui::TextColored(color, "%s", fileinfo.client);
-
-							ImGui::TreePop();
-						}
-						else if (ImGui::IsItemHovered())
-						{
-							ImGui::BeginTooltip();
-							{
-								ImGui::PushTextWrapPos(ImGui::GetFontSize() * 20);
-								ImGui::TextWrapped(
-									"marked for %s by %s in changelist %s workspace %s",
-									fileinfo.action, fileinfo.user, fileinfo.changelist, fileinfo.client
-								);
-								ImGui::PopTextWrapPos();
-							}
-							ImGui::EndTooltip();
-						}
-						ImGui::PopStyleVar();
-
-					}
-				}
 			}
 
 			ImGui::PopID();

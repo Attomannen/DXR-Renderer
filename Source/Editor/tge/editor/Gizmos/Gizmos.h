@@ -24,9 +24,11 @@ namespace Tga
 
 			float pos = 100.f; 
 			float rot = 45.f;
-			float scale = 0.1f; 
+			float scale = 0.1f;
 		};
-		Gizmos() = default;
+		// Seeds mySnap from EditorSettings -- defined out-of-line (Gizmos.cpp)
+		// so this header doesn't need to include EditorSettings.h.
+		Gizmos();
 
 		virtual void Draw() override;
 

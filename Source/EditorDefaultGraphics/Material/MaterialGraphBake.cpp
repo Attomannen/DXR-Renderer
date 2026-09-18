@@ -104,7 +104,17 @@ bool Tga::BakeMaterialGraphImpl(const MaterialGraphBakeRequest& request)
 	const Id aoPin = graph.RootValuePin(RootChannel::AO);
 	const Id emissivePin = graph.RootValuePin(RootChannel::Emissive);
 
-	if (baseColorPin != kInvalidId)
+	if (baseColorPin != kInvalidId && graph.IsConstant(baseColorPin))
+	{
+		// Same value at every texel (e.g. a bare Constant node): write the
+		// material's own flat baseColor field instead of baking, BC7-
+		// compressing and saving a whole texture just to hold one colour --
+		// this is also what made a plain colour take ~30s to bake before.
+		const GraphValue val = graph.Evaluate(baseColorPin, 0.5f, 0.5f, sampleFn, &cache);
+		mat.baseColor[0] = val.v[0]; mat.baseColor[1] = val.v[1]; mat.baseColor[2] = val.v[2];
+		mat.maps[MaterialAsset::BaseColor].clear();
+	}
+	else if (baseColorPin != kInvalidId)
 	{
 		TextureCpu::Image img; img.width = w; img.height = h; img.ok = true; img.pixels.resize((size_t)w * h * 4);
 		for (int y = 0; y < h; ++y)
@@ -140,7 +150,19 @@ bool Tga::BakeMaterialGraphImpl(const MaterialGraphBakeRequest& request)
 			mat.maps[MaterialAsset::Normal] = outRel("_N");
 	}
 
-	if (roughnessPin != kInvalidId || metalnessPin != kInvalidId || aoPin != kInvalidId)
+	const bool roughnessConst = roughnessPin == kInvalidId || graph.IsConstant(roughnessPin);
+	const bool metalnessConst = metalnessPin == kInvalidId || graph.IsConstant(metalnessPin);
+	const bool aoConst = aoPin == kInvalidId || graph.IsConstant(aoPin);
+	if ((roughnessPin != kInvalidId || metalnessPin != kInvalidId || aoPin != kInvalidId) && roughnessConst && metalnessConst && aoConst)
+	{
+		// None of the three actually needs per-texel sampling -- same
+		// reasoning as BaseColor above, straight into the flat fields.
+		if (roughnessPin != kInvalidId) mat.roughness = graph.Evaluate(roughnessPin, 0.5f, 0.5f, sampleFn, &cache).v[0];
+		if (metalnessPin != kInvalidId) mat.metalness = graph.Evaluate(metalnessPin, 0.5f, 0.5f, sampleFn, &cache).v[0];
+		if (aoPin != kInvalidId) mat.ao = graph.Evaluate(aoPin, 0.5f, 0.5f, sampleFn, &cache).v[0];
+		mat.maps[MaterialAsset::Orm].clear();
+	}
+	else if (roughnessPin != kInvalidId || metalnessPin != kInvalidId || aoPin != kInvalidId)
 	{
 		const std::vector<float> aoPlane = EvaluatePlane(graph, aoPin, 0, mat.ao, w, h, sampleFn, cache);
 		const std::vector<float> roughPlane = EvaluatePlane(graph, roughnessPin, 0, mat.roughness, w, h, sampleFn, cache);
@@ -156,7 +178,13 @@ bool Tga::BakeMaterialGraphImpl(const MaterialGraphBakeRequest& request)
 			mat.maps[MaterialAsset::Orm] = outRel("_M");
 	}
 
-	if (emissivePin != kInvalidId)
+	if (emissivePin != kInvalidId && graph.IsConstant(emissivePin))
+	{
+		const GraphValue val = graph.Evaluate(emissivePin, 0.5f, 0.5f, sampleFn, &cache);
+		mat.emissiveColor[0] = val.v[0]; mat.emissiveColor[1] = val.v[1]; mat.emissiveColor[2] = val.v[2];
+		mat.maps[MaterialAsset::Emissive].clear();
+	}
+	else if (emissivePin != kInvalidId)
 	{
 		TextureCpu::Image img; img.width = w; img.height = h; img.ok = true; img.pixels.resize((size_t)w * h * 4);
 		const uint8_t strengthByte = ToByte(std::clamp(mat.emissiveStrength / 16.f, 0.f, 1.f));

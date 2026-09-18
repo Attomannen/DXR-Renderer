@@ -10,13 +10,42 @@
 
 #include <tge/editor/Document/Document.h>
 
-#include <tge/editor/p4/p4.h>
-
 #include <filesystem>
 
 #include <tge/editor/Commands/TransformCommand.h>
+#include <tge/editor/EditorSettings.h>
 
 using namespace Tga;
+
+Gizmos::Gizmos()
+{
+	const EditorSettings& s = EditorSettings::Get();
+	mySnap.snapPos = s.snapPosEnabled;
+	mySnap.snapRot = s.snapRotEnabled;
+	mySnap.snapScale = s.snapScaleEnabled;
+	mySnap.pos = s.snapPosAmount;
+	mySnap.rot = s.snapRotAmount;
+	mySnap.scale = s.snapScaleAmount;
+}
+
+namespace
+{
+	// Called right after each snap widget below; writes the just-edited
+	// value back into EditorSettings and saves, so any viewport's snap
+	// settings become the default for every future one, per-document Gizmos
+	// instances included -- see Gizmos::Gizmos() above.
+	void SaveSnapSetting(const Gizmos::Snap& aSnap)
+	{
+		EditorSettings& s = EditorSettings::Get();
+		s.snapPosEnabled = aSnap.snapPos;
+		s.snapRotEnabled = aSnap.snapRot;
+		s.snapScaleEnabled = aSnap.snapScale;
+		s.snapPosAmount = aSnap.pos;
+		s.snapRotAmount = aSnap.rot;
+		s.snapScaleAmount = aSnap.scale;
+		EditorSettings::Save();
+	}
+}
 
 void Gizmos::Draw()
 {
@@ -31,24 +60,37 @@ void Gizmos::Draw()
 		}
 	}
 	{ // Settings for snapping
+		// Save on deactivation, not on every value-changed frame: DragFloat
+		// returns true continuously while being dragged, and this writes a
+		// file -- saving every intermediate frame of a drag instead of once
+		// at the end would mean a disk write per frame for as long as the
+		// mouse is held down.
+		bool saveNow = false;
 		switch (myCurrentOperation)
 		{
 		case ImGuizmo::TRANSLATE:
 			ImGui::Text("Translation Snap");
 			ImGui::Checkbox("Enabled", &mySnap.snapPos);
+			saveNow |= ImGui::IsItemDeactivatedAfterEdit();
 			ImGui::DragFloat("Amount", &mySnap.pos);
+			saveNow |= ImGui::IsItemDeactivatedAfterEdit();
 			break;
 		case ImGuizmo::ROTATE:
 			ImGui::Text("Angle Snap");
 			ImGui::Checkbox("Enabled", &mySnap.snapRot);
+			saveNow |= ImGui::IsItemDeactivatedAfterEdit();
 			ImGui::DragFloat("Amount", &mySnap.rot);
+			saveNow |= ImGui::IsItemDeactivatedAfterEdit();
 			break;
 		case ImGuizmo::SCALE:
 			ImGui::Text("Scale Snap");
 			ImGui::Checkbox("Enabled", &mySnap.snapScale);
+			saveNow |= ImGui::IsItemDeactivatedAfterEdit();
 			ImGui::DragFloat("Amount", &mySnap.scale);
+			saveNow |= ImGui::IsItemDeactivatedAfterEdit();
 			break;
 		}
+		if (saveNow) SaveSnapSetting(mySnap);
 	}
 	
 

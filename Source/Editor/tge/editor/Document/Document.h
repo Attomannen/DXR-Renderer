@@ -25,6 +25,9 @@ public:
 	virtual Matrix4x4f CalculateSelectionOrientation() = 0;
 
 	virtual bool HasTransformableSelection() = 0;
+
+	// Draws collision wireframes over the viewport (see CollisionOverlay). Optional.
+	virtual void DrawCollisionOverlay(class CollisionOverlay& /*overlay*/) {}
 };
 
 
@@ -45,6 +48,13 @@ protected:
 
 public:
 	Document();
+	// Editor.h stores every open document as unique_ptr<Document> (myOpenDocuments/
+	// myClosedDocuments) and destroys them through that base pointer -- without a
+	// virtual destructor here, a derived document's own destructor (and its
+	// members' destructors) never ran on close, only on process exit. Confirmed
+	// live this session: MaterialDocument had to route ImNodes context cleanup
+	// through Close() instead of its destructor to work around exactly this.
+	virtual ~Document() = default;
 	int GetId() { return myId; };
 	bool HasUnsavedChanges() const;
 	const State GetState() const { return myState; }

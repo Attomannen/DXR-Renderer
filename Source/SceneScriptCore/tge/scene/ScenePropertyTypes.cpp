@@ -10,6 +10,7 @@ using namespace Tga;
 
 StringId(*locAssetBrowserGetSelectionFunction)();
 GetModelMeshInfoFunction locGetModelMeshInfoFunction = nullptr;
+GetModelCollisionInfoFunction locGetModelCollisionInfoFunction = nullptr;
 
 namespace
 {
@@ -27,6 +28,16 @@ namespace Tga
 	void RegisterGetModelMeshInfoFunction(GetModelMeshInfoFunction aGetFunction)
 	{
 		locGetModelMeshInfoFunction = aGetFunction;
+	}
+
+	void RegisterGetModelCollisionInfoFunction(GetModelCollisionInfoFunction aGetFunction)
+	{
+		locGetModelCollisionInfoFunction = aGetFunction;
+	}
+
+	bool GetModelCollisionInfo(StringId modelPath, size_t maxTriangles, SceneModelCollisionInfo& outInfo)
+	{
+		return locGetModelCollisionInfoFunction && locGetModelCollisionInfoFunction(modelPath, maxTriangles, outInfo);
 	}
 
 	bool GetModelMeshInfo(StringId modelPath, SceneModelMeshInfo& outMeshInfo)

@@ -51,6 +51,13 @@ public:
 	void Update(float aTimeDelta, InputManager &inputManager);
 
 	void AddDocument(std::unique_ptr<Document>&& ptr);
+	// For commands that capture a raw Document* (e.g. ChangeMaterialCommand):
+	// the global undo stack is never pruned when a document closes (a known
+	// gap, roadmap "no limit"), so a command built while a document was open
+	// can still be sitting on the stack after it's gone. Check this before
+	// dereferencing a captured pointer in Execute()/Undo() rather than
+	// assuming it's still valid.
+	bool IsDocumentOpen(const Document* aDocument) const;
 
 	const ImGuiWindowClass* GetGlobalWindowClass() const { return &myTopLevelWindowClass; }
 	const ImGuiWindowClass* GetDocumentWindowClass() const { return &myDocumentLevelWindowClass; }
@@ -68,9 +75,9 @@ public:
 	void CreateNewObjectDefinition();
 	void CreateNewAnimationClip();
 	void CreateNewMaterial();
-	void CreateNewImportSettings();
 
 	bool IsViewportGridVisible() { return myIsViewportGridVisible; }
+	bool IsCollisionVisible() { return myIsCollisionVisible; }
 
 	void Save();
 
@@ -78,6 +85,7 @@ public:
 	const EditorGraphicsBase& GetEditorGraphics() const  { return *myEditorGraphics; }
 private:
 	bool ShowSavePromptModal();
+	void DrawUndoHistoryPanel();
 
 	friend void CommandManagerEditorCallback(CommandManager::Action);
 	void OnAction(CommandManager::Action action);
@@ -112,6 +120,8 @@ private:
 
 	bool myIsDockingInitialized = false;
 	bool myIsViewportGridVisible = true;
+	bool myIsCollisionVisible = false;
+	bool myShowUndoHistory = false;
 };
 
 }

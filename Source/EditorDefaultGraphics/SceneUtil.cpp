@@ -36,7 +36,6 @@
 #include <tge/drawers/SpriteDrawer.h>
 #include <tge/primitives/LinePrimitive.h>
 
-#include <tge/editor/p4/p4.h>
 #include <tge/log/Log.h>
 #include <tge/settings/settings.h>
 #include "tge/shaders/SpriteShader.h"
@@ -166,8 +165,6 @@ void Tga::DrawOutlines(const EditorViewport& viewport)
 	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
 
 	SelectionOutlineConstantBuffer data{};
-	// TODO, color outline depending on p4 file status for it
-	//P4::FileInfo fileinfo = P4::QueryFileInfo(UUIDManager::GetUUIDStringFromID(p->));
 	data.r = 0;
 	data.g = 0;
 	data.b = 255;
@@ -186,33 +183,18 @@ void Tga::DrawOutlines(const EditorViewport& viewport)
 	ctx.SetShaderResource(rhi::ShaderStage::Pixel, 1, viewport.GetIdRenderTarget().GetSrv());
 	locRenderdata.selectionOutlineEffect.Render();
 }
-void Tga::SetObjectAndSelectionId(uint32_t anObjectId, uint32_t aSelectionId, const P4::FileInfo& someInfo)
+void Tga::SetObjectAndSelectionId(uint32_t anObjectId, uint32_t aSelectionId)
 	{
 	EnsureInitialized();
 
 	IdConstantBuffer data{};
 	data.objectId = anObjectId;
 	data.selectionId = aSelectionId;
+	// p4status used to distinguish "checked out by you"/"by someone else" for
+	// the selection outline shader; source-control integration was removed.
+	// Left at 0 (its always-safe/no-highlight value) rather than reworking
+	// the cbuffer layout and the shader that reads it.
 	data.p4status = 0;
-
-	if (someInfo.action != P4::FileAction::None)
-	{
-		if (strcmp(someInfo.user, P4::MyUser()) == 0 && strcmp(someInfo.client, P4::MyClient()) == 0)
-		{
-			// my user and workspace
-			data.p4status = 1;
-		}
-		else if (strcmp(someInfo.user, P4::MyUser()) == 0)
-		{
-			// my user, but different workspace
-			data.p4status = 2;
-	}
-		else
-		{
-			// checked out by someone else
-			data.p4status = 3;
-		}
-	}
 
 	rhi::ICommandContext& ctx = DX11::Rhi()->GetContext();
 	locRenderdata.idConstantBuffer.Update(ctx, data);

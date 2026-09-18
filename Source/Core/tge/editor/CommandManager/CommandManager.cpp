@@ -98,3 +98,21 @@ bool CommandManager::CanRedo()
 {
 	return !locRedoStack.empty();
 }
+
+std::vector<const AbstractCommand*> CommandManager::GetUndoHistory()
+{
+	std::vector<const AbstractCommand*> newestFirst;
+	newestFirst.reserve(locUndoStack.size());
+	std::stack<std::shared_ptr<AbstractCommand>> copy = locUndoStack;
+	while (!copy.empty()) { newestFirst.push_back(copy.top().get()); copy.pop(); }
+	return std::vector<const AbstractCommand*>(newestFirst.rbegin(), newestFirst.rend());
+}
+
+std::vector<const AbstractCommand*> CommandManager::GetRedoHistory()
+{
+	std::vector<const AbstractCommand*> nearestFirst;
+	nearestFirst.reserve(locRedoStack.size());
+	std::stack<std::shared_ptr<AbstractCommand>> copy = locRedoStack;
+	while (!copy.empty()) { nearestFirst.push_back(copy.top().get()); copy.pop(); }
+	return nearestFirst;
+}

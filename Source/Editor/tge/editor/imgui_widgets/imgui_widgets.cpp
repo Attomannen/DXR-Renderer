@@ -216,3 +216,70 @@ Tga::AssetListItemStatus Tga::AssetListItem(fs::path anAssetPath, bool isSelecte
 
 	return result;
 }
+
+Tga::AssetListItemStatus Tga::AssetGridItem(fs::path anAssetPath, bool isSelected, std::string_view anIcon, ImTextureID textureID, float aTileSize)
+{
+	const std::string filename = anAssetPath.filename().string();
+	Tga::AssetListItemStatus result;
+
+	ImGui::BeginGroup();
+	ImGui::PushID(filename.c_str());
+
+	// A fixed-size Selectable (not SpanAllColumns/width-0 like AssetListItem)
+	// is what makes this tileable with SameLine() -- the row-oriented variant
+	// always claims the rest of the row regardless of its own thumb size.
+	result.selectedAfter = ImGui::Selectable("##tile", isSelected, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(aTileSize, aTileSize + ImGui::GetTextLineHeight() * 2.f));
+	result.hovered = ImGui::IsItemHovered();
+	result.contextClicked = ImGui::IsItemClicked(ImGuiMouseButton_Right);
+	result.clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+	result.doubleClicked = result.hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+
+	if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
+	{
+		const std::string path = anAssetPath.string();
+		const std::string ext = anAssetPath.filename().extension().string();
+		ImGui::SetDragDropPayload(ext.c_str(), path.c_str(), path.size() + 1);
+		ImGui::Text("%s", filename.c_str());
+		ImGui::EndDragDropSource();
+	}
+
+	// Draw the thumbnail/icon and wrapped label on top of the (otherwise
+	// blank) selectable, rather than as siblings after it -- SameLine() would
+	// go back to row-oriented layout, defeating the point of a tile.
+	const ImVec2 tileMin = ImGui::GetItemRectMin();
+	if (textureID != 0)
+	{
+		const float imgSize = aTileSize * 0.8f;
+		ImGui::SetCursorScreenPos(ImVec2(tileMin.x + (aTileSize - imgSize) * 0.5f, tileMin.y + 4.f));
+		ImGui::Image(textureID, ImVec2(imgSize, imgSize));
+	}
+	else
+	{
+		const float iconTextWidth = ImGui::CalcTextSize(anIcon.data()).x;
+		ImGui::SetCursorScreenPos(ImVec2(tileMin.x + (aTileSize - iconTextWidth) * 0.5f, tileMin.y + aTileSize * 0.5f - ImGui::GetFontSize()));
+		ImGui::Text("%s", anIcon.data());
+	}
+	ImGui::SetCursorScreenPos(ImVec2(tileMin.x, tileMin.y + aTileSize));
+	ImGui::PushTextWrapPos(tileMin.x + aTileSize);
+	ImGui::TextWrapped("%s", filename.c_str());
+	ImGui::PopTextWrapPos();
+
+	ImGui::PopID();
+	ImGui::EndGroup();
+	return result;
+}
+
+void Tga::NodeEditorPinIcon(ImU32 aColor, bool aConnected, float aRadius)
+{
+	const float size = aRadius * 2.f;
+	const ImVec2 topLeft = ImGui::GetCursorScreenPos();
+	// Dummy reserves the layout space (so callers can SameLine() before/after
+	// this like any inline widget) without needing an interactive item.
+	ImGui::Dummy(ImVec2(size, size));
+	const ImVec2 center(topLeft.x + aRadius, topLeft.y + aRadius);
+	ImDrawList* drawList = ImGui::GetWindowDrawList();
+	if (aConnected)
+		drawList->AddCircleFilled(center, aRadius, aColor);
+	else
+		drawList->AddCircle(center, aRadius, aColor, 0, 1.5f);
+}

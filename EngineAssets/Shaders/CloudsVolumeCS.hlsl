@@ -108,7 +108,14 @@ void main(uint3 tid : SV_DispatchThreadID)
 	// the far cloud stacks up into a band the way it does in a photograph.
 	// This is an artistic exaggeration, not physics, which is why it is local
 	// to the cloud march and does not touch the sky LUTs' own geometry.
-	const float kCurveExaggeration = 2.5f;
+	//
+	// It trades directly against how full the clouds look, and 2.5 was too far.
+	// The shrunken radius does not only bend the far deck: it is the same
+	// sphere the shell intersection uses, so every ray exits the layer sooner
+	// and each cloud's vertical extent along the ray is cut short. Overhead
+	// clouds came out visibly flattened and the whole deck sagged toward the
+	// horizon. 1.6 keeps most of the recession without squashing them.
+	const float kCurveExaggeration = 1.6f;
 	const float R = gBottomRadius / kCurveExaggeration;
 	const float h0 = origin.y;
 	float tEnter = 0.0f, tExit = -1.0f;

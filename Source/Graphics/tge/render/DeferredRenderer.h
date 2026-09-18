@@ -368,8 +368,13 @@ namespace Tga
 			// makes a sky read as three-dimensional rather than as a ceiling.
 			// A thicker layer also means more optical depth end to end, so
 			// cloudDensity may want lowering to match a previous look.
-			float cloudBaseAltitude = 2000.f;
-			float cloudTopAltitude = 7000.f;
+			// Back down from 2-7 km. Raising the deck pushes it further from the
+			// camera, so each cloud subtends a smaller angle and the sky reads
+			// as thin and scattered rather than full. It also made the layer
+			// 5 km thick against clouds only about 2 km wide, so towers grew
+			// taller than they were broad.
+			float cloudBaseAltitude = 1200.f;
+			float cloudTopAltitude = 5000.f;
 			// Meters per shape-noise tile, i.e. both the repeat distance and the
 			// size of a cloud cell. A 6 km tile put several repeats inside the
 			// deck as seen from cloud altitude; 12 km hid the repeat but grew

@@ -43,6 +43,21 @@ namespace Tga
 		TriangleMesh, // static only
 	};
 
+	// What the editor needs to draw a model's collision: the union bounds of the whole
+	// model and, when it has at most maxTriangles, its triangles (model space).
+	struct SceneModelCollisionInfo
+	{
+		BoxSphereBounds bounds;
+		bool hasGeometry = false;
+		std::vector<float> positions; // x,y,z per vertex
+		std::vector<uint32_t> indices;
+	};
+
+	using GetModelCollisionInfoFunction = bool(*)(StringId modelPath, size_t maxTriangles, SceneModelCollisionInfo& outInfo);
+
+	void RegisterGetModelCollisionInfoFunction(GetModelCollisionInfoFunction aGetFunction);
+	bool GetModelCollisionInfo(StringId modelPath, size_t maxTriangles, SceneModelCollisionInfo& outInfo);
+
 	struct SceneModel
 	{
 		StringId path;

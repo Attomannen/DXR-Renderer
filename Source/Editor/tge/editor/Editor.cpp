@@ -6,11 +6,13 @@
 #include <fstream>
 
 #include <tge/editor/Editor.h>
+#include <tge/editor/EditorSettings.h>
 #include <IconFontHeaders/IconsLucide.h>
 
 #include <tge/animation/AnimationClip.h>
 #include <tge/input/InputManager.h>
 #include <tge/editor/CommandManager/CommandManager.h>
+#include <tge/editor/CommandManager/AbstractCommand.h>
 #include <tge/graphics/DX11.h>
 #include <tge/settings/settings.h>
 #include <tge/imgui/ImGuiInterface.h>
@@ -25,7 +27,7 @@
 #include <tge/editor/ObjectDefinition/ObjectDefinitionDocument.h>
 #include <tge/editor/Scene/SceneDocument.h>
 #include <tge/editor/Material/MaterialDocument.h>
-#include <tge/editor/Import/ImportSettingsDocument.h>
+#include <tge/editor/Import/FbxConvert.h>
 #include <tge/editor/Scene/SceneSelection.h>
 #include <tge/editor/ScriptEditor/ScriptEditor.h>
 #include <tge/editor/Document/Document.h>
@@ -45,13 +47,10 @@
 #include <tge/script/Nodes/SceneObjectNodes.h>
 #include <tge/scene/ScenePropertyTypes.h>
 
-#include <tge/editor/p4/p4.h>
-
 #include <tge/editor/EditorGraphics/NullEditorGraphics.h>
 
 static bool locImGuiDemoOpen = false;
 static bool locImGuiStyleEditorOpen = false;
-static bool locPerforceEnabled = false;
 static bool locTextureImporterOpen = false;
 static char locTextureInput[512]{};
 static char locTextureOutput[512]{};
@@ -83,7 +82,6 @@ Tga::Editor::Editor()
 
 Tga::Editor::~Editor()
 {
-	P4::StopPolling();
 	for (auto& doc : myOpenDocuments)
 	{
 		doc->Close();
@@ -151,10 +149,10 @@ void Tga::Editor::Init(const EditorConfiguration& aEditorConfiguration, std::uni
 	myAssetBrowser.SetPath(rootPath);
 	mySceneObjectDefinitionManager.Init(rootPath);
 	EditorScriptManager::GetInstance().Init();
-	if (locPerforceEnabled)
-	{
-		P4::StartPolling(rootPath.c_str());
-	}
+
+	EditorSettings::Load();
+	myIsViewportGridVisible = EditorSettings::Get().viewportGridVisible;
+	myIsCollisionVisible = EditorSettings::Get().viewportCollisionVisible;
 
 	ImGuiIO& io = ImGui::GetIO(); (void)io;
 	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;           // Enable Docking
@@ -236,7 +234,7 @@ void Tga::Editor::CreateNewScene()
 			scene.SetName(p.filename().string().c_str());
 			scene.SetPath(relativePath.string().c_str());
 
-			SaveScene(scene, SceneP4Handler);
+			SaveScene(scene);
 			std::unique_ptr<SceneDocument> sceneDocument = std::make_unique<SceneDocument>();
 			sceneDocument->Init(relativePath.string());
 			AddDocument(std::move(sceneDocument));
@@ -310,21 +308,6 @@ void Tga::Editor::CreateNewAnimationClip()
 		}, initialFolder.c_str());
 }
 
-void Tga::Editor::CreateNewImportSettings()
-{
-	const std::string initialFolder = myAssetBrowser.GetCurrentFolder().string();
-	FileDialog::SaveFile(FileDialog::FileType::tgm, [this](const char* path) {
-		fs::path p = path;
-		if (p.extension().empty()) p = p.replace_extension(".tgm");
-		// Init accepts an empty/new file and supplies safe defaults; saving it
-		// immediately makes the Project browser see the asset before it is edited.
-		std::ofstream(p) << "{\n  \"version\": 1,\n  \"Fbx\": \"\",\n  \"scale\": 1.0,\n  \"axisConversion\": \"EngineDefault\",\n  \"normalConvention\": \"OpenGL\",\n  \"materialRemaps\": {},\n  \"reimport\": {}\n}\n";
-		auto document = std::make_unique<ImportSettingsDocument>();
-		document->Init(p.string());
-		AddDocument(std::move(document));
-	}, initialFolder.c_str());
-}
-
 static void OpenTextureImporterFromSelection()
 {
 	const std::filesystem::path root = Tga::Settings::GameAssetRoot();
@@ -358,17 +341,15 @@ static void DrawTextureImporter()
 	if (ImGui::Button("Cook textures", ImVec2(140, 0)))
 	{
 		// GameEditor normally runs with Bin as its working directory, so deriving
-		// from current_path()/Bin produced Bin/Bin/TextureCooker_Debug.exe. Resolve
+		// from current_path()/Bin produced Bin/Bin/TextureCooker_*.exe. Resolve
 		// beside the actual host executable instead; this also survives launching
 		// the editor from Visual Studio or a shortcut with another working folder.
-		wchar_t modulePath[MAX_PATH]{};
-		GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
-		std::filesystem::path exe = std::filesystem::path(modulePath).parent_path() / "TextureCooker_Debug.exe";
-		if (!std::filesystem::exists(exe))
-			exe = std::filesystem::current_path() / "TextureCooker_Debug.exe";
-		if (!std::filesystem::exists(exe))
+		// FindTextureCookerExe() also stops this hardcoding "_Debug": a Release
+		// editor used to look for a cooker exe it would never have shipped.
+		const std::filesystem::path exe = FindTextureCookerExe();
+		if (exe.empty())
 		{
-			locTextureCookStatus = "TextureCooker_Debug.exe was not found beside GameEditor.";
+			locTextureCookStatus = "No TextureCooker_{Debug,Release,Retail}.exe was found beside GameEditor.";
 			ImGui::TextWrapped("%s", locTextureCookStatus.c_str());
 			ImGui::End();
 			return;
@@ -381,7 +362,7 @@ static void DrawTextureImporter()
 			CloseHandle(process.hThread); CloseHandle(process.hProcess);
 			locTextureCookStatus = "Texture cook started. Refresh the Project browser after it completes.";
 		}
-		else locTextureCookStatus = "Could not launch TextureCooker_Debug.exe.";
+		else locTextureCookStatus = "Could not launch " + exe.filename().string() + ".";
 	}
 	if (!locTextureCookStatus.empty()) ImGui::TextWrapped("%s", locTextureCookStatus.c_str());
 	ImGui::End();
@@ -446,22 +427,38 @@ void Tga::Editor::Update(float aTimeDelta, InputManager& inputManager)
 			ImGuiID center = 0, top = 0, bottomLeft = 0, bottomRight = 0;
 			if (!myIsDockingInitialized)
 			{
-				ImGui::DockBuilderRemoveNode(myGlobalDockSpaceId); // clear any previous layout
-				ImGui::DockBuilderAddNode(myGlobalDockSpaceId, ImGuiDockNodeFlags_DockSpace);
-				ImGui::DockBuilderSetNodeSize(myGlobalDockSpaceId, viewport->WorkSize);
-				center = myGlobalDockSpaceId;
+				// ImGui::DockSpace() above already auto-creates an empty leaf
+				// node here if none exists, so "a node exists" alone doesn't
+				// mean imgui.ini restored a real saved layout -- check it was
+				// actually split. Previously this unconditionally rebuilt the
+				// hardcoded default every single launch, discarding whatever
+				// panel arrangement the user had saved; now that only happens
+				// on a genuine first run, or after View > Reset Layout clears
+				// myIsDockingInitialized.
+				ImGuiDockNode* existingNode = ImGui::DockBuilderGetNode(myGlobalDockSpaceId);
+				if (existingNode && existingNode->IsSplitNode())
+				{
+					myIsDockingInitialized = true;
+				}
+				else
+				{
+					ImGui::DockBuilderRemoveNode(myGlobalDockSpaceId); // clear any previous layout
+					ImGui::DockBuilderAddNode(myGlobalDockSpaceId, ImGuiDockNodeFlags_DockSpace);
+					ImGui::DockBuilderSetNodeSize(myGlobalDockSpaceId, viewport->WorkSize);
+					center = myGlobalDockSpaceId;
 
-				ImGui::DockBuilderSplitNode(center, ImGuiDir_Up, 0.1f, &top, &center);
-				ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.25f, &bottomRight, &center);
-				ImGui::DockBuilderSplitNode(bottomRight, ImGuiDir_Left, 0.2f, &bottomLeft, &bottomRight);
+					ImGui::DockBuilderSplitNode(center, ImGuiDir_Up, 0.1f, &top, &center);
+					ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.25f, &bottomRight, &center);
+					ImGui::DockBuilderSplitNode(bottomRight, ImGuiDir_Left, 0.2f, &bottomLeft, &bottomRight);
 
-				ImGui::DockBuilderDockWindow(GlobalWindowNames[(size_t)GlobalWindows::DocumentDock], center);
-				ImGui::DockBuilderDockWindow(GlobalWindowNames[(size_t)GlobalWindows::AssetBrowserDirectories], bottomLeft);
-				ImGui::DockBuilderDockWindow(GlobalWindowNames[(size_t)GlobalWindows::AssetBrowserFiles], bottomRight);
+					ImGui::DockBuilderDockWindow(GlobalWindowNames[(size_t)GlobalWindows::DocumentDock], center);
+					ImGui::DockBuilderDockWindow(GlobalWindowNames[(size_t)GlobalWindows::AssetBrowserDirectories], bottomLeft);
+					ImGui::DockBuilderDockWindow(GlobalWindowNames[(size_t)GlobalWindows::AssetBrowserFiles], bottomRight);
 
-				ImGui::DockBuilderFinish(myGlobalDockSpaceId);
+					ImGui::DockBuilderFinish(myGlobalDockSpaceId);
 
-				myIsDockingInitialized = true;
+					myIsDockingInitialized = true;
+				}
 			}
 
 			//////////////////////////
@@ -489,12 +486,34 @@ void Tga::Editor::Update(float aTimeDelta, InputManager& inputManager)
 						{
 							CommandManager::Redo();
 						}
+						ImGui::Separator();
+						ImGui::MenuItem("Undo History", nullptr, &myShowUndoHistory);
 
 						ImGui::EndMenu();
 					}
 					if (ImGui::BeginMenu("View"))
 					{
-						ImGui::MenuItem("Render Viewport Grid", NULL, &myIsViewportGridVisible);
+						if (ImGui::MenuItem("Render Viewport Grid", NULL, &myIsViewportGridVisible))
+						{
+							EditorSettings::Get().viewportGridVisible = myIsViewportGridVisible;
+							EditorSettings::Save();
+						}
+						if (ImGui::MenuItem("Show Collision", NULL, &myIsCollisionVisible))
+						{
+							EditorSettings::Get().viewportCollisionVisible = myIsCollisionVisible;
+							EditorSettings::Save();
+						}
+						ImGui::Separator();
+						if (ImGui::MenuItem("Reset Layout"))
+						{
+							// The normal path only (re)builds the hardcoded default
+							// layout once per process (myIsDockingInitialized);
+							// clearing that flag makes it run again next frame,
+							// discarding whatever panel arrangement imgui.ini has
+							// saved -- the same rebuild path Init() would take on
+							// a fresh install with no saved layout at all.
+							myIsDockingInitialized = false;
+						}
 						ImGui::EndMenu();
 					}
 					if (ImGui::BeginMenu("Create"))
@@ -503,7 +522,6 @@ void Tga::Editor::Update(float aTimeDelta, InputManager& inputManager)
 						if (ImGui::MenuItem("Object Definition")) CreateNewObjectDefinition();
 						if (ImGui::MenuItem("Animation Clip")) CreateNewAnimationClip();
 						if (ImGui::MenuItem("Material")) CreateNewMaterial();
-						if (ImGui::MenuItem("FBX Import Settings")) CreateNewImportSettings();
 						ImGui::EndMenu();
 					}
 					if (ImGui::BeginMenu("Assets"))
@@ -535,53 +553,7 @@ void Tga::Editor::Update(float aTimeDelta, InputManager& inputManager)
 						}
 						ImGui::EndMenu();
 					}
-					ImGui::SameLine(ImGui::GetWindowWidth() - 100.f);
-					char buff[20];
 
-					//P4::ErrorType errorState = P4::QueryErrorState();
-					ImVec4 textColor = locPerforceEnabled ? ImVec4(1.f, 1.f, 1.f, 1.0f) : ImVec4(0.4f, 0.4f, 0.4f, 1.0f);
-					sprintf_s(buff, "%s Perforce %s", ICON_LC_GIT_MERGE, locPerforceEnabled ? ICON_LC_TOGGLE_RIGHT : ICON_LC_TOGGLE_LEFT);
-
-					ImGui::PushStyleColor(ImGuiCol_Text, P4::QueryErrorState() == P4::ErrorType::None ? textColor : ImVec4(0.6f, 0.2f, 0.2f, 1.0f));
-					if (ImGui::MenuItem(buff))
-						{
-						locPerforceEnabled = !locPerforceEnabled;
-
-							if (locPerforceEnabled)
-							{
-								const std::string& rootPath = Settings::GameAssetRoot();
-								P4::StartPolling(rootPath.c_str());
-							}
-							else
-							{
-								P4::StopPolling();
-							}
-						}
-					ImGui::PopStyleColor();
-
-					if (ImGui::IsItemHovered()){ // tooltip
-						ImGui::BeginTooltip();
-					{
-							ImGui::PushTextWrapPos(ImGui::GetFontSize() * 20);
-							if (P4::QueryErrorState() == P4::ErrorType::None)
-						{
-								ImGui::TextWrapped("Perforce integration is %s", locPerforceEnabled ? "active" : "not active");
-						}
-							else
-						{
-								ImGui::TextWrapped("Perforce error!\n   \"%s\"", P4::GetErrorString());
-						}
-							ImGui::PopTextWrapPos();
-					}
-						ImGui::EndTooltip();
-				}
-
-					if (locPerforceEnabled && P4::QueryErrorState() != P4::ErrorType::None)
-					{
-						locPerforceEnabled = false;
-						P4::StopPolling();
-					}
-				
 					ImGui::EndMenuBar();
 				}
 			}
@@ -656,7 +628,60 @@ void Tga::Editor::Update(float aTimeDelta, InputManager& inputManager)
 			ImGui::End();
 		}
 		DrawTextureImporter();
-	}	
+		DrawUndoHistoryPanel();
+	}
+}
+
+void Editor::DrawUndoHistoryPanel()
+{
+	if (!myShowUndoHistory) return;
+	if (!ImGui::Begin("Undo History", &myShowUndoHistory))
+	{
+		ImGui::End();
+		return;
+	}
+
+	const std::vector<const AbstractCommand*> undone = CommandManager::GetUndoHistory();
+	const std::vector<const AbstractCommand*> redoable = CommandManager::GetRedoHistory();
+
+	// "Current position" row: every entry above it is already applied
+	// (undoing walks up from here), every entry below is undone-but-
+	// redoable (redoing walks down into it). Clicking a past entry undoes
+	// down to it; clicking a future entry redoes up to it -- Undo()/Redo()
+	// already exist and do the Execute()/Undo() + callback dispatch
+	// correctly one step at a time, so jumping several steps is just
+	// calling one of them in a loop rather than needing new CommandManager
+	// plumbing.
+	for (size_t i = 0; i < undone.size(); ++i)
+	{
+		ImGui::PushID((int)i);
+		const bool isCurrent = (i + 1 == undone.size());
+		if (ImGui::Selectable(undone[i]->GetName(), isCurrent))
+		{
+			const size_t steps = undone.size() - 1 - i;
+			for (size_t s = 0; s < steps; ++s) CommandManager::Undo();
+		}
+		ImGui::PopID();
+	}
+	if (undone.empty())
+		ImGui::TextDisabled("(nothing to undo)");
+
+	ImGui::Separator();
+
+	for (size_t i = 0; i < redoable.size(); ++i)
+	{
+		ImGui::PushID((int)(undone.size() + i));
+		ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+		if (ImGui::Selectable(redoable[i]->GetName()))
+		{
+			const size_t steps = i + 1;
+			for (size_t s = 0; s < steps; ++s) CommandManager::Redo();
+		}
+		ImGui::PopStyleColor();
+		ImGui::PopID();
+	}
+
+	ImGui::End();
 }
 
 void Editor::AddDocument(std::unique_ptr<Document>&& ptr)
@@ -675,6 +700,20 @@ void Editor::AddDocument(std::unique_ptr<Document>&& ptr)
 	{
 		ImGui::SetWindowFocus(ptr->GetImGuiName().GetString());
 	}
+}
+
+bool Editor::IsDocumentOpen(const Document* aDocument) const
+{
+	// Checks both lists, not just myOpenDocuments: FocusDocument can move a
+	// unique_ptr from myClosedDocuments back into myOpenDocuments without
+	// reallocating (reopening), so a document sitting in myClosedDocuments
+	// is still a live object at the same address, just not currently shown
+	// -- exactly what matters here is "not yet destructed," not "visible."
+	auto find = [aDocument](const std::vector<std::unique_ptr<Document>>& list)
+	{
+		return std::find_if(list.begin(), list.end(), [aDocument](const std::unique_ptr<Document>& d) { return d.get() == aDocument; }) != list.end();
+	};
+	return find(myOpenDocuments) || find(myClosedDocuments);
 }
 
 void Editor::FocusDocument(Document* document)
@@ -703,10 +742,15 @@ void Editor::Save()
 	// that way, documents can be closed without saving by reverting before closing
 	// undoing will then undo the revert, but also open the document
 
-	for (int i = 0; i < myClosedDocuments.size(); i++)
-	{
-		myClosedDocuments[i]->Save();
-	}
+	// myClosedDocuments is never actually populated today: a confirmed close
+	// (Document::State::CloseConfirmed) is erased straight out of
+	// myOpenDocuments further up in Update(), not moved here. This used to
+	// loop over it and save it anyway -- currently a no-op since the vector
+	// is always empty, but surprising to read and a live "Ctrl+S saves a
+	// document you just closed without saving" bug waiting to happen the
+	// moment something (e.g. a future "reopen last closed" feature) starts
+	// populating myClosedDocuments without also revisiting this. Left out
+	// deliberately rather than silently kept "for when that's wired up".
 
 	EditorScriptManager::GetInstance().SaveAll();
 }

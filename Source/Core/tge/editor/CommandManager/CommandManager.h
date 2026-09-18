@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 
 namespace Tga
 {
@@ -45,6 +46,16 @@ namespace Tga
 		static void Redo();
 		static bool CanUndo();
 		static bool CanRedo();
+
+		// For the Undo History panel (Editor.cpp) -- read-only, oldest first,
+		// so "already-applied" reads top-to-bottom as past-to-present.
+		// std::stack has no iteration of its own; these copy it (cheap
+		// relative to drawing a panel, and only done while that panel is
+		// actually open).
+		static std::vector<const AbstractCommand*> GetUndoHistory();
+		// Nearest-to-redo first: paired with GetUndoHistory(), the two lists
+		// back-to-back read as past -> present -> undone-but-redoable future.
+		static std::vector<const AbstractCommand*> GetRedoHistory();
 	};
 
 

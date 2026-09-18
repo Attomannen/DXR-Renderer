@@ -41,9 +41,43 @@ void SceneObjectList::Draw()
 			SetSelectedSceneLight(SceneLightSelection::Ambient);
 			SceneSelection::GetActiveSceneSelection()->ClearSelection();
 		}
-		if (ImGui::Button("+ Point Light")) { auto [id, light] = GetActiveScene()->CreateSceneObject<SceneObject>(); light.SetName("Point Light"); light.SetType(SceneObjectType::PointLight); light.GetPosition() = {0.f, 150.f, 0.f}; SceneSelection::GetActiveSceneSelection()->ClearSelection(); SceneSelection::GetActiveSceneSelection()->AddToSelection(id); SetSelectedSceneLight(SceneLightSelection::None); mySceneDirty = true; }
+		// CreateSceneObject<SceneObject>() inserted straight into the scene
+		// with no way to undo it -- go through AddSceneObjectsCommand instead,
+		// the same command the hierarchy's own "Duplicate" already uses below,
+		// so light creation joins the undo stack like everything else here.
+		if (ImGui::Button("+ Point Light"))
+		{
+			auto light = std::make_shared<SceneObject>();
+			light->SetName("Point Light");
+			light->SetType(SceneObjectType::PointLight);
+			light->GetPosition() = {0.f, 150.f, 0.f};
+			std::vector<std::shared_ptr<SceneObject>> objects{ light };
+			auto command = std::make_shared<AddSceneObjectsCommand>();
+			command->AddObjects(objects);
+			CommandManager::DoCommand(command);
+			SceneSelection::GetActiveSceneSelection()->ClearSelection();
+			SceneSelection::GetActiveSceneSelection()->AddToSelection(command->GetObjects()[0].first);
+			SetSelectedSceneLight(SceneLightSelection::None);
+			mySceneDirty = true;
+		}
 		ImGui::SameLine();
-		if (ImGui::Button("+ Spot Light")) { auto [id, light] = GetActiveScene()->CreateSceneObject<SceneObject>(); light.SetName("Spot Light"); light.SetType(SceneObjectType::SpotLight); light.GetPosition() = {0.f, 150.f, 0.f}; light.GetLightRange() = 1500.f; light.GetEuler() = {0.f, 0.f, 0.f}; SceneSelection::GetActiveSceneSelection()->ClearSelection(); SceneSelection::GetActiveSceneSelection()->AddToSelection(id); SetSelectedSceneLight(SceneLightSelection::None); mySceneDirty = true; }
+		if (ImGui::Button("+ Spot Light"))
+		{
+			auto light = std::make_shared<SceneObject>();
+			light->SetName("Spot Light");
+			light->SetType(SceneObjectType::SpotLight);
+			light->GetPosition() = {0.f, 150.f, 0.f};
+			light->GetLightRange() = 1500.f;
+			light->GetEuler() = {0.f, 0.f, 0.f};
+			std::vector<std::shared_ptr<SceneObject>> objects{ light };
+			auto command = std::make_shared<AddSceneObjectsCommand>();
+			command->AddObjects(objects);
+			CommandManager::DoCommand(command);
+			SceneSelection::GetActiveSceneSelection()->ClearSelection();
+			SceneSelection::GetActiveSceneSelection()->AddToSelection(command->GetObjects()[0].first);
+			SetSelectedSceneLight(SceneLightSelection::None);
+			mySceneDirty = true;
+		}
 		ImGui::Separator();
 	}
 
@@ -184,15 +218,20 @@ void SceneObjectList::Draw()
 								if (objectIt == allObjects.end() || !objectIt->second) continue;
 								auto& droppedObject = *objectIt->second;
 
-								char folder[128]{};
-								strcpy_s(folder, (*path)[0].GetString());
-								for (size_t j=1; j<isFolderOpenStack.size(); ++j)
+								// Was sprintf_s(folder, "%s/%s", folder, ...) in a loop -- folder
+								// as both destination and a %s source in the same call is
+								// undefined behaviour (overlapping read/write), not just an
+								// unlikely-but-safe pattern. A plain std::string accumulator
+								// sidesteps that and the fixed 128-byte overflow risk both.
+								std::string folder = (*path)[0].GetString();
+								for (size_t j = 1; j < isFolderOpenStack.size(); ++j)
 								{
-									sprintf_s(folder, "%s/%s", folder, (*path)[j].GetString());
+									folder += '/';
+									folder += (*path)[j].GetString();
 								}
 								Tga::StringId pathbufferid = Tga::StringRegistry::RegisterOrGetString(folder);
 
-								if (Tga::StringRegistry::RegisterOrGetString(folder) != droppedObject.GetPath())
+								if (pathbufferid != droppedObject.GetPath())
 								{
 									std::shared_ptr<ChangeSceneObjectFolderCommand> command = std::make_shared<ChangeSceneObjectFolderCommand>(
 										dropped[i], pathbufferid, droppedObject.GetPath());
@@ -401,25 +440,32 @@ void SceneObjectList::SearchAndFilterBar(const std::unordered_map<uint32_t, std:
 	ImGui::SetNextItemWidth(150);
 	ImGui::InputTextWithHint("##Search", ICON_LC_SEARCH " Search objects...", mySearchBuffer, IM_ARRAYSIZE(mySearchBuffer));
 	ImGui::SameLine();
-	
-	std::unordered_set<uint32_t> seenPropertyTypeIds;
-	std::vector<const PropertyTypeBase*> availablePropertyTypes;
 
-	for (const auto& object : aAllObjects | std::views::values)
+	// Only every object's *type* changes what's in the dropdown; typing in
+	// the search box (which does not set mySceneDirty) does not, so this
+	// stays cached across those frames instead of recomputing unconditionally.
+	if (mySceneDirty)
 	{
-		std::vector<ScenePropertyDefinition> props;
-		object->CalculateCombinedPropertySet(Editor::GetEditor()->GetSceneObjectDefinitionManager(), props);
-		for (const auto& prop : props)
+		std::unordered_set<uint32_t> seenPropertyTypeIds;
+		myAvailablePropertyTypes.clear();
+
+		for (const auto& object : aAllObjects | std::views::values)
 		{
-			if (seenPropertyTypeIds.insert(prop.type->GetTypeId().id).second)
+			std::vector<ScenePropertyDefinition> props;
+			object->CalculateCombinedPropertySet(Editor::GetEditor()->GetSceneObjectDefinitionManager(), props);
+			for (const auto& prop : props)
 			{
-				availablePropertyTypes.push_back(prop.type);
+				if (seenPropertyTypeIds.insert(prop.type->GetTypeId().id).second)
+				{
+					myAvailablePropertyTypes.push_back(prop.type);
+				}
 			}
 		}
 	}
-	
-	const char* filterLabel = mySelectedPropertyTypeIndex >= 0 
-		? availablePropertyTypes[mySelectedPropertyTypeIndex]->GetName().GetString() 
+	std::vector<const PropertyTypeBase*>& availablePropertyTypes = myAvailablePropertyTypes;
+
+	const char* filterLabel = mySelectedPropertyTypeIndex >= 0
+		? availablePropertyTypes[mySelectedPropertyTypeIndex]->GetName().GetString()
 		: "All";
 	
 	if (ImGui::Button(filterLabel))

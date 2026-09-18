@@ -13,7 +13,6 @@ namespace FileDialog {
 		tgo,
 		tgac,
 		tgmat,
-		tgm,
 		Count
 	};
 

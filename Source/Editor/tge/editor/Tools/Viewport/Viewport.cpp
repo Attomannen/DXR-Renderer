@@ -23,7 +23,6 @@
 #include <tge/editor/Scene/ActiveScene.h>
 #include <tge/editor/Document/Document.h>
 
-#include <tge/editor/p4/p4.h>
 
 #include "tge/Application.h"
 
@@ -146,7 +145,7 @@ void EditorViewport::DrawGrid()
 {
 	if (!Editor::GetEditor()->IsViewportGridVisible()) return;
 	myRenderTarget.SetAsActiveTarget(&myDepth);
-	myViewportGrid.DrawViewportGrid();
+	myViewportGrid.DrawViewportGrid(myCamera.GetTransform().GetForward());
 }
 
 void EditorViewport::SetColorAsTarget(bool useDepth)
@@ -217,6 +216,15 @@ void EditorViewport::DrawAndUpdateViewportWindow(float aDeltaTime, ViewportInter
 
 		myGizmos.DrawGizmos(myCamera, aViewportInterface, GetViewportPos(), GetViewportSize());
 
+		if (Editor::GetEditor()->IsCollisionVisible())
+		{
+			ImDrawList* drawList = ImGui::GetWindowDrawList();
+			drawList->PushClipRect(viewportPos, ImVec2(viewportPos.x + viewportSize.x, viewportPos.y + viewportSize.y), true);
+			myCollisionOverlay.Begin(drawList, myCamera, { viewportPos.x, viewportPos.y }, { viewportSize.x, viewportSize.y });
+			aViewportInterface.DrawCollisionOverlay(myCollisionOverlay);
+			drawList->PopClipRect();
+		}
+
 		/////////////////////////
 		// Only check viewport input if mouse is over
 		if (ImGui::IsItemHovered() && ImGuizmo::IsUsingAny() == false)
@@ -267,16 +275,6 @@ void EditorViewport::DrawAndUpdateViewportWindow(float aDeltaTime, ViewportInter
 				{
 					Vector2ui mapped_mouse = { (uint32_t)(mousePos.x), (uint32_t)(mousePos.y) };
 					IDPixelValues pixel = MouseOver(mapped_mouse, myIdTarget);
-
-					if (pixel.p4info != 0)
-					{
-						const char* path  = GetActiveScene()->GetObjectFilePath(pixel.id).GetString();
-						auto& info = P4::GetFileInfo(path);
-
-						ImGui::BeginTooltip();
-						ImGui::Text("%s\nopen for %s\nby: %s\nin changelist: %s\nworkspace:%s", path, P4::FileActionString(info.action).data(), info.user, info.changelist, info.client);
-						ImGui::EndTooltip();
-					}
 
 					if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
 					{

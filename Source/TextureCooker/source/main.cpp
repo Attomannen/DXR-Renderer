@@ -17,11 +17,11 @@
 //  <stem>.dds in linear R16G16B16A16_FLOAT (mipped, never BC-compressed).
 //
 //  Optional: reads an .fbx (ufbx) to name outputs after real material names and
-//  to emit a .tgo object-definition / .tgm import descriptor.
+//  to emit a .tgo object-definition.
 //
 //  Usage:
 //     TextureCooker --in <srcDir> --out <dstDir>
-//                   [--fbx <model.fbx>] [--tgo <out.tgo>] [--tgm <out.tgm>]
+//                   [--fbx <model.fbx>] [--tgo <out.tgo>]
 //                   [--game-root <dir>] [--manifest <cook.json>]
 //                   [--src-normals gl|dx] [--flip-green] [--cpu] [--jobs N]
 //                   [--packing unreal|tga] [--force] [--recursive] [--quiet]
@@ -143,6 +143,11 @@ static const SuffixRule kSuffixRules[] = {
 	{ "_albedo", Role::Color },      { "_diffuse", Role::Color },
 	{ "_color", Role::Color },       { "_col", Role::Color },
 	{ "_alb", Role::Color },         { "_diff", Role::Color },
+	// "_BC" is the base-colour suffix this tool writes itself in Unreal packing
+	// (_BC/_ORM/_N). It read back _ORM and _N but not _BC, so an artist's
+	// T_Prop_BC.png next to T_Prop_N/_ORM was dropped as "unclassified" and the
+	// prop came out with no albedo at all.
+	{ "_bc", Role::Color },
 	{ "_c", Role::Color },           { "_d", Role::Color },
 
 	{ "_normalgl", Role::Normal },   { "_normaldx", Role::Normal },
@@ -937,6 +942,9 @@ struct CookOptions
 	// imported bitangent converts this correctly after cooking.
 	bool srcNormalsGl = true;
 	bool force = false;
+	// The normal-map convention differs from the one the existing outputs were
+	// cooked with (see the previous cook_report.json) -- recook _N even if up to date.
+	bool normalsChanged = false;
 };
 
 // Engine's model PS builds its TBN with a negated bitangent, i.e. it expects
@@ -1067,7 +1075,12 @@ static CookResult CookOne(MaterialGroup& g, OutKind kind, const std::string& out
 		(kind == OutKind::M && !haveM) || (kind == OutKind::FX && !haveFx))
 		return r;
 
-	if (UpToDate(r.file, g.newestInput, opt.force)) { r.skipped = true; r.produced = true; return r; }
+	// A normal map cooked under a different green-channel convention than this run
+	// is stale even though no source file changed -- the up-to-date check only
+	// sees timestamps, so switching OpenGL <-> DirectX used to leave every
+	// already-cooked normal map exactly as it was.
+	const bool forceThis = opt.force || (kind == OutKind::N && opt.normalsChanged);
+	if (UpToDate(r.file, g.newestInput, forceThis)) { r.skipped = true; r.produced = true; return r; }
 	r.failed = true; // Expected output: any decode/pack/compress failure must be reported.
 
 	// ---- working size: largest source, or 4x4 for a purely constant material
@@ -1312,7 +1325,8 @@ static CookResult CookOne(MaterialGroup& g, OutKind kind, const std::string& out
 }
 
 // ------------------------------------------------------------------ fbx material names (ufbx)
-static std::vector<std::string> ReadFbxMaterials(const fs::path& fbx, std::string& err, std::vector<std::string>* meshMaterials)
+static std::vector<std::string> ReadFbxMaterials(const fs::path& fbx, std::string& err, std::vector<std::string>* meshMaterials,
+	std::map<std::string, std::vector<std::string>>* materialTextureStems = nullptr)
 {
 	std::vector<std::string> names;
 	ufbx_load_opts opts{};
@@ -1323,6 +1337,33 @@ static std::vector<std::string> ReadFbxMaterials(const fs::path& fbx, std::strin
 	{
 		const ufbx_material* m = scene->materials.data[i];
 		names.emplace_back(m->name.data ? std::string(m->name.data, m->name.length) : "");
+
+		// The texture files this material references, as bare stems ("T_Guitar_BC").
+		// The FBX records which maps belong to each material; that is a far
+		// better link than the material's *name* looking like a texture name,
+		// which fails for every model that keeps a default name such as
+		// "Material" while its textures are named after the asset.
+		if (materialTextureStems)
+		{
+			std::vector<std::string>& stems = (*materialTextureStems)[names.back()];
+			for (size_t t = 0; t < m->textures.count; ++t)
+			{
+				const ufbx_texture* texture = m->textures.data[t].texture;
+				if (!texture) continue;
+				// Exporters differ in which field they fill, and any of them may hold a
+				// full path with either slash style.
+				for (const ufbx_string* field : { &texture->relative_filename, &texture->filename, &texture->absolute_filename })
+				{
+					if (!field->data || field->length == 0) continue;
+					std::string stem(field->data, field->length);
+					if (const size_t slash = stem.find_last_of("\\/"); slash != std::string::npos) stem.erase(0, slash + 1);
+					if (const size_t dot = stem.find_last_of('.'); dot != std::string::npos) stem.erase(dot);
+					if (!stem.empty() && std::find(stems.begin(), stems.end(), stem) == stems.end())
+						stems.push_back(stem);
+					break;
+				}
+			}
+		}
 	}
 	if (meshMaterials)
 	{
@@ -1390,7 +1431,26 @@ static const MaterialGroup* MatchGroup(const std::vector<MaterialGroup>& groups,
 	return nullptr;
 }
 
-// ------------------------------------------------------------------ tgo / tgm
+// Match an fbx material to a cooked group through the texture files the FBX says
+// the material uses (see ReadFbxMaterials). Tried only after the name match
+// fails, so materials whose names already line up keep working unchanged.
+static const MaterialGroup* MatchGroupByTextures(const std::vector<MaterialGroup>& groups, const std::vector<std::string>& textureStems)
+{
+	for (const std::string& stem : textureStems)
+	{
+		// A texture named for a role ("T_Guitar_BC") reduces to its group key
+		// ("T_Guitar"); one with no role suffix is tried as a key on its own.
+		std::string key;
+		Role role;
+		Classify(fs::path(stem + ".png"), key, role);
+		const std::string lowerKey = ToLower(key);
+		for (const MaterialGroup& g : groups)
+			if (ToLower(g.key) == lowerKey) return &g;
+	}
+	return nullptr;
+}
+
+// ------------------------------------------------------------------ tgo
 static std::string RelBackslash(const fs::path& file, const fs::path& root)
 {
 	std::error_code ec;
@@ -1403,7 +1463,16 @@ static std::string RelBackslash(const fs::path& file, const fs::path& root)
 // ------------------------------------------------------------------ main
 struct Args
 {
-	fs::path in, out, fbx, tgo, tgm, gameRoot, manifest;
+	fs::path in, out, fbx, tgo, gameRoot, manifest;
+	// Where generated .tgmat files go. Empty = beside the cooked DDS (--out), the
+	// original single-folder layout. Set it to keep materials in a folder of their
+	// own, apart from the cooked textures.
+	fs::path tgmatDir;
+	// --preview-out <dir>: don't cook. Write a lit preview of one material's normal
+	// map (as the current settings would cook it) into <dir> and stop.
+	fs::path previewOut;
+	std::string previewName, previewKey;
+	int previewIndex = -1;
 	std::string tgoName;   // object-definition property name (default: tgo stem)
 	// FBX material name -> existing authored .tgmat path. Repeated CLI option.
 	// Paths are written relative to --game-root alongside generated materials.
@@ -1421,6 +1490,146 @@ struct Args
 	std::string only; // Optional comma-separated output kinds: c,n,m,fx.
 };
 
+// ------------------------------------------------------------------ normal-map preview
+// Lets the editor show what the normal-map settings do to one real material
+// before committing to a full cook. Decodes a source normal map, applies the same
+// green-channel handling the cook would, and lights the result from the upper
+// left. Cooked normals are always DirectX (green down), so a correct result reads
+// as raised bumps -- bricks and rivets standing proud, lit on their upper-left
+// edges. An inverted one reads as sunken.
+static bool SaveRgba8Preview(const fs::path& base, const std::vector<uint8_t>& rgba, size_t s)
+{
+	ScratchImage img;
+	if (FAILED(img.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM, s, s, 1, 1))) return false;
+	const Image* im = img.GetImage(0, 0, 0);
+	for (size_t y = 0; y < s; ++y)
+		memcpy(im->pixels + y * im->rowPitch, rgba.data() + y * s * 4, s * 4);
+	fs::path png = base; png += ".png";
+	fs::path dds = base; dds += ".dds";
+	const bool okPng = SUCCEEDED(SaveToWICFile(*im, WIC_FLAGS_NONE, GetWICCodec(WIC_CODEC_PNG), png.c_str()));
+	const bool okDds = SUCCEEDED(SaveToDDSFile(*im, DDS_FLAGS_NONE, dds.c_str()));
+	return okPng && okDds;
+}
+
+static int RunNormalPreview(const Args& a, std::vector<MaterialGroup>& groups, const Manifest& manifest)
+{
+	constexpr size_t kSize = 256;
+	fs::create_directories(a.previewOut);
+	const std::string name = a.previewName.empty() ? "normal_preview" : a.previewName;
+	auto writeResult = [&](const json& j) { std::ofstream(a.previewOut / (name + ".json")) << j.dump(2) << "\n"; };
+
+	std::vector<MaterialGroup*> candidates;
+	for (MaterialGroup& g : groups) if (g.maps.count(Role::Normal)) candidates.push_back(&g);
+	std::sort(candidates.begin(), candidates.end(),
+		[](const MaterialGroup* x, const MaterialGroup* y) { return ToLower(x->key) < ToLower(y->key); });
+	if (candidates.empty())
+	{
+		writeResult({ { "error", "No normal maps were found in the texture source folder." } });
+		return 0;
+	}
+
+	CookOptions opt;
+	opt.flipGreenToggle = a.flipGreen;
+	opt.srcNormalsGl = a.srcNormalsGl;
+
+	// Start at the requested index (or the named material) and take the first
+	// material with real surface detail -- a flat normal map previews as a blank
+	// grey square, which proves nothing.
+	size_t start = a.previewIndex >= 0 ? (size_t)a.previewIndex % candidates.size() : 0;
+	if (a.previewIndex < 0 && a.previewKey.empty())
+	{
+		// With nothing asked for, lead with a material whose correct look is
+		// obvious at a glance -- bricks and cobbles stand proud, they don't sink.
+		for (size_t i = 0; i < candidates.size(); ++i)
+		{
+			const std::string k = ToLower(candidates[i]->key);
+			if (k.find("brick") != std::string::npos || k.find("cobble") != std::string::npos
+				|| k.find("tile") != std::string::npos || k.find("stone") != std::string::npos
+				|| k.find("pavement") != std::string::npos) { start = i; break; }
+		}
+	}
+	if (!a.previewKey.empty())
+	{
+		const std::string wanted = ToLower(a.previewKey);
+		bool found = false;
+		for (size_t i = 0; i < candidates.size() && !found; ++i)
+			if (ToLower(candidates[i]->key) == wanted) { start = i; found = true; }
+		for (size_t i = 0; i < candidates.size() && !found; ++i)
+			if (ToLower(candidates[i]->key).find(wanted) != std::string::npos) { start = i; found = true; }
+	}
+
+	for (size_t step = 0; step < candidates.size(); ++step)
+	{
+		const size_t index = (start + step) % candidates.size();
+		MaterialGroup& g = *candidates[index];
+		Plane nrm = MakePlane(g, Role::Normal, kSize, kSize);
+		if (!nrm.ok) continue;
+
+		double sumX = 0, sumY = 0, sumXX = 0, sumYY = 0;
+		for (size_t y = 0; y < kSize; ++y)
+			for (size_t x = 0; x < kSize; ++x)
+			{
+				const double nx = nrm.at(x, y, 0) / 127.5 - 1.0, ny = nrm.at(x, y, 1) / 127.5 - 1.0;
+				sumX += nx; sumY += ny; sumXX += nx * nx; sumYY += ny * ny;
+			}
+		const double n = double(kSize * kSize);
+		const double detail = std::sqrt(std::max(0.0, sumXX / n - (sumX / n) * (sumX / n)) + std::max(0.0, sumYY / n - (sumY / n) * (sumY / n)));
+		// A single candidate is shown regardless; otherwise skip flat ones.
+		if (detail < 0.04 && step + 1 < candidates.size()) continue;
+
+		const MatOverride ov = manifest.loaded ? manifest.resolve(g.key) : MatOverride{};
+		const bool flipNow = ResolveFlipGreen(opt, ov);
+
+		std::vector<uint8_t> source(kSize * kSize * 4), current(kSize * kSize * 4), opposite(kSize * kSize * 4);
+		auto shade = [&](bool flip, std::vector<uint8_t>& out)
+		{
+			const float lx = -0.55f, ly = 0.55f, lz = 0.63f;   // upper left, toward the viewer (unit length)
+			for (size_t y = 0; y < kSize; ++y)
+				for (size_t x = 0; x < kSize; ++x)
+				{
+					uint8_t cy = nrm.at(x, y, 1);
+					if (flip) cy = (uint8_t)(255 - cy);
+					float nx = nrm.at(x, y, 0) / 127.5f - 1.f, ny = cy / 127.5f - 1.f;
+					const float len2 = nx * nx + ny * ny;
+					if (len2 > 1.f) { const float inv = 1.f / std::sqrt(len2); nx *= inv; ny *= inv; }
+					const float nz = std::sqrt(std::max(0.f, 1.f - nx * nx - ny * ny));
+					// DirectX convention: green points down the image, so "up" is -ny.
+					const float lit = std::clamp(nx * lx + (-ny) * ly + nz * lz, 0.f, 1.f);
+					const uint8_t v = (uint8_t)std::lround(255.f * (0.08f + 0.92f * lit));
+					uint8_t* o = &out[(y * kSize + x) * 4];
+					o[0] = o[1] = o[2] = v; o[3] = 255;
+				}
+		};
+		for (size_t y = 0; y < kSize; ++y)
+			for (size_t x = 0; x < kSize; ++x)
+			{
+				const float nx = nrm.at(x, y, 0) / 127.5f - 1.f, ny = nrm.at(x, y, 1) / 127.5f - 1.f;
+				const float nz = std::sqrt(std::max(0.f, 1.f - nx * nx - ny * ny));
+				uint8_t* o = &source[(y * kSize + x) * 4];
+				o[0] = nrm.at(x, y, 0); o[1] = nrm.at(x, y, 1); o[2] = (uint8_t)std::lround(127.5f + 127.5f * nz); o[3] = 255;
+			}
+		shade(flipNow, current);
+		shade(!flipNow, opposite);
+
+		const bool ok = SaveRgba8Preview(a.previewOut / (name + "_source"), source, kSize)
+			&& SaveRgba8Preview(a.previewOut / (name + "_current"), current, kSize)
+			&& SaveRgba8Preview(a.previewOut / (name + "_opposite"), opposite, kSize);
+		if (!ok) { writeResult({ { "error", "Could not write the preview images." } }); return 1; }
+
+		writeResult({
+			{ "key", g.key }, { "index", (int)index }, { "count", (int)candidates.size() },
+			{ "flipsGreen", flipNow }, { "detail", detail },
+			{ "source", (a.previewOut / (name + "_source")).string() },
+			{ "current", (a.previewOut / (name + "_current")).string() },
+			{ "opposite", (a.previewOut / (name + "_opposite")).string() },
+		});
+		gLog.info("  preview: " + g.key + " (" + std::to_string(index + 1) + "/" + std::to_string(candidates.size()) + ")");
+		return 0;
+	}
+	writeResult({ { "error", "Could not decode any normal map in the texture source folder." } });
+	return 1;
+}
+
 static bool ParseArgs(int argc, char** argv, Args& a)
 {
 	for (int i = 1; i < argc; ++i)
@@ -1431,7 +1640,6 @@ static bool ParseArgs(int argc, char** argv, Args& a)
 		else if (k == "--out") a.out = next();
 		else if (k == "--fbx") a.fbx = next();
 		else if (k == "--tgo") a.tgo = next();
-		else if (k == "--tgm") a.tgm = next();
 		else if (k == "--tgo-name") a.tgoName = next();
 		else if (k == "--material-remap")
 		{
@@ -1442,6 +1650,11 @@ static bool ParseArgs(int argc, char** argv, Args& a)
 		}
 		else if (k == "--tgo-pad") a.tgoPadRows = std::max(0, atoi(next().c_str()));
 		else if (k == "--game-root") a.gameRoot = next();
+		else if (k == "--tgmat-dir") a.tgmatDir = next();
+		else if (k == "--preview-out") a.previewOut = next();
+		else if (k == "--preview-name") a.previewName = next();
+		else if (k == "--preview-key") a.previewKey = next();
+		else if (k == "--preview-index") a.previewIndex = atoi(next().c_str());
 		else if (k == "--manifest") a.manifest = next();
 		else if (k == "--src-normals") a.srcNormalsGl = (ToLower(next()) != "dx");
 		else if (k == "--flip-green") a.flipGreen = true;
@@ -1498,8 +1711,9 @@ int main(int argc, char** argv)
 	{
 		std::cout <<
 			"TextureCooker  --in <srcDir> --out <dstDir>\n"
-			"              [--fbx <model.fbx>] [--tgo <out.tgo>] [--tgm <out.tgm>] [--material-remap <fbx=tgmat>]\n"
-			"              [--game-root <dir>] [--manifest <cook.json>]\n"
+			"              [--fbx <model.fbx>] [--tgo <out.tgo>] [--material-remap <fbx=tgmat>]\n"
+			"              [--game-root <dir>] [--manifest <cook.json>] [--tgmat-dir <dir>]\n"
+			"              [--preview-out <dir> [--preview-name <n>] [--preview-index <i>] [--preview-key <material>]]\n"
 			"              [--src-normals gl|dx] [--flip-green] [--cpu] [--jobs N]\n"
 			"              [--only c,n,m,fx] [--packing unreal|tga] [--force] [--recursive] [--quiet]\n"
 			"              [--specular auto|orm|specgloss] [--force-materials]\n"
@@ -1563,6 +1777,7 @@ int main(int argc, char** argv)
 		return 0;
 	}
 	if (a.gameRoot.empty()) a.gameRoot = a.out;
+	if (a.tgmatDir.empty()) a.tgmatDir = a.out;
 
 	Manifest manifest;
 	LoadManifest(a.manifest.empty() ? (a.in / "cook.json") : a.manifest, manifest);
@@ -1717,15 +1932,27 @@ int main(int argc, char** argv)
 		for (auto& u : unclassified) gLog.info("    - " + u.filename().string());
 	}
 
+	// Preview mode: light one material's normal map as the current settings would
+	// cook it, write the images, and stop before any cooking happens.
+	if (!a.previewOut.empty())
+	{
+		const int rc = RunNormalPreview(a, groups, manifest);
+		if (coInit) CoUninitialize();
+		return rc;
+	}
+
 	// ---- fbx material names (optional) -> per-key output name
 	std::vector<std::string> fbxMats;
 	std::vector<std::string> meshMats;
 	std::map<std::string, std::string> keyToOutName;   // lower(key) -> output base name
 	std::map<std::string, std::string> matToBase;      // exact fbx material name -> cooked DDS base name
+	std::map<std::string, std::vector<std::string>> fbxMatTextures;   // fbx material -> texture stems it references
+	std::set<const MaterialGroup*> matchedGroups;      // groups some fbx material already claimed
+	std::vector<std::string> unmatchedMats;            // fbx materials no texture group has been found for
 	if (!a.fbx.empty())
 	{
 		std::string ferr;
-		fbxMats = ReadFbxMaterials(a.fbx, ferr, &meshMats);
+		fbxMats = ReadFbxMaterials(a.fbx, ferr, &meshMats, &fbxMatTextures);
 		if (fbxMats.empty()) gLog.warn("fbx: " + (ferr.empty() ? "no materials found" : ferr));
 		else
 		{
@@ -1746,19 +1973,54 @@ int main(int argc, char** argv)
 						{
 							if (isClean) keyToOutName[ToLower(grp.key)] = mn;
 							matToBase[mn] = grp.key;
+							matchedGroups.insert(&grp);
 							hit = true; break;
 						}
 					if (hit) continue;
 					gLog.warn("alias '" + mn + "' -> '" + ai->second + "' but no such texture group");
 				}
 				const MaterialGroup* g = MatchGroup(groups, mn);
+				bool matchedByTextures = false;
+				if (!g)
+				{
+					// Name didn't line up -- fall back to the textures the FBX itself
+					// attaches to this material.
+					if (auto ts = fbxMatTextures.find(mn); ts != fbxMatTextures.end())
+					{
+						g = MatchGroupByTextures(groups, ts->second);
+						matchedByTextures = g != nullptr;
+						if (g) gLog.info("  fbx material '" + mn + "' matched by its texture references -> '" + g->key + "'");
+					}
+				}
 				if (g)
 				{
-					if (isClean) keyToOutName[ToLower(g->key)] = mn;   // name the DDS after the real material
+					// Name the DDS after the real material only when the *name* matched; a
+					// texture-matched group keeps the artist's own texture names.
+					if (isClean && !matchedByTextures) keyToOutName[ToLower(g->key)] = mn;
 					matToBase[mn] = g->key;
+					matchedGroups.insert(g);
 				}
-				else gLog.warn("fbx material with no source textures: '" + mn + "'");
+				else unmatchedMats.push_back(mn);
 			}
+
+			// One material and one texture set left over is an unambiguous pair even
+			// when nothing links them by name or by texture reference (an FBX with no
+			// embedded texture records and a default material name).
+			if (unmatchedMats.size() == 1)
+			{
+				const MaterialGroup* onlyFree = nullptr;
+				int freeCount = 0;
+				for (const auto& grp : groups)
+					if (!matchedGroups.count(&grp)) { onlyFree = &grp; ++freeCount; }
+				if (freeCount == 1)
+				{
+					matToBase[unmatchedMats[0]] = onlyFree->key;
+					gLog.info("  fbx material '" + unmatchedMats[0] + "' paired with the only unused texture set '" + onlyFree->key + "'");
+					unmatchedMats.clear();
+				}
+			}
+			for (const std::string& mn : unmatchedMats)
+				gLog.warn("fbx material with no source textures: '" + mn + "'");
 		}
 	}
 
@@ -1767,6 +2029,29 @@ int main(int argc, char** argv)
 	opt.flipGreenToggle = a.flipGreen;
 	opt.srcNormalsGl = a.srcNormalsGl;
 	opt.force = a.force;
+	// Did the last cook into this folder use a different normal-map convention?
+	// A report from before this option was recorded counts as "unknown", so
+	// those normals are recooked once and stamped from then on.
+	{
+		std::error_code rec;
+		const fs::path previousReport = a.out / "cook_report.json";
+		if (fs::exists(previousReport, rec))
+		{
+			bool same = false;
+			try
+			{
+				std::ifstream in(previousReport);
+				json prev; in >> prev;
+				if (prev.contains("options") && prev["options"].is_object())
+					same = prev["options"].value("srcNormalsGl", !a.srcNormalsGl) == a.srcNormalsGl
+						&& prev["options"].value("flipGreen", !a.flipGreen) == a.flipGreen;
+			}
+			catch (...) { same = false; }
+			opt.normalsChanged = !same;
+			if (opt.normalsChanged)
+				gLog.info("  normal-map convention differs from the last cook here -> recooking _N outputs");
+		}
+	}
 	fs::create_directories(a.out);
 
 	std::atomic<int> produced{ 0 }, skipped{ 0 }, failed{ 0 };
@@ -1774,6 +2059,7 @@ int main(int argc, char** argv)
 	json report;
 	report["source_dir"] = a.in.string();
 	report["out_dir"] = a.out.string();
+	report["options"] = { { "srcNormalsGl", a.srcNormalsGl }, { "flipGreen", a.flipGreen } };
 	report["materials"] = json::array();
 	report["hdr"] = json::array();
 	const auto t0 = std::chrono::steady_clock::now();
@@ -1914,43 +2200,6 @@ int main(int argc, char** argv)
 		report["materials"] = mats;
 	}
 
-	// A TGM is an import request, not merely a passive settings file.  Earlier
-	// versions wrote it successfully but only emitted .tgmat assets when the
-	// caller also supplied --tgo, making the normal TGM-only editor workflow
-	// appear to have done nothing.  Derive the prefab beside the TGM so its
-	// cooked maps, material assets, and prefab always arrive together.
-	if (!a.tgm.empty() && a.tgo.empty() && !a.fbx.empty())
-	{
-		a.tgo = a.tgm;
-		a.tgo.replace_extension(".tgo");
-		gLog.info("  tgm import: derived prefab output " + a.tgo.string());
-	}
-
-	// ---- optional .tgm import settings.  Keep this schema in lockstep with
-	// direct FBX placement in GameEditor: it is the durable source of truth for
-	// later reimport instead of an ephemeral command line invocation.
-	if (!a.tgm.empty() && !a.fbx.empty())
-	{
-		json j = {
-			{ "version", 1 },
-			{ "Fbx", RelBackslash(a.fbx, a.gameRoot) },
-			{ "scale", 1.0f },
-			{ "axisConversion", "EngineDefault" },
-			{ "normalConvention", a.srcNormalsGl ? "OpenGL" : "DirectX" },
-			{ "flipGreen", a.flipGreen },
-			{ "generatedPrefab", a.tgo.empty() ? "" : RelBackslash(a.tgo, a.gameRoot) },
-			{ "materialRemaps", json::object() },
-			{ "reimport", {
-				{ "sourceFolder", RelBackslash(a.in, a.gameRoot) },
-				{ "outputFolder", RelBackslash(a.out, a.gameRoot) },
-				{ "recursive", a.recursive }
-			} }
-		};
-		fs::create_directories(a.tgm.parent_path());
-		std::ofstream(a.tgm) << j.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
-		gLog.info("  wrote " + a.tgm.string());
-	}
-
 	// ---- optional .tgo  (object-definition with Model property)
 	std::set<std::string> keepTgmatNames;   // filled below; used by the cleanup pass further down
 	bool ownsTgmats = false;
@@ -2027,7 +2276,7 @@ int main(int argc, char** argv)
 			// A TGO now points to material assets, never directly to individual
 			// texture maps. The material is emitted beside the cooked textures and
 			// is independently editable in GameEditor afterwards.
-			const fs::path materialFile = a.out / (base + ".tgmat");
+			const fs::path materialFile = a.tgmatDir / (base + ".tgmat");
 			json material = {
 				{ "masterMaterial", "PBR" }, { "surfaceType", cutout ? "Masked" : "Opaque" },
 				{ "alphaCutoff", 0.33f }, { "baseColorHasAlpha", cutout },
@@ -2130,7 +2379,7 @@ int main(int argc, char** argv)
 			{ "emissive", { sufE, "_E.dds", "_FX.dds" } },
 		};
 		int repointed = 0;
-		for (fs::directory_iterator it(a.out, ec), end; !ec && it != end; it.increment(ec))
+		for (fs::directory_iterator it(a.tgmatDir, ec), end; !ec && it != end; it.increment(ec))
 		{
 			if (!it->is_regular_file() || ToLower(it->path().extension().string()) != ".tgmat") continue;
 			json j;
@@ -2224,7 +2473,10 @@ int main(int argc, char** argv)
 					if (!ec) { ++removedDds; gLog.info("  removed (stale) " + p.filename().string()); }
 				}
 			}
-			else if (ext == ".tgmat" && ownsTgmats && !keepTgmatNames.count(name))
+			// Only when materials share the cooked-texture folder. A dedicated
+			// materials folder is where artists keep hand-authored .tgmat files
+			// too, and "not one this run generated" doesn't mean "stale" there.
+			else if (ext == ".tgmat" && ownsTgmats && a.tgmatDir == a.out && !keepTgmatNames.count(name))
 			{
 				fs::remove(p, ec);
 				if (!ec) { ++removedTgmat; gLog.info("  removed (stale) " + p.filename().string()); }

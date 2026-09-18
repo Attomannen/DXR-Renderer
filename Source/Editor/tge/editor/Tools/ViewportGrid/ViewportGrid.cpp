@@ -3,6 +3,8 @@
 #include <tge/Application.h>
 #include <tge/editor/Editor.h>
 
+#include <algorithm>
+#include <cmath>
 #include <vector>
 
 using namespace Tga;
@@ -74,11 +76,26 @@ void ViewportGrid::SetGridCellIncrement(const int anIncrement)
 	MakeGrid();
 }
 
-void ViewportGrid::DrawViewportGrid() 
+void ViewportGrid::DrawViewportGrid(const Vector3f& aCameraForward)
 {
 	if (myNumLines == 0)
 	{
 		return;
+	}
+
+	// The X/Y/Z reference lines (indices 0-2) run through the origin at a
+	// fixed length regardless of view direction. Looking nearly along one
+	// of them puts the camera almost parallel to that line, so perspective
+	// stretches its projection across most of the screen instead of it
+	// reading as a short axis marker -- fade that axis out as the view
+	// direction approaches it, back to full strength once it doesn't.
+	static const Vector3f kAxisDirs[3] = { {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {0.f, 0.f, 1.f} };
+	constexpr float kFadeStartDot = 0.85f;   // |dot| beyond which the fade begins
+	for (int i = 0; i < 3; ++i)
+	{
+		float absDot = std::abs(aCameraForward.Dot(kAxisDirs[i]));
+		float fade = 1.f - std::clamp((absDot - kFadeStartDot) / (1.f - kFadeStartDot), 0.f, 1.f);
+		myColors[i].a = fade;
 	}
 
 	Editor::GetEditor()->GetEditorGraphics().DrawLines(myColors.data(), myFrom.data(), myTo.data(), myNumLines);

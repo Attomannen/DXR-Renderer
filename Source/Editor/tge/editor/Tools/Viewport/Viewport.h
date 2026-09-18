@@ -2,16 +2,12 @@
 #include <tge/math/Vector.h>
 #include <tge/editor/Gizmos/Gizmos.h>
 #include <tge/editor/Tools/ViewportGrid/ViewportGrid.h>
+#include <tge/editor/Tools/Viewport/CollisionOverlay.h>
 #include <tge/graphics/DepthBuffer.h>
 #include <tge/graphics/RenderTarget.h>
 #include <tge/graphics/Camera.h>
 
-namespace P4
-{
-	struct FileInfo;
-}
-
-namespace Tga 
+namespace Tga
 {
 	class ModelShader;
 	class Scene;
@@ -28,7 +24,6 @@ namespace Tga
 		void Resize(const Vector2i& aSize = { 0,0 });
 		bool GetViewportNeedsResize() const;
 		void SetNeedsResize(bool);
-		//void SetPerforceInfo(const P4::FileInfo& someInfo);
 
 		const RenderTarget& GetIdRenderTarget() const { return myIdTarget; }
 		// Exposed so a pluggable EditorGraphics backend (DefaultEditorGraphics,
@@ -66,6 +61,7 @@ namespace Tga
 
 	private:
 		ViewportGrid myViewportGrid;
+		CollisionOverlay myCollisionOverlay;
 
 		RenderTarget myRenderTarget;
 		RenderTarget myIdTarget;

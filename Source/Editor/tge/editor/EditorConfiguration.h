@@ -2,7 +2,7 @@
 
 struct EditorConfiguration
 {
-	bool enableVisualScripts = false;
+	bool enableVisualScripts = true;
 	const char* debugExeName = "GameMain_Debug.exe";
 	const char* releaseExeName = "GameMain_Release.exe";
 	const wchar_t* debugExePath = L"..\\Bin\\GameMain_Debug.exe";

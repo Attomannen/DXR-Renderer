@@ -39,11 +39,6 @@ namespace FileDialog
 				filters[0] = { L"TGE Material file", L"*.tgmat" };
 				break;
 			}
-			case FileType::tgm:
-			{
-				filters[0] = { L"TGE FBX Import Settings", L"*.tgm" };
-				break;
-			}
 			default:
 			{
 				filters[0] = { L"Any file", L"*.*" };

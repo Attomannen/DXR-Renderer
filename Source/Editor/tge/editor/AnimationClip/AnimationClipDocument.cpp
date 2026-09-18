@@ -11,7 +11,6 @@
 #include <IconFontHeaders/IconsLucide.h>
 
 #include <tge/editor/Editor.h>
-#include <tge/editor/p4/p4.h>
 
 #include <tge/Animation/Animation.h>
 #include <tge/Animation/Skeleton.h>
@@ -273,11 +272,6 @@ void AnimationClipDocument::OnAction(CommandManager::Action action)
 {
 	if (action == CommandManager::Action::Do)
 	{
-		if (myUndoStackSize == 0)
-		{
-			P4::CheckoutFile(myPath.GetString());
-		}
-
 		// If doing something when the undo stack is lower than when we saved, it means we can't get back to the saved state
 		if (myUndoStackSize < mySaveUndoStackSize)
 			mySaveUndoStackSize = -1;

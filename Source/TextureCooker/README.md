@@ -83,7 +83,7 @@ device when available; falls back to the CPU codec (`--cpu` forces it).
 
 ```
 TextureCooker --in <srcDir> --out <dstDir>
-              [--fbx <model.fbx>] [--tgo <out.tgo>] [--tgm <out.tgm>]
+              [--fbx <model.fbx>] [--tgo <out.tgo>] [--tgmat-dir <dir>]
 		      [--material-remap <fbx-material=existing.tgmat>]
               [--game-root <dir>] [--manifest <cook.json>]
               [--src-normals gl|dx] [--flip-green] [--cpu] [--jobs N]
@@ -91,25 +91,36 @@ TextureCooker --in <srcDir> --out <dstDir>
 ```
 
 - **`--in`**  directory of source maps. Files are grouped by material: the name
-  minus a recognised suffix (`_BaseColor`/`_Albedo`/`_c`, `_Roughness`, `_Metalness`,
+  minus a recognised suffix (`_BaseColor`/`_Albedo`/`_BC`/`_c`, `_Roughness`, `_Metalness`,
   `_AO`/`_Occlusion`, `_Normal`/`_n`, `_Emissive`, `_Height`/`_Displacement`,
   `_Opacity`/`_alpha`). A bare `_m` / `_fx` input is treated as already packed.
 - **`--out`**  where the `.dds` are written (put them next to the `.fbx` for
   auto-resolution). Also writes `cook_report.json`, including an `hdr` array
   for standalone panorama outputs.
 - **`--fbx`**  read material names with ufbx and name outputs after the real FBX
-  material (so name-based auto-resolution matches). Reports materials with no
-  source textures.
-- **`--tgm`**  write a persistent FBX import descriptor. It records the source
-  model, scale, axis and normal convention, material-remap table, generated
-  prefab, and the source/output folders used for reimport. The GameEditor also
-  creates this same asset automatically the first time an FBX is dropped into a
-  scene, and never overwrites an existing descriptor.
+  material (so name-based auto-resolution matches). A material whose *name*
+  matches no texture set is then linked through the texture files the FBX itself
+  attaches to it, and finally, if exactly one material and one texture set are
+  left over, the two are paired (e.g. Blender's default `Material` with
+  `T_Prop_*` maps). Reports materials that still end up with no source textures.
 - **`--tgo`**  write an object-definition with the `Model` property + `materials`
   array (one `.tgmat` reference per FBX material, capped at engine
   `MAX_MESHES_PER_MODEL`, now 256). Name-based auto-resolution covers anything past
   the cap.
-- **`--game-root`**  base for the relative paths written into `.tgo` / `.tgm`
+- **`--tgmat-dir`**  where the generated `.tgmat` files go (default: `--out`, beside
+  the cooked textures). The editor uses one folder per model: `Textures/Source`
+  (input), `Textures` (`--out`, cooked DDS) and `Materials` (`--tgmat-dir`).
+  Stale-file cleanup never touches a separate materials folder, since that is
+  where hand-authored materials live too.
+- **`--preview-out <dir>`**  do not cook: write a lit preview of one material's
+  normal map (source, as cooked with the current settings, and with green
+  flipped) into `<dir>` and stop. `--preview-name`, `--preview-index` and
+  `--preview-key` choose the file name prefix and which material. The editor's
+  Convert dialog shows these so a wrong normal convention is visible before a
+  long cook. Correct normals look raised: bricks stand proud, lit upper-left.
+  Changing `--src-normals` / `--flip-green` recooks the normal maps even when
+  they are otherwise up to date.
+- **`--game-root`**  base for the relative paths written into `.tgo` and `.tgmat`
   (defaults to `--out`).
 - **`--material-remap`**  may be repeated to retain a specific authored `.tgmat`
   in a generated TGO slot, for example `--material-remap "Glass=Materials/Glass.tgmat"`.
@@ -127,7 +138,6 @@ TextureCooker --in <srcDir> --out <dstDir>
 TextureCooker --in  Source/Game/data/sponza/textures ^
               --out Source/Game/data/sponza ^
               --fbx Source/Game/data/sponza/Sponza.fbx ^
-              --tgm Source/Game/data/sponza/Sponza.tgm ^
               --tgo Source/Game/data/sponza/Sponza.tgo ^
               --game-root Source/Game/data
 ```

@@ -31,6 +31,7 @@
 #include <tge/editor/Editor.h>
 
 #include <tge/editor/Tools/Viewport/Viewport.h>
+#include <tge/editor/Tools/Viewport/CollisionOverlay.h>
 #include <tge/editor/Tools/ProjectRunControls/ProjectRunControls.h>
 #include <tge/editor/FileDialog/FileDialog.h>
 #include <tge/editor/imgui_widgets/imgui_widgets.h>
@@ -38,29 +39,10 @@
 
 #include <IconFontHeaders/IconsLucide.h>
 
-#include <tge/editor/p4/p4.h>
-
 #include "tge/Application.h"
 
 
 using namespace Tga;
-
-void Tga::SceneP4Handler(SceneFileChangeType aChangeType, const char* aPath)
-{
-	switch (aChangeType)
-	{
-	case SceneFileChangeType::Add:
-		P4::MarkFileForAdd(aPath);
-		break;
-	case SceneFileChangeType::Modify:
-		P4::CheckoutFile(aPath);
-		break;
-	case SceneFileChangeType::Delete:
-		P4::MarkFileForDelete(aPath);
-		break;
-	}
-}
-
 
 
 
@@ -79,6 +61,14 @@ void SceneDocument::Init(std::string_view path)
 	myViewport.GetGrid().SetGridLineExtreme(2000.0f);
 
 	myScene = Editor::GetEditor()->GetEditorSceneManager().Get(path);
+	// EditorSceneManager::Get() returns null when the .tgs doesn't exist on
+	// disk (deleted/moved externally after the Asset Browser listed it, or a
+	// stale path from elsewhere) -- myScene->GetName() a few lines down would
+	// otherwise be a null deref. Match ObjectDefinitionDocument::Init()'s own
+	// convention (throw, let the caller's try/catch -- see AssetBrowser's
+	// .tgs double-click handler -- turn it into a status message).
+	if (!myScene)
+		throw std::runtime_error("Could not load scene: " + std::string(path));
 	myGraphics = Editor::GetEditor()->GetEditorGraphics().CreateSceneGraphicsInterface();
 
 	char buffer[512];
@@ -119,7 +109,7 @@ void SceneDocument::Init(std::string_view path)
 
 void SceneDocument::Save()
 {
-	SaveScene(*myScene, SceneP4Handler);
+	SaveScene(*myScene);
 	mySaveUndoStackSize = myUndoStackSize;
 }
 
@@ -310,71 +300,6 @@ void SceneDocument::Update(float aTimeDelta, InputManager& inputManager)
 	mySceneObjectList.Draw();
 	ImGui::End();
 
-#ifdef NOT_USED_FOR_HANDELING_P4_LOGIN
-	if (authRequest) {
-		char password[128]{};
-		bool shouldSubmit = false;
-		static bool focus_set = false;
-
-		ImGui::OpenPopup("##p4password");
-
-		ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.5f, 0.0f, 0.5f, 1.0f)); // Purple color
-		ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.5f); // Thicker border
-		if (ImGui::BeginPopupModal("##p4password", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar))
-		{
-			ImGui::Text("Enter perforce password for% s", P4::MyUser(), NULL, ImGuiWindowFlags_AlwaysAutoResize);
-			if (!focus_set)
-			{
-				ImGui::SetKeyboardFocusHere();
-				focus_set = false;
-			}
-			ImGui::InputText("##password_input", password, sizeof(password), ImGuiInputTextFlags_Password | ImGuiInputTextFlags_AutoSelectAll);
-
-			// Add spacing for better layout
-			ImGui::Spacing();
-
-			if (ImGui::IsKeyPressed(ImGuiKey_Enter))
-			{
-				shouldSubmit = true;
-			}
-			if (ImGui::Button("Submit"))
-			{
-				shouldSubmit = true;
-			}
-
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel"))
-			{
-				focus_set = false;
-				ImGui::CloseCurrentPopup();
-			}
-
-			if (shouldSubmit)
-			{
-				focus_set = false;
-				ImGui::CloseCurrentPopup();
-
-				/*
-				todo: this keeps blocking when login fails
-				authRequest = false;
-				if (P4::Login(password))
-				{
-					std::filesystem::path p = myScene->GetName();
-					P4::StartPollingLevelInfo(p.replace_extension(".leveldata").string().c_str(), 2, []() {
-						authRequest = true;
-					});
-				}
-				else
-				{
-					// show error!
-				}*/
-			}
-			ImGui::EndPopup();
-		}
-		ImGui::PopStyleColor();
-		ImGui::PopStyleVar();
-	}
-#endif
 	//ImGui::SetNextWindowClass(&myDocumentWindowClass);
 	//ImGui::Begin(myPanelWindowNames[(size_t)Panels::NavmeshCreationTool].c_str());
 	//myNavmeshCreationTool.DrawUI();
@@ -527,18 +452,12 @@ void SceneDocument::OnAction(CommandManager::Action action)
 	static std::vector<uint32_t> objects;
 
 	// keep track of which objects have been modified and if the scene has been modified
-	// first time an object is modified, check it out in p4
-	auto updateCountsAndP4 = [&](const AbstractCommand* command, int change)
+	auto updateModificationCounts = [&](const AbstractCommand* command, int change)
 		{
 			const SceneCommandBase* commandBase = dynamic_cast<const SceneCommandBase*>(command);
 
 			if (commandBase == nullptr)
 			{
-				if (mySceneModificationsCount == 0)
-				{
-					P4::CheckoutFile(myPath);
-				}
-
 				mySceneModificationsCount += change;
 			}
 			else
@@ -549,23 +468,12 @@ void SceneDocument::OnAction(CommandManager::Action action)
 
 				if (hasSceneChanged)
 				{
-					if (mySceneModificationsCount == 0)
-					{
-						P4::CheckoutFile(myPath);
-					}
-
 					mySceneModificationsCount += change;
 				}
 
 				for (uint32_t object : objects)
 				{
 					int& count = myObjectModificationsCounts[object];
-
-					if (count == 0)
-					{
-						P4::CheckoutFile(myScene->GetObjectFilePath(object).GetString());
-					}
-
 					count += change;
 				}
 			}
@@ -579,17 +487,17 @@ void SceneDocument::OnAction(CommandManager::Action action)
 
 		myUndoStackSize++;
 
-		updateCountsAndP4(CommandManager::GetTopOfUndoStack(), 1);
+		updateModificationCounts(CommandManager::GetTopOfUndoStack(), 1);
 	}
 	if (action == CommandManager::Action::PostRedo)
 	{
 		myUndoStackSize++;
 
-		updateCountsAndP4(CommandManager::GetTopOfUndoStack(), 1);
+		updateModificationCounts(CommandManager::GetTopOfUndoStack(), 1);
 	}
 	if (action == CommandManager::Action::PreUndo)
 	{
-		updateCountsAndP4(CommandManager::GetTopOfUndoStack(), -1);
+		updateModificationCounts(CommandManager::GetTopOfUndoStack(), -1);
 	}
 
 	if (action == CommandManager::Action::PostUndo)
@@ -704,30 +612,7 @@ void SceneDocument::HandleDrop()
 			{
 			const std::string modelPath = static_cast<const char*>(payload->Data);
 			fs::path prefabPath = fs::path(modelPath).replace_extension(".tgo");
-			fs::path importPath = fs::path(modelPath).replace_extension(".tgm");
 
-			// A generated prefab must have a durable companion import asset.  The
-			// descriptor deliberately belongs next to the source model, not the
-			// editor layout: reimport tools can now change scale/conversion/remaps
-			// without overwriting the authored prefab or guessing its origin.
-			const fs::path absoluteImportPath = fs::path(Settings::GameAssetRoot()) / importPath;
-			if (!fs::exists(absoluteImportPath))
-			{
-				nlohmann::json importSettings = {
-					{ "version", 1 },
-					{ "Fbx", modelPath },
-					{ "scale", 1.0f },
-					{ "axisConversion", "EngineDefault" },
-					{ "normalConvention", "OpenGL" },
-					{ "generatedPrefab", prefabPath.generic_string() },
-					{ "materialRemaps", nlohmann::json::object() },
-					{ "reimport", { { "lastResult", "Generated by FBX placement" } } }
-				};
-				fs::create_directories(absoluteImportPath.parent_path());
-				std::ofstream output(absoluteImportPath);
-				if (output.is_open())
-					output << importSettings.dump(2) << "\n";
-			}
 			auto& definitions = Editor::GetEditor()->GetSceneObjectDefinitionManager();
 			SceneObjectDefinition* definition = definitions.CreateOrGet(prefabPath);
 			if (definition && definition->GetProperties().empty())
@@ -743,6 +628,27 @@ void SceneDocument::HandleDrop()
 				modelProperty.value = Property::Create<CopyOnWriteWrapper<SceneModel>>(model);
 				definition->EditProperties().push_back(std::move(modelProperty));
 				definition->Save();
+			}
+			// The definition above is only the bare Model property. If the prefab
+			// has no material assets yet (a first drop, or an older bare prefab
+			// like Bistro.tgo), run the real conversion so its .tgmat files and
+			// material list get generated rather than left for the user to
+			// author by hand. It runs in the background; the instance is placed
+			// right away and the prefab is reloaded when the cook finishes.
+			if (definition)
+			{
+				bool hasMaterials = false;
+				for (const ScenePropertyDefinition& property : definition->GetProperties())
+				{
+					if (property.type != GetPropertyType<CopyOnWriteWrapper<SceneModel>>())
+						continue;
+					const SceneModel& sceneModel = property.value.Get<CopyOnWriteWrapper<SceneModel>>()->Get();
+					for (const StringId& material : sceneModel.materials)
+						if (!material.IsEmpty()) { hasMaterials = true; break; }
+				}
+				AssetBrowser& assetBrowser = Editor::GetEditor()->GetAssetBrowser();
+				if (!hasMaterials && !assetBrowser.IsConverting())
+					assetBrowser.ConvertFbxToTgo(fs::absolute(fs::path(Settings::GameAssetRoot()) / modelPath));
 			}
 			placePrefab(prefabPath.string(), fs::path(modelPath).stem().string());
 			}
@@ -841,6 +747,18 @@ void SceneDocument::BeginDragSelection(Vector2f mousePos)
 		}
 	}
 }
+void SceneDocument::DrawCollisionOverlay(CollisionOverlay& overlay)
+{
+	SceneObjectDefinitionManager& manager = Editor::GetEditor()->GetSceneObjectDefinitionManager();
+	std::vector<ScenePropertyDefinition> properties;
+	for (auto& p : myScene->GetSceneObjects())
+	{
+		properties.clear();
+		p.second->CalculateCombinedPropertySet(manager, properties);
+		overlay.DrawObject(properties, p.second->GetTransform());
+	}
+}
+
 void SceneDocument::EndDragSelection(Vector2f mousePos, bool isShiftDown)
 {
 	Vector2i vpos = myViewport.GetViewportPos();
@@ -912,8 +830,6 @@ void SceneDocument::BeginTransformation()
 
 	for (const uint32_t& objectid : selection)
 	{
-		P4::CheckoutFile(myScene->GetObjectFilePath(objectid).GetString());
-
 		SceneObject& object = *myScene->GetSceneObject(objectid);
 
 		myTransformationInitialTransforms.push_back(object.GetTransform());
@@ -951,6 +867,11 @@ void SceneDocument::EndTransformation()
 Vector3f SceneDocument::CalculateSelectionPosition()
 {
 	const std::span<const uint32_t>& selection = SceneSelection::GetActiveSceneSelection()->GetSelection();
+	// selection.back() on an empty span is undefined behaviour. Callers are
+	// expected to check HasTransformableSelection() first (ViewportInterface's
+	// own contract), but a defensive check here is cheap insurance against
+	// whichever call site doesn't.
+	if (selection.empty()) return {};
 
 	return GetActiveScene()->GetSceneObject(selection.back())->GetPosition();
 }
@@ -958,6 +879,7 @@ Vector3f SceneDocument::CalculateSelectionPosition()
 Matrix4x4f SceneDocument::CalculateSelectionOrientation()
 {
 	const std::span<const uint32_t>& selection = SceneSelection::GetActiveSceneSelection()->GetSelection();
+	if (selection.empty()) return Matrix4x4f::CreateIdentityMatrix();
 
 	return GetActiveScene()->GetSceneObject(selection.back())->GetTransform();
 }

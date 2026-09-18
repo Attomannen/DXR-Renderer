@@ -18,10 +18,11 @@
 #include <tge/editor/ObjectDefinition/ObjectDefinitionDocument.h>
 #include <tge/editor/Scene/SceneDocument.h>
 #include <tge/editor/Material/MaterialDocument.h>
-#include <tge/editor/Import/ImportSettingsDocument.h>
+#include <tge/editor/Import/FbxConvert.h>
+#include <tge/editor/Tools/AssetBrowser/AssetFileCommands.h>
+#include <tge/editor/CommandManager/CommandManager.h>
 
 #include <IconFontHeaders/IconsLucide.h>
-#include <tge/editor/p4/p4.h>
 
 #define HIDE_LEVELDATA_DIRECTORIES 
 
@@ -43,6 +44,14 @@ namespace Tga
 
 		std::unordered_map<fs::path, DirectoryCache> activeCache;
 		std::unordered_map<fs::path, DirectoryCache> pendingCache;
+
+		// Main-thread-only copy of activeCache, taken once per Draw() under
+		// a brief lock (see Draw()'s opening lines) so the rest of the frame
+		// -- ImGui widgets, thumbnail loads, document opens on double-click,
+		// all of which can take far longer than a map copy -- reads this
+		// instead of holding isAccessingCache for the whole draw and
+		// starving the background scan thread's next swap.
+		std::unordered_map<fs::path, DirectoryCache> drawSnapshot;
 
 		std::mutex isAccessingCache;
 		std::atomic<bool> shutDownUpdate;
@@ -77,6 +86,14 @@ void UpdateCacheThread(FileHierarchyCache* cache)
 				{
 					if (item.is_directory())
 					{
+						// DeleteAssetCommand's undo trash, one folder at the asset
+						// root mirroring each deleted file's own relative path
+						// underneath it (see AssetFileCommands.h) -- not a real
+						// asset location, never shown.
+						if (item.path().filename() == kAssetTrashFolderName)
+						{
+							continue;
+						}
 #ifdef HIDE_LEVELDATA_DIRECTORIES
 						if (item.path().extension() == ".leveldata")
 						{
@@ -89,6 +106,14 @@ void UpdateCacheThread(FileHierarchyCache* cache)
 					}
 					else
 					{
+						// A material graph's sidecar is pure metadata for the
+						// Graph tab (see MaterialDocument/MaterialGraph) --
+						// the .tgmat and whatever real _C/_N/_M/_FX.dds it
+						// bakes are the actual visible assets. Same idea as
+						// hiding .leveldata above: nothing else ever opens or
+						// references a .tgmatgraph directly.
+						if (item.path().extension() == ".tgmatgraph")
+							continue;
 						dirCache.files.push_back(item.path());
 					}
 				}
@@ -146,17 +171,17 @@ fs::path AssetBrowser::GetCurrentFolder() const
 
 void AssetBrowser::DrawFileTree(const fs::path& parentPath)
 {
-	auto parentIt = myCache->activeCache.find(parentPath);
+	auto parentIt = myCache->drawSnapshot.find(parentPath);
 
-	if (parentIt == myCache->activeCache.end())
+	if (parentIt == myCache->drawSnapshot.end())
 		return;
 
 	const DirectoryCache& parentCache = parentIt->second;
 
 	for (fs::path path : parentCache.directories)
 	{
-		auto it = myCache->activeCache.find(path);
-		if (it == myCache->activeCache.end())
+		auto it = myCache->drawSnapshot.find(path);
+		if (it == myCache->drawSnapshot.end())
 			continue;
 
 		const DirectoryCache& cache = it->second;
@@ -194,9 +219,12 @@ void AssetBrowser::DrawFileTree(const fs::path& parentPath)
 				{
 					fs::path source = fs::path(Tga::Settings::GameAssetRoot()) / static_cast<const char*>(payload->Data);
 					fs::path destination = path / source.filename();
-					std::error_code ec;
-					if (source != destination && !fs::exists(destination)) fs::rename(source, destination, ec);
-					if (ec) myAssetOperationError = "Could not move asset: " + ec.message();
+					if (source != destination && !fs::exists(destination))
+					{
+						auto command = std::make_shared<RenameAssetCommand>(source, destination);
+						CommandManager::DoCommand(command);
+						if (!command->GetError().empty()) myAssetOperationError = command->GetError();
+					}
 					break;
 				}
 			}
@@ -214,7 +242,32 @@ void AssetBrowser::DrawFileTree(const fs::path& parentPath)
 
 void AssetBrowser::Draw()
 {
-	std::lock_guard guard(myCache->isAccessingCache);
+	// Copy, don't hold: the previous version locked isAccessingCache for
+	// this entire function, which runs ImGui widgets, thumbnail loads and
+	// document-open calls on double-click -- all far slower than a map
+	// copy, and all blocking the background scan thread's next cache swap
+	// for as long as they took. Everything below reads drawSnapshot, a
+	// plain value copy only this (main) thread ever touches, instead.
+	{
+		std::lock_guard guard(myCache->isAccessingCache);
+		myCache->drawSnapshot = myCache->activeCache;
+	}
+
+	{
+		std::string result;
+		if (myConvertRunner.PollResult(result))
+		{
+			myAssetOperationError = result;
+			// The editor keeps every prefab loaded in memory, so a prefab that was
+			// already open when the converter rewrote its file (Bistro.tgo with no
+			// material list, say) would keep showing the old contents -- and saving
+			// it would overwrite the generated one. Safe to attempt even after a
+			// failed cook: Reload() keeps the existing copy if the file won't parse.
+			if (!myConvertPrefab.empty())
+				Editor::GetEditor()->GetSceneObjectDefinitionManager().Reload(myConvertPrefab);
+			myConvertPrefab.clear();
+		}
+	}
 
 	ImGui::SetNextWindowClass(Editor::GetEditor()->GetGlobalWindowClass());
 	ImGui::Begin("Asset Browser - Directories");
@@ -241,9 +294,9 @@ void AssetBrowser::Draw()
 			ImGui::BeginDisabled(!validName);
 			if (ImGui::Button("Create", ImVec2(120.f, 0.f)))
 			{
-				std::error_code ec;
-				fs::create_directory(_current_path / myNewFolderBuffer, ec);
-				if (ec) myAssetOperationError = "Could not create folder: " + ec.message();
+				auto command = std::make_shared<CreateAssetFolderCommand>(_current_path / myNewFolderBuffer);
+				CommandManager::DoCommand(command);
+				if (!command->GetError().empty()) myAssetOperationError = command->GetError();
 				else ImGui::CloseCurrentPopup();
 			}
 			ImGui::EndDisabled();
@@ -270,6 +323,17 @@ void AssetBrowser::Draw()
 	ImGui::SetNextWindowClass(Editor::GetEditor()->GetGlobalWindowClass());
 	ImGui::Begin("Asset Browser - Files");
 	{
+		if (ImGui::Button(myGridView ? ICON_LC_LIST : ICON_LC_LAYOUT_GRID))
+			myGridView = !myGridView;
+		if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+			ImGui::SetTooltip(myGridView ? "Switch to list view" : "Switch to grid view");
+		ImGui::SameLine();
+		if (myGridView)
+		{
+			ImGui::SetNextItemWidth(90.f);
+			ImGui::SliderFloat("##TileSize", &myGridTileSize, 64.f, 192.f, "%.0fpx");
+			ImGui::SameLine();
+		}
 		ImGui::SetNextItemWidth(-105.f);
 		ImGui::InputTextWithHint("##AssetSearch", "Search assets…", mySearchBuffer, IM_ARRAYSIZE(mySearchBuffer));
 		ImGui::SameLine();
@@ -301,9 +365,9 @@ void AssetBrowser::Draw()
 			return name.find(needle) != std::string::npos;
 		};
 		ImGui::Separator();
-		auto parentIt = myCache->activeCache.find(_current_path);
+		auto parentIt = myCache->drawSnapshot.find(_current_path);
 
-		if (parentIt != myCache->activeCache.end())
+		if (parentIt != myCache->drawSnapshot.end())
 		{
 
 			const DirectoryCache& parentCache = parentIt->second;
@@ -321,8 +385,6 @@ void AssetBrowser::Draw()
 					bool isSelected = mySelectedPath == path;
 					Tga::AssetListItemStatus itemStatus{};
 
-					P4::FileInfo fileinfo = P4::GetFileInfo(path.string().c_str());
-
 					const std::string extension = path.extension().string();
 					std::string icon = ICON_LC_FILE;
 					if (extension == ".tgmat") icon = ICON_LC_PALETTE;
@@ -330,28 +392,22 @@ void AssetBrowser::Draw()
 					else if (extension == ".tgs") icon = ICON_LC_MAP;
 					else if (extension == ".tgm" || extension == ".fbx") icon = ICON_LC_CUBOID;
 					else if (extension == ".tgo" || extension == ".tgac") icon = ICON_LC_FILE_CODE;
-					if (fileinfo.action != P4::FileAction::None)
-					{
-						switch (fileinfo.action)
-						{
-						case(P4::FileAction::Add): { icon = ICON_LC_FILE_PLUS_2; } break;
-						case(P4::FileAction::Edit): { icon = ICON_LC_FILE_PEN; } break;
-						case(P4::FileAction::Delete): { icon = ICON_LC_FILE_X_2; } break;
-						default: { icon = ICON_LC_FILE; } break;
-						}
-					}
 
 					if (path.extension() == ".dds")
 					{
 						ImTextureID img = Editor::GetEditor()->GetEditorGraphics().GetTextureID(path.string());
 						if (img)
 						{
-							itemStatus = Tga::AssetListItem(path, isSelected, (fileinfo.action != P4::FileAction::None) ? icon : "", img, myThumbSize);
+							itemStatus = myGridView
+								? Tga::AssetGridItem(path, isSelected, "", img, myGridTileSize)
+								: Tga::AssetListItem(path, isSelected, "", img, myThumbSize);
 						}
 					}
 					else
 					{
-						itemStatus = Tga::AssetListItem(path, isSelected, icon);
+						itemStatus = myGridView
+							? Tga::AssetGridItem(path, isSelected, icon, (ImTextureID)0, myGridTileSize)
+							: Tga::AssetListItem(path, isSelected, icon);
 
 						if (path.extension() == ".tgs")
 						{
@@ -360,10 +416,20 @@ void AssetBrowser::Draw()
 								// todo: check if already open!
 								// move this logic somewhere else?
 
-								std::unique_ptr<SceneDocument> sceneDocument = std::make_unique<SceneDocument>();
-								sceneDocument->Init(path.string());
-
-								Editor::GetEditor()->AddDocument(std::move(sceneDocument));
+								// SceneDocument::Init() throws if the .tgs no longer exists on
+								// disk (deleted/moved since this listing was scanned) -- same
+								// guard as the .tgmat case below, so a stale double-click
+								// reports a status message instead of crashing the editor.
+								try
+								{
+									std::unique_ptr<SceneDocument> sceneDocument = std::make_unique<SceneDocument>();
+									sceneDocument->Init(path.string());
+									Editor::GetEditor()->AddDocument(std::move(sceneDocument));
+								}
+								catch (const std::exception& e)
+								{
+									myAssetOperationError = std::string("Could not open scene '") + path.string() + "': " + e.what();
+								}
 							}
 						}
 
@@ -420,41 +486,12 @@ void AssetBrowser::Draw()
 						}
 						if (absPath.extension() == ".tgm" && itemStatus.doubleClicked)
 						{
-							try
-							{
-								std::unique_ptr<ImportSettingsDocument> document = std::make_unique<ImportSettingsDocument>();
-								document->Init(path.string());
-								Editor::GetEditor()->AddDocument(std::move(document));
-							}
-							catch (const std::exception& e)
-							{
-								ERROR_PRINT("FBX import settings: could not open '%s': %s", path.string().c_str(), e.what());
-							}
-							catch (...)
-							{
-								ERROR_PRINT("FBX import settings: could not open '%s': unknown exception", path.string().c_str());
-							}
+							fs::path fbx = absPath;
+							fbx.replace_extension(".fbx");
+							if (fs::exists(fbx))
+								OpenFbxConvertDialog(fbx);
 						}
 					}
-					//if (ImGui::IsItemHovered())
-					if (itemStatus.hovered)
-					{
-						if (P4::QueryHasFileInfo(path.string().c_str()))
-						{
-							ImGui::BeginTooltip();
-							{
-								ImGui::PushTextWrapPos(ImGui::GetFontSize() * 20);
-								ImGui::TextWrapped(
-									"At revision %d marked for %s by %s in changelist %s workspace %s",
-									fileinfo.revision, P4::FileActionString(fileinfo.action).data(), fileinfo.user, fileinfo.changelist, fileinfo.client
-								);
-								ImGui::PopTextWrapPos();
-							}
-							ImGui::EndTooltip();
-
-						}
-					}
-
 					if (itemStatus.selectedAfter)
 						mySelectedPath = path;
 
@@ -471,13 +508,24 @@ void AssetBrowser::Draw()
 							ImGui::SetClipboardText(path.string().c_str());
 						if (ImGui::MenuItem("Select"))
 							mySelectedPath = path;
-						if (absPath.extension() == ".fbx" && ImGui::MenuItem("Convert to TGO"))
-							ConvertFbxToTgo(absPath);
+						if (absPath.extension() == ".fbx" &&
+							ImGui::MenuItem(myConvertRunner.IsRunning() ? "Converting..." : "Convert to TGO...", nullptr, false, !myConvertRunner.IsRunning()))
+							OpenFbxConvertDialog(absPath);
 						if (ImGui::MenuItem("Delete"))
 						{
 							myPendingDelete = absPath;
 						}
 						ImGui::EndPopup();
+					}
+
+					// Flow-wrap tiles left to right: keep going on the same
+					// row as long as the next tile would still fit, otherwise
+					// let the next iteration fall through to a new line.
+					if (myGridView)
+					{
+						const float nextTileRight = ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + myGridTileSize;
+						if (nextTileRight < ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x)
+							ImGui::SameLine();
 					}
 				}
 				ImGui::PopID();
@@ -490,9 +538,9 @@ void AssetBrowser::Draw()
 		ImGui::TextWrapped("Delete '%s'?", myPendingDelete.filename().string().c_str());
 		if (ImGui::Button("Delete", ImVec2(120.f, 0.f)))
 		{
-			std::error_code ec;
-			fs::remove(myPendingDelete, ec);
-			if (ec) myAssetOperationError = "Could not delete asset: " + ec.message();
+			auto command = std::make_shared<DeleteAssetCommand>(myPendingDelete, fs::absolute(Tga::Settings::GameAssetRoot()));
+			CommandManager::DoCommand(command);
+			if (!command->GetError().empty()) myAssetOperationError = command->GetError();
 			else if (mySelectedPath == fs::relative(myPendingDelete, Tga::Settings::GameAssetRoot())) mySelectedPath.clear();
 			myPendingDelete.clear();
 			ImGui::CloseCurrentPopup();
@@ -503,32 +551,40 @@ void AssetBrowser::Draw()
 	}
 	}
 	ImGui::End();
+
+	// Outside both panels' windows, so the dialog's popup id is the same no
+	// matter which one opened it.
+	FbxCookRequest requestFromDialog;
+	if (myFbxDialog.Draw(requestFromDialog))
+		StartFbxConversion(requestFromDialog);
 }
 
 void AssetBrowser::ConvertFbxToTgo(const fs::path& absoluteFbxPath)
 {
-	const fs::path root = fs::absolute(Settings::GameAssetRoot());
-	std::error_code ec;
-	const fs::path relFbx = fs::relative(absoluteFbxPath, root, ec);
-	if (ec || relFbx.empty() || relFbx.string() == "." || relFbx.is_absolute())
+	if (myConvertRunner.IsRunning())
+		return;
+
+	FbxCookRequest request;
+	const std::string error = MakeDefaultFbxCookRequest(absoluteFbxPath, request);
+	if (!error.empty())
 	{
-		myAssetOperationError = "The FBX must be inside this project's asset folder.";
+		myAssetOperationError = error;
 		return;
 	}
 
-	const fs::path folder = relFbx.parent_path();
-	const fs::path texturesFolder = folder / "Textures";
-	const fs::path materialsFolder = folder / "Materials";
-	fs::create_directories(root / texturesFolder, ec);
-	if (ec) { myAssetOperationError = "Could not create Textures folder: " + ec.message(); return; }
-	fs::create_directories(root / materialsFolder, ec);
-	if (ec) { myAssetOperationError = "Could not create Materials folder: " + ec.message(); return; }
+	StartFbxConversion(request);
+}
 
-	FbxCookRequest request;
-	request.fbx = relFbx.generic_string();
-	request.sourceFolder = texturesFolder.generic_string();
-	request.outputFolder = materialsFolder.generic_string();
-	request.generatedPrefab = (folder / (relFbx.stem().string() + ".tgo")).generic_string();
-	request.recursive = false;
-	myAssetOperationError = ImportSettingsDocument::RunCooker(request);
+void AssetBrowser::OpenFbxConvertDialog(const fs::path& absoluteFbxPath)
+{
+	myFbxDialog.Open(absoluteFbxPath);
+}
+
+void AssetBrowser::StartFbxConversion(const FbxCookRequest& request)
+{
+	if (myConvertRunner.IsRunning())
+		return;
+	myConvertPrefab = request.generatedPrefab;
+	myAssetOperationError = "Cooking...";
+	myConvertRunner.Start(request);
 }

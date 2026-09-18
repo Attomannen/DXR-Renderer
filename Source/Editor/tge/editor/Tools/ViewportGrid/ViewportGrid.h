@@ -10,7 +10,10 @@ namespace Tga
 	{
 	public:
 		ViewportGrid();
-		void DrawViewportGrid();
+		// aCameraForward: current view direction, used to fade out whichever
+		// axis line the camera is looking nearly along -- see DrawViewportGrid's
+		// definition for why.
+		void DrawViewportGrid(const Vector3f& aCameraForward);
 
 		void SetGridLineExtreme(const float);
 		void SetGridCellIncrement(const int);

@@ -12,11 +12,6 @@
 
 #include "tge/texture/Texture.h"
 
-namespace P4
-{
-	struct FileInfo;
-}
-
 namespace Tga
 {
 	class Model;
@@ -86,7 +81,7 @@ namespace Tga
 
 	void SetupIdPass();
 	void DrawOutlines(const EditorViewport& viewport);
-	void SetObjectAndSelectionId(uint32_t anObjectId, uint32_t aSelectionId, const P4::FileInfo& someInfo);
+	void SetObjectAndSelectionId(uint32_t anObjectId, uint32_t aSelectionId);
 
 	bool DrawSceneProperty(const ScenePropertyDefinition& property, float maxScale, DrawParameters& drawParameters);
 	void DrawSceneObject(const SceneObject& sceneObject, DrawParameters& drawParameters);

@@ -34,6 +34,13 @@ namespace Tga
 
 		std::vector<PropertyTypeId> myRequiredPropertyTypeIds;
 		int mySelectedPropertyTypeIndex = -1;
+		// The filter dropdown's contents: every distinct property type across
+		// all objects. Used to recompute one std::vector<ScenePropertyDefinition>
+		// per object -- unconditionally, every single Draw() -- just to
+		// populate a combo box that only changes when the object set does.
+		// Rebuilt only when mySceneDirty, the same flag BuildObjectList
+		// already gates its own rebuild on.
+		std::vector<const PropertyTypeBase*> myAvailablePropertyTypes;
 
 		// Inline rename mirrors established hierarchy behaviour: F2, context-menu
 		// Rename, Enter to commit and Escape to cancel.

@@ -197,6 +197,10 @@ void ApplyRendererOverrides(DeferredRenderer::Tunables& tun)
 	tun.cloudsEnabled = EnvInt("BENCH_CLOUDS", tun.cloudsEnabled ? 1 : 0) != 0;
 	tun.cloudCoverage = std::clamp(EnvFloat("BENCH_CLOUD_COVERAGE", tun.cloudCoverage), 0.f, 1.f);
 	tun.cloudDensity = std::max(0.f, EnvFloat("BENCH_CLOUD_DENSITY", tun.cloudDensity));
+	tun.cloudBaseAltitude = EnvFloat("BENCH_CLOUD_BASE", tun.cloudBaseAltitude);
+	tun.cloudTopAltitude = std::max(tun.cloudBaseAltitude + 200.f, EnvFloat("BENCH_CLOUD_TOP", tun.cloudTopAltitude));
+	tun.cloudScale = std::max(100.f, EnvFloat("BENCH_CLOUD_SCALE", tun.cloudScale));
+	tun.cloudDetailStrength = std::clamp(EnvFloat("BENCH_CLOUD_DETAIL", tun.cloudDetailStrength), 0.f, 1.f);
 	tun.contactShadows = EnvInt("BENCH_CONTACT", 1) != 0;
 	tun.contactViz = EnvInt("BENCH_CONTACT_VIZ", 0) != 0;
 	tun.localShadowViz = EnvInt("BENCH_LOCALSH_VIZ", 0) != 0;

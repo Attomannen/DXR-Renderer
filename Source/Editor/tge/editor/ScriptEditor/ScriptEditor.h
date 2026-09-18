@@ -4,7 +4,7 @@
 #include <tge/script/ScriptCommon.h>
 #include <map>
 
-struct ImNodesEditorContext;
+namespace ax { namespace NodeEditor { struct EditorContext; } }
 
 namespace Tga
 {
@@ -25,7 +25,7 @@ namespace Tga
 		{
 			Script* script;
 			ScriptEditorSelection selection = {};
-			ImNodesEditorContext* nodeEditorContext = nullptr;
+			ax::NodeEditor::EditorContext* nodeEditorContext = nullptr;
 			ScriptPinId inProgressLinkPin = { ScriptPinId::InvalidId };
 			ScriptNodeId hoveredNode = { ScriptNodeId::InvalidId };
 			int latestSavedSequenceNumber = 0;

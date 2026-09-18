@@ -4,7 +4,6 @@
 #include <tge/application.h>
 #include <tge/graphics/DX11.h>
 #include <tge/rhi/Device.h>
-#include <imnodes/imnodes.h>
 #include <IconFontHeaders/IconsLucide.h>
 
 #include "imgui/imgui_impl_dx11.h"
@@ -42,7 +41,6 @@ void ImGuiInterface::Shutdown()
 	else
 		ImGui_ImplDX11_Shutdown();
 	ImGui_ImplWin32_Shutdown();
-	ImNodes::DestroyContext();
 	ImGui::DestroyContext();
 
 	ourImpl = nullptr;
@@ -160,7 +158,6 @@ void ImGuiInterface::Init()
 	//io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;  // Enable Keyboard Controls
 	//io.IniFilename = nullptr;
 	io.LogFilename = nullptr;
-	ImNodes::CreateContext();
 
 
 	// Setup ImGui binding

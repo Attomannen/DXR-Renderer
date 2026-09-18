@@ -10,13 +10,22 @@
 
 using namespace Tga;
 
+// Deleted assets are moved into "<asset root>/.trash" (so a delete can be undone). They
+// are not part of the project and must not be found by a scan of it.
+static bool IsInAssetTrash(const std::filesystem::path& path)
+{
+	for (const auto& part : path)
+		if (part == ".trash") return true;
+	return false;
+}
+
 SceneObjectDefinitionManager::SceneObjectDefinitionManager() {}
 
 void SceneObjectDefinitionManager::Init(std::string_view aProjectPath)
 {
 	for (const auto& entry : std::filesystem::recursive_directory_iterator(aProjectPath))
 	{
-		if (entry.is_regular_file() && entry.path().extension() == ".tgo") 
+		if (entry.is_regular_file() && entry.path().extension() == ".tgo" && !IsInAssetTrash(entry.path())) 
 		{
 			std::unique_ptr<SceneObjectDefinition> definition = std::make_unique<SceneObjectDefinition>();
 
@@ -72,6 +81,42 @@ SceneObjectDefinition* SceneObjectDefinitionManager::CreateOrGet(const std::file
 
 	mySceneObjectDefinitions[nameId] = std::move(objectDefinition);
 	return mySceneObjectDefinitions[nameId].get();
+}
+
+SceneObjectDefinition* SceneObjectDefinitionManager::Reload(const std::filesystem::path& aPath)
+{
+	const std::filesystem::path fullPath = std::filesystem::path(Tga::Settings::GameAssetRoot()) / aPath;
+	if (!std::filesystem::exists(fullPath))
+		return nullptr;
+
+	const StringId nameId = StringRegistry::RegisterOrGetString(aPath.stem().string().c_str());
+	const std::string pathString = aPath.string();
+
+	try
+	{
+		// Load() appends to the property list rather than replacing it, so read
+		// into a scratch definition first (a malformed file must not leave the
+		// registered one half-cleared) and then swap the result in.
+		auto fresh = std::make_unique<SceneObjectDefinition>();
+		fresh->Load(pathString.c_str());
+
+		auto it = mySceneObjectDefinitions.find(nameId);
+		if (it == mySceneObjectDefinitions.end())
+		{
+			mySceneObjectDefinitions[nameId] = std::move(fresh);
+			return mySceneObjectDefinitions[nameId].get();
+		}
+
+		// Keep the existing object's address: scene objects and open documents
+		// hold pointers to it.
+		it->second->EditProperties() = std::move(fresh->EditProperties());
+		return it->second.get();
+	}
+	catch (const std::exception& e)
+	{
+		ERROR_PRINT("Could not reload object definition '%s': %s", pathString.c_str(), e.what());
+		return nullptr;
+	}
 }
 
 SceneObjectDefinition* SceneObjectDefinitionManager::Get(StringId name)

@@ -21,8 +21,6 @@
 namespace Tga
 {
 
-	void SceneP4Handler(SceneFileChangeType aChangeType, const char* aPath);
-
 	class InputManager;
 
 class SceneDocument : public Document, public ViewportInterface
@@ -47,6 +45,7 @@ public:
 	void HandleDrop() override;
 	void BeginDragSelection(Vector2f mousePos) override;
 	void EndDragSelection(Vector2f mousePos, bool isShiftDown) override;
+	void DrawCollisionOverlay(CollisionOverlay& overlay) override;
 	void ClickSelection(Vector2f mousePos, uint32_t selectedId, bool isShiftDown) override;
 
 	void BeginTransformation() override;
