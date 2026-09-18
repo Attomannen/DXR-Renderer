@@ -34,7 +34,17 @@ void main(uint3 id : SV_DispatchThreadID)
 	const float kPeriod = 4.0f;
 	float3 p = (float3(id) + 0.5f) / size * kPeriod;
 
-	float fbm = CloudsFbm3D(p, 5, kPeriod);
+	// Four octaves starting an octave BELOW the Worley cell period, not five
+	// starting at it. At 128^3 with kPeriod 4, five octaves put the top two at
+	// 4 and 2 texels per lattice cell -- below the roughly 8 texels a value
+	// noise needs to resolve a cell, so those octaves were not noise at all,
+	// just the sampling grid beating against itself. That aliased grain is
+	// baked in permanently and no mip can remove it; it is a large part of why
+	// the clouds read as scratchy rather than soft. These four span 64, 32, 16
+	// and 8 texels per cell, all properly resolved, and the new lowest octave
+	// spans half the volume, which gives the field a large-scale swell that
+	// gathers puffs into cloud MASSES instead of scattering them evenly.
+	float fbm = CloudsFbm3D(p * 0.5f, 4, kPeriod * 0.5f);
 	float worleyDilate = CloudsWorley3D(p, kPeriod);
 	float perlinWorley = CloudsRemap(fbm, saturate(1.0f - worleyDilate) - 1.0f, 1.0f, 0.0f, 1.0f);
 

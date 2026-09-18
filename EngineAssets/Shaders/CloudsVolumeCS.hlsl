@@ -36,8 +36,21 @@ RWTexture2D<float4> CloudsOut : register(u0);
 // under-sampled shape just gets reinforced frame after frame. Profiling
 // showed the whole cloud pass was a small fraction of frame time even at
 // half resolution, so there was plenty of headroom to raise this.
-static const int kPrimarySteps = 48;
-static const float kExtinction = 0.015f;   // per meter per unit density, shared by the view march and the sun march
+// 96, not 48. The residual speckle on thin margins is march variance: where a
+// cloud is thin, one step decides the pixel, and neighbouring pixels jittered
+// to different offsets disagree. Halving the step length halves how much of
+// the result any single sample carries, which is the only way to reduce that
+// variance at its source -- rendering it at higher resolution or filtering it
+// afterwards only makes it sharper or blurrier, never less.
+static const int kPrimarySteps = 96;
+// Per meter per unit density, shared by the view march and the sun march.
+// 0.015 was tuned against a 1.5 km layer. The layer is now 3.8 km, so the same
+// number gave two and a half times the optical depth end to end and every
+// cloud saturated to a flat opaque white with a hard edge -- no thin margins,
+// nothing for light to pass through. 0.009 restores roughly the old opacity
+// across a traverse while keeping the taller clouds, so cores stay solid and
+// edges stay translucent, which is the difference the reference shows.
+static const float kExtinction = 0.014f;
 // Earth's curvature hides a 1.5 km deck at ~140 km (sqrt(2 R h)); the shell
 // is marched as flat planes, so cap there instead of at 60 km, where the deck
 // used to stop 1.4 degrees above the horizon and leave a bare band of sky.
@@ -181,12 +194,29 @@ void main(uint3 tid : SV_DispatchThreadID)
 	// march already mixes into its own hash) makes the pattern change every
 	// frame instead, so it's temporal noise TAA can accumulate into stable
 	// grain rather than a static pattern that only hides motionlessness.
-	// Wang hash of (pixel, frame jitter). The previous linear-congruential mix
-	// of x and y correlated along diagonals and showed as spokes radiating
-	// from the view centre in the far deck.
-	uint hash = tid.x + tid.y * 8192u + (asuint(FogJitter.x * 8192.0f) ^ (asuint(FogJitter.y * 4096.0f) << 7));
-	hash = (hash ^ 61u) ^ (hash >> 16); hash *= 9u; hash ^= hash >> 4; hash *= 0x27d4eb2du; hash ^= hash >> 15;
-	float jitter = (hash & 0x00ffffffu) * (1.0f / 16777216.0f);
+	// Interleaved gradient noise (Jimenez), not a Wang hash.
+	//
+	// A hash gives white noise: every pixel's offset is independent of its
+	// neighbours', so within any small neighbourhood the offsets clump and
+	// leave gaps. Where a cloud is thin enough that one step decides the
+	// result, that clumping is the stippled edge -- neighbouring pixels land on
+	// opposite sides of the margin and the speckle survives both the bilinear
+	// upsample from the cloud pass's half resolution and the temporal blend,
+	// because there is nothing regular in it for either to average.
+	//
+	// Interleaved gradient noise is ordered rather than random: across any 3x3
+	// block its values are spread evenly over [0,1), so a neighbourhood of
+	// pixels samples the march at evenly spaced offsets and their average is
+	// close to the true integral. That is exactly what the upsample and the
+	// temporal history then do for free. It costs two multiplies.
+	//
+	// The per-frame term keeps it from being screen-locked: a purely spatial
+	// pattern is stable in a still frame but sweeps across the world as the
+	// camera moves, which reads as crawling. Offsetting the lattice each frame
+	// makes it temporal noise the history can converge instead.
+	const float frameOffset = frac(gTime * 61.0f) * 64.0f;
+	const float2 jitterPos = float2(tid.xy) + 5.588238f * frameOffset;
+	float jitter = frac(52.9829189f * frac(dot(jitterPos, float2(0.06711056f, 0.00583715f))));
 	// Jitter is applied per step, as a fraction of THAT step: offsetting only
 	// the first step leaves every later (longer) step unjittered, and the
 	// sample positions then line up on iso-distance shells that read as

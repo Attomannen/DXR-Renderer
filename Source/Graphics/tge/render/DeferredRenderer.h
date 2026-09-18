@@ -258,9 +258,21 @@ namespace Tga
 			float fogHeightFalloff = 0.025f; // per meter
 			float fogBaseHeight = 0.f;
 			float fogStartDistance = 5.f;
-			float fogMaxDistance = 500.f;
+			// A cap on how far the fog integral runs, not the distance at which
+			// fog stops. 500 m made it the latter in practice: everything past
+			// half a kilometre received exactly the same fog, so distance
+			// stopped reading as distance and the horizon never washed out the
+			// way Unreal's does. With the integral fixed to converge properly
+			// this can be large without the sky going opaque, because an upward
+			// ray now escapes the layer on its own.
+			float fogMaxDistance = 20000.f;
 			float fogColor[3] = {0.30f, 0.40f, 0.55f}; // linear HDR
-			bool fogAffectSky = false;
+			// On. Unreal's height fog reaches the sky, and with the integral
+			// converging correctly that is a dense band at the horizon thinning
+			// smoothly toward the zenith rather than a flat tint over
+			// everything. Off still fogs the ground below the horizon, which is
+			// geometry at a finite distance rather than sky.
+			bool fogAffectSky = true;
 			bool volumetricEnabled = true;
 			float volumetricStrength = 0.5f;
 			float volumetricAnisotropy = 0.45f;
@@ -307,10 +319,24 @@ namespace Tga
 
 			// --- volumetric clouds (DeferredRendererClouds.cpp) ---
 			bool  cloudsEnabled = true;
-			float cloudCoverage = 0.5f;         // 0..1, fraction of sky covered
+			// 0..1, fraction of sky covered. 0.25, not 0.5: with the taller
+			// layer and the mid-scale coverage field, half cover merges the
+			// deck into one unbroken sheet. A quarter gives separate clouds
+			// with sky between them, which is where the size and height
+			// variation is actually visible.
+			float cloudCoverage = 0.25f;
 			float cloudDensity = 1.f;           // extinction multiplier
-			float cloudBaseAltitude = 1500.f;   // meters; realistic cumulus base
-			float cloudTopAltitude = 3000.f;    // meters
+			// Meters. The layer was 1500 m thick, which capped how tall the
+			// tallest cloud could possibly be at roughly the height of the
+			// shortest one -- no shaping of the vertical profile can produce
+			// towers when there is nowhere for them to go. Real fair-weather
+			// cumulus bases sit near 1200 m and congestus tops reach 4-5 km,
+			// and that ratio between the flat scraps and the towers is what
+			// makes a sky read as three-dimensional rather than as a ceiling.
+			// A thicker layer also means more optical depth end to end, so
+			// cloudDensity may want lowering to match a previous look.
+			float cloudBaseAltitude = 1200.f;
+			float cloudTopAltitude = 5000.f;
 			// Meters per shape-noise tile, i.e. both the repeat distance and the
 			// size of a cloud cell. A 6 km tile put several repeats inside the
 			// deck as seen from cloud altitude; 12 km hid the repeat but grew
@@ -323,7 +349,13 @@ namespace Tga
 			float cloudSpeed[2] = { 40.f, 15.f };  // wind, m/s (world X, Z)
 			int   cloudLightSteps = 6;          // self-shadow light-march samples
 			float cloudDetailStrength = 0.6f;   // erosion-noise contribution, 0 = smooth blobs
-			int   cloudResolution = 1;          // hero raymarch target divisor, mirrors volumetricResolution
+			// Hero raymarch target divisor. Half resolution. Full was measured
+			// and is worse on both counts: it costs 3.1 ms of a 4.4 ms frame
+			// and the speckle metric rises by half, because the bilinear
+			// upsample from half resolution was itself doing useful smoothing
+			// of the march's residual variance. Reduce that variance at the
+			// source instead of paying to render it more precisely.
+			int   cloudResolution = 1;
 			// On by default. The "snapping on camera movement" this used to be
 			// blamed for was the sky cubemap's frozen cloud snapshot being
 			// re-baked on camera height change (see SkyCubemapPS.hlsl), and
@@ -585,7 +617,15 @@ namespace Tga
 		// cells (see CloudShapeNoiseCS.hlsl), and 64^3 undersamples that to
 		// ~4 texels/cell -- visibly blocky. 128^3 gives it ~8.
 		static constexpr uint32_t kCloudShapeNoiseRes = 128;
-		static constexpr uint32_t kCloudDetailNoiseRes = 32;
+		// 64, not 32. At 32 the three Worley octaves could only be given 2, 3
+		// and 4 cells per axis before they stopped being resolved -- and a
+		// 2-cell Worley is two blobs, so the volume that is supposed to supply
+		// every cloud's surface texture had almost no high frequency in it at
+		// all. That is what made the clouds read as smooth lobes. 64 allows 4,
+		// 6 and 8 cells at 16, 10.7 and 8 texels each: properly sampled AND
+		// actually detailed. It costs 262144 texels instead of 32768, which is
+		// a quarter of a megabyte.
+		static constexpr uint32_t kCloudDetailNoiseRes = 64;
 		bool CreateCloudTargets(Vector2ui aResolution);
 		void ReleaseCloudTargets();
 		void BakeCloudNoise();          // once, at Init -- not resolution-dependent

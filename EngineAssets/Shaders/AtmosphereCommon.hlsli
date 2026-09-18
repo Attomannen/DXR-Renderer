@@ -31,14 +31,31 @@ float3 FogWorld(float2 uv, float depth)
     return w.xyz / w.w;
 }
 // Analytic line integral of exponential height density. Distances in meters.
+//
+// The closed form is density * (1 - exp(-k*dy*L)) / (k*dy), and for an upward
+// ray that converges to density/(k*dy) however far L runs: the ray climbs out
+// of the layer and stops accumulating. That is the whole character of height
+// fog, and it is what makes the horizon a dense band that thins smoothly
+// toward the zenith instead of a hard line.
+//
+// The previous form clamped k*dy*L to 20 and then multiplied the result by L,
+// which destroys exactly that: past the clamp the integral pinned at 1/20 and
+// the optical depth went on growing with distance, so an upward ray never
+// escaped the layer and the angular falloff above the horizon was lost. The
+// clamp now sits only inside the exponential, where it belongs, and the
+// division by k*dy keeps the limit finite.
 float FogOpticalDepth(float3 direction, float distance)
 {
-    float length = max(0, min(distance, FogMaxDistance) - FogStart);
+    float len = max(0, min(distance, FogMaxDistance) - FogStart);
     float h = (FogCamera.y * 0.01 - FogBaseHeight) + direction.y * FogStart;
     float density = FogDensity * exp(clamp(-FogHeightFalloff * h, -20, 20));
-    float x = clamp(FogHeightFalloff * direction.y * length, -20, 20);
-    float integral = abs(x) < 0.001 ? 1 - x * 0.5 + x * x / 6 : (1 - exp(-x)) / x;
-    return min(80, max(0, density * length * integral));
+    float kdy = FogHeightFalloff * direction.y;
+    float opticalDepth;
+    if (abs(kdy * len) < 0.001)
+        opticalDepth = density * len;   // effectively horizontal, or no falloff
+    else
+        opticalDepth = density * (1 - exp(-clamp(kdy * len, -20, 20))) / kdy;
+    return min(80, max(0, opticalDepth));
 }
 float FogPhase(float cosine)
 {

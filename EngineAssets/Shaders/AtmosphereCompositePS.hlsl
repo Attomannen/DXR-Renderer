@@ -17,7 +17,20 @@ float4 main(FsIn input) : SV_TARGET
     float3 delta = FogWorld((p + 0.5 - FogJitter) / float2(FogWidth, FogHeight), min(depth,0.99999)) - FogCamera;
     float distance = depth >= 0.999999 ? FogMaxDistance : length(delta) * 0.01;
     float transmittance = exp(-FogOpticalDepth(normalize(delta), distance));
-    if (depth >= 0.999999 && FogAffectSky == 0) transmittance = 1;
+    if (depth >= 0.999999 && FogAffectSky == 0)
+    {
+        // Even with the sky excluded, a ray pointing BELOW the horizon is not
+        // sky: it ends on the ground at a finite distance, having travelled the
+        // whole way through the densest part of the fog layer, so it should be
+        // fogged completely. Skipping it left the ground plane showing the sky
+        // model's raw albedo term -- the flat brown slab under the horizon.
+        // In Unreal that region is fog, which is why it reads as distance.
+        //
+        // Faded over a few degrees rather than switched at exactly zero, so the
+        // horizon does not gain a hard line where the two cases meet.
+        const float3 skyDir = normalize(delta);
+        transmittance = lerp(1.0, transmittance, saturate(-skyDir.y / 0.05));
+    }
     float3 sunlight = 0;
     if (FogVolumeEnabled != 0)
     {

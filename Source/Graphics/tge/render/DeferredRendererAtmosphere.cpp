@@ -135,11 +135,26 @@ bool DeferredRenderer::RenderAtmosphere(bool beforeTemporal, bool aRenderResolut
 	if (rayDepth && myTaaWasEnabled) { cb.jitter[0]=-myTaaJitter.x; cb.jitter[1]=-myTaaJitter.y; }
 	myAtmosphereCb.Update(ctx,cb);
 	const rhi::SrvHandle depth = rayDepth ? myTemporalSrv[1] : DX11::DepthBuffer->GetSrv();
-	// Refreshes CloudsConstants (gTime/wind/coverage) every call, including
-	// the render-resolution DLSS variant's, and re-renders the hero cloud
-	// volume once for the display-resolution pass -- the DLSS variant reuses
-	// that same volume rather than re-marching it a second time per frame.
-	if (!aRenderResolution) DispatchClouds(depth);
+	// Unconditional. This used to be skipped when aRenderResolution was set,
+	// on the assumption that a display-resolution pass had already marched the
+	// volume this frame and the DLSS variant could reuse it. In the DXR
+	// renderer no such pass exists: the graph's second atmosphere pass calls
+	// this with beforeTemporal false and is rejected a few lines above, so the
+	// call inside ResolveDxrLightingToHdr is the only one that does any work,
+	// and its aRenderResolution is exactly the DLSS super-resolution flag.
+	// Turning DLSS on therefore stopped the hero cloud volume being marched at
+	// all, and the composite went on sampling whatever frame happened to be
+	// left in the target -- a cloudscape frozen at some earlier camera
+	// orientation, with the shell's horizon cutting a hard diagonal across
+	// the sky. DLAA was unaffected because it renders 1:1 and so never sets
+	// the flag, which is why this only ever showed up under upscaling.
+	//
+	// The volume is still marched at display resolution while the composite
+	// runs at render resolution, so it is resampled down and then back up by
+	// the upscaler. That is correct but slightly soft; sizing the cloud
+	// targets to the render resolution under upscaling would be both sharper
+	// and cheaper, and is worth doing separately.
+	DispatchClouds(depth);
 	ctx.SetRenderTargets(0,nullptr,{});
 	if (volumeActive) {
 		TGA_PROFILE_SCOPE(myProfiler, "Fog volume march");
