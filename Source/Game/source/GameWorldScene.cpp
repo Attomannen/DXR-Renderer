@@ -164,6 +164,7 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 	pointLights.clear();
 	lightExtra.clear();
 	anyTransparent = false;
+	ClearScenePhysics();
 
 	ModelFactory& mf = ModelFactory::GetInstance();
 	auto& texMgr = GraphicsEngine::GetInstance()->GetTextureManager();
@@ -296,6 +297,7 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 			mi.SetTransform(xf);
 			models.push_back(mi);
 			instanceOffsets.push_back(Vector3f{ ox, 0.f, oz });
+			RegisterScenePhysics(e, model, xf, models.size() - 1);
 
 			std::vector<int> op, tr;
 			for (int m = 0; m < meshCount; ++m)
@@ -329,6 +331,7 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 	}
 	modelLoadMs = std::chrono::duration<double, std::milli>(
 		std::chrono::high_resolution_clock::now() - tLoad0).count();
+	if (physics.IsInitialized()) physics.OptimizeBroadPhase();
 	if (models.empty()) { ERROR_PRINT("bench: no instances created"); return false; }
 
 	// Scene bounds = union of every instance's world-space AABB.

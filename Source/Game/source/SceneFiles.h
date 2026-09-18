@@ -30,10 +30,36 @@ namespace GameScene
 
 	// One renderable from a .tgo / scene object: model + one .tgmat asset per
 	// mesh/material + a world transform.
+	// Physics authored on the .tgo: the Model's Collision setting, plus optional
+	// Collider and Rigidbody components. Strings are the names written to the file.
+	struct SceneEntryPhysics
+	{
+		std::string modelCollision = "None";     // None, Auto, Box, ConvexHull, TriangleMesh
+
+		bool hasCollider = false;
+		std::string colliderShape = "Auto";      // Auto, Box, Sphere, Capsule, ConvexHull, TriangleMesh
+		Vector3f halfExtents{ 50.f, 50.f, 50.f };
+		float radius = 50.f;
+		float halfHeight = 50.f;
+		Vector3f offset{ 0.f, 0.f, 0.f };
+
+		bool hasBody = false;
+		std::string motion = "Dynamic";          // Static, Kinematic, Dynamic
+		float mass = 0.f;
+		float friction = 0.5f;
+		float restitution = 0.f;
+		float gravityFactor = 1.f;
+		float linearDamping = 0.05f;
+		float angularDamping = 0.05f;
+
+		bool Any() const { return hasCollider || modelCollision != "None"; }
+	};
+
 	struct SceneEntry
 	{
 		std::string fbx;
 		std::vector<std::string> materials;
+		SceneEntryPhysics physics;
 		Matrix4x4f transform;                               // identity by default
 	};
 
@@ -46,6 +72,7 @@ namespace GameScene
 #endif
 	bool LoadTgmat(const fs::path& path, MaterialDef& out);
 	bool ParseModelProperty(const json& propsHolder, SceneEntry& out);
+	void ParsePhysicsProperties(const json& propsHolder, SceneEntryPhysics& out);
 	std::optional<SceneEntry> LoadTgo(const fs::path& tgoPath);
 	std::optional<std::string> FindFirstTgsScene();
 	std::vector<SceneEntry> LoadTgs(const std::string& name);

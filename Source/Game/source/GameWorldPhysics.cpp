@@ -4,24 +4,228 @@
 
 #include "GameWorldImpl.h"
 #include <tge/physics/PhysicsWorld.h>
+#include <tge/math/Quaternion.h>
 
-// Physics test on the material-preview debug sphere: Start drops it under gravity onto a
-// floor plane, Reset puts it back where it began. The level has no colliders yet, so the
-// floor is a plane at the bottom of the scene bounds (adjustable).
+// Physics in the game harness.
+//
+// Scene objects that have collision (the .tgo Model "Collision" setting, or a Collider
+// component) become Jolt bodies. Without a Rigidbody they are static level geometry;
+// with one they are props that fall when Start is pressed in the Physics tab, and
+// Reset puts them back. The material-preview debug sphere can join in, and brings its
+// own floor when the scene has no static collision.
+
+using namespace Tga;
+
+namespace
+{
+	enum class Kind { None, Box, Sphere, Capsule, ConvexHull, TriangleMesh };
+
+	Kind KindFromName(const std::string& name)
+	{
+		if (name == "Box") return Kind::Box;
+		if (name == "Sphere") return Kind::Sphere;
+		if (name == "Capsule") return Kind::Capsule;
+		if (name == "ConvexHull") return Kind::ConvexHull;
+		if (name == "TriangleMesh") return Kind::TriangleMesh;
+		return Kind::None;
+	}
+
+	// Convex hulls of dense meshes are slow to build and gain nothing from every vertex.
+	constexpr size_t kMaxHullPoints = 4000;
+
+	PhysicsVec3 ToPhysics(const Vector3f& v) { return { v.x, v.y, v.z }; }
+}
+
+void GameWorld::Impl::ClearScenePhysics()
+{
+	if (physicsActive)
+		ResetPhysicsTest();
+	physics.Shutdown();
+	scenePhysicsObjects.clear();
+	scenePhysicsShapes.clear();
+	scenePhysicsStaticCount = 0;
+	physicsAutoStart = GameScene::EnvInt("BENCH_PHYSICS", 0) != 0;
+	physicsLogTimer = 0.f;
+	physicsLogCount = 0;
+}
+
+void GameWorld::Impl::RegisterScenePhysics(const GameScene::SceneEntry& entry, const std::shared_ptr<Model>& model,
+	const Matrix4x4f& worldTransform, size_t instanceIndex)
+{
+	const GameScene::SceneEntryPhysics& p = entry.physics;
+	if (!p.Any() || !model)
+		return;
+
+	// What shape, and how does the object move?
+	const std::string motion = p.hasBody ? p.motion : "Static";
+	const bool isStatic = motion == "Static";
+	const bool isDynamic = motion == "Dynamic";
+
+	Kind kind = Kind::None;
+	if (p.hasCollider)
+		kind = p.colliderShape == "Auto" ? Kind::None : KindFromName(p.colliderShape);
+	const bool fromModel = kind == Kind::None; // Auto, or no explicit primitive
+	if (fromModel)
+	{
+		kind = KindFromName(p.hasCollider && p.colliderShape != "Auto" ? p.colliderShape : p.modelCollision);
+		if (kind == Kind::None && (p.modelCollision == "Auto" || p.colliderShape == "Auto"))
+			kind = isStatic ? Kind::TriangleMesh : Kind::ConvexHull;
+	}
+	if (kind == Kind::None)
+		return;
+	if (kind == Kind::TriangleMesh && !isStatic)
+		kind = Kind::ConvexHull; // a mesh has no volume to simulate
+
+	Vector3f position, scale;
+	Quaternionf rotation;
+	worldTransform.DecomposeMatrix(position, rotation, scale);
+	scale = { std::abs(scale.x), std::abs(scale.y), std::abs(scale.z) };
+
+	if (!physics.Init())
+		return;
+	physics.SetGravity({ 0.f, -physicsGravity, 0.f });
+
+	PhysicsBodyDesc body;
+	body.motion = isStatic ? PhysicsMotion::Static : isDynamic ? PhysicsMotion::Dynamic : PhysicsMotion::Kinematic;
+	body.position = ToPhysics(position);
+	body.rotation = { rotation.X, rotation.Y, rotation.Z, rotation.W };
+	body.mass = p.mass;
+	body.friction = p.friction;
+	body.restitution = p.restitution;
+	body.gravityFactor = p.gravityFactor;
+	body.linearDamping = p.linearDamping;
+	body.angularDamping = p.angularDamping;
+	body.userData = instanceIndex;
+
+	// Shapes are shared between identical objects (same model, kind and scale).
+	char key[512];
+	std::snprintf(key, sizeof(key), "%s|%d|%.3f,%.3f,%.3f|%.1f,%.1f,%.1f,%.1f|%.1f,%.1f,%.1f", entry.fbx.c_str(), (int)kind,
+		scale.x, scale.y, scale.z, p.radius, p.halfHeight, p.halfExtents.x, p.halfExtents.y,
+		p.offset.x, p.offset.y, p.offset.z);
+	std::string shapeKey = key;
+	if (kind == Kind::TriangleMesh)
+		shapeKey += "|" + std::to_string(instanceIndex); // baked into world space, so never shared
+
+	PhysicsShapeId shape;
+	if (auto it = scenePhysicsShapes.find(shapeKey); it != scenePhysicsShapes.end())
+	{
+		shape = it->second;
+	}
+	else
+	{
+		PhysicsShapeDesc desc;
+		const Tga::BoxSphereBounds& bounds = model->GetBounds();
+		const float maxXZ = std::max(scale.x, scale.z);
+
+		switch (kind)
+		{
+		case Kind::Box:
+			desc.type = PhysicsShapeType::Box;
+			if (fromModel)
+			{
+				desc.halfExtents = { bounds.boxExtents.x * scale.x, bounds.boxExtents.y * scale.y, bounds.boxExtents.z * scale.z };
+				desc.offset = { bounds.center.x * scale.x, bounds.center.y * scale.y, bounds.center.z * scale.z };
+			}
+			else
+			{
+				desc.halfExtents = { p.halfExtents.x * scale.x, p.halfExtents.y * scale.y, p.halfExtents.z * scale.z };
+				desc.offset = { p.offset.x * scale.x, p.offset.y * scale.y, p.offset.z * scale.z };
+			}
+			break;
+		case Kind::Sphere:
+			desc.type = PhysicsShapeType::Sphere;
+			desc.radius = p.radius * std::max(maxXZ, scale.y);
+			desc.offset = { p.offset.x * scale.x, p.offset.y * scale.y, p.offset.z * scale.z };
+			break;
+		case Kind::Capsule:
+			desc.type = PhysicsShapeType::Capsule;
+			desc.radius = p.radius * maxXZ;
+			desc.halfHeight = p.halfHeight * scale.y;
+			desc.offset = { p.offset.x * scale.x, p.offset.y * scale.y, p.offset.z * scale.z };
+			break;
+		case Kind::ConvexHull:
+		case Kind::TriangleMesh:
+		{
+			CollisionGeometry geometry;
+			if (!ModelFactory::GetInstance().GetCollisionGeometry(StringRegistry::RegisterOrGetString(entry.fbx), geometry))
+			{
+				ERROR_PRINT("physics: no collision geometry for '%s' (skinned model, or its mesh cache is missing)", entry.fbx.c_str());
+				return;
+			}
+
+			std::vector<float> points;
+			if (kind == Kind::TriangleMesh)
+			{
+				// Static level geometry: bake the full world transform into the vertices so
+				// rotation, non-uniform scale and mirroring all come out exactly as rendered.
+				points.resize(geometry.positions.size());
+				const Matrix4x4f& m = worldTransform;
+				for (size_t v = 0; v + 2 < geometry.positions.size(); v += 3)
+				{
+					const float x = geometry.positions[v], y = geometry.positions[v + 1], z = geometry.positions[v + 2];
+					points[v]     = x * m(1, 1) + y * m(2, 1) + z * m(3, 1) + m(4, 1);
+					points[v + 1] = x * m(1, 2) + y * m(2, 2) + z * m(3, 2) + m(4, 2);
+					points[v + 2] = x * m(1, 3) + y * m(2, 3) + z * m(3, 3) + m(4, 3);
+				}
+				desc.type = PhysicsShapeType::TriangleMesh;
+				desc.mesh.indices = geometry.indices.data();
+				desc.mesh.indexCount = geometry.indices.size();
+				body.position = {};
+				body.rotation = {};
+			}
+			else
+			{
+				const size_t count = geometry.positions.size() / 3;
+				const size_t stride = std::max<size_t>(1, count / kMaxHullPoints);
+				for (size_t v = 0; v < count; v += stride)
+					points.insert(points.end(), geometry.positions.begin() + v * 3, geometry.positions.begin() + v * 3 + 3);
+				desc.type = PhysicsShapeType::ConvexHull;
+				desc.meshScale = ToPhysics(scale);
+			}
+			desc.mesh.positions = points.data();
+			desc.mesh.vertexCount = points.size() / 3;
+
+			const auto t0 = std::chrono::steady_clock::now();
+			shape = physics.CreateShape(desc);
+			if (kind == Kind::TriangleMesh)
+				INFO_PRINT("physics: triangle mesh '%s', %zu triangles, %.0f ms", entry.fbx.c_str(),
+					geometry.indices.size() / 3,
+					std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+			break;
+		}
+		case Kind::None:
+			return;
+		}
+
+		if (kind != Kind::ConvexHull && kind != Kind::TriangleMesh)
+			shape = physics.CreateShape(desc);
+		if (!shape.IsValid())
+		{
+			ERROR_PRINT("physics: could not build the collision shape for '%s'", entry.fbx.c_str());
+			return;
+		}
+		scenePhysicsShapes.emplace(shapeKey, shape);
+	}
+	body.shape = shape;
+
+	ScenePhysicsObject object;
+	object.instance = instanceIndex;
+	object.desc = body;
+	object.startTransform = worldTransform;
+	object.scale = scale;
+	object.dynamic = !isStatic;
+	if (isStatic)
+	{
+		object.body = physics.CreateBody(body);
+		++scenePhysicsStaticCount;
+	}
+	scenePhysicsObjects.push_back(object);
+}
 
 void GameWorld::Impl::StartPhysicsTest()
 {
-	if (!debugBallValid || physicsActive)
+	if (physicsActive)
 		return;
-
-	// Start from where the sphere is drawn right now.
-	Vector3f start = debugBallPos;
-	if (debugBallFollowCam)
-	{
-		const Matrix4x4f camXf = camera.GetTransform();
-		start = camXf.GetPosition() + camXf.GetForward() * (debugBallRadius * 5.f);
-	}
-
 	if (!physics.Init())
 	{
 		ERROR_PRINT("physics: Jolt failed to initialise");
@@ -29,45 +233,60 @@ void GameWorld::Impl::StartPhysicsTest()
 	}
 	physics.SetGravity({ 0.f, -physicsGravity, 0.f });
 
-	const float floorY = sceneCenter.y - sceneExtents.y + physicsFloorOffset;
-	const float floorHalf = std::max(std::max(sceneExtents.x, sceneExtents.z) * 4.f, 10000.f);
+	// Props start falling from where the scene put them.
+	for (ScenePhysicsObject& object : scenePhysicsObjects)
+		if (object.dynamic)
+			object.body = physics.CreateBody(object.desc);
 
-	Tga::PhysicsShapeDesc floorShape;
-	floorShape.type = Tga::PhysicsShapeType::Box;
-	floorShape.halfExtents = { floorHalf, 50.f, floorHalf };
-	Tga::PhysicsBodyDesc floor;
-	floor.shape = physics.CreateShape(floorShape);
-	floor.motion = Tga::PhysicsMotion::Static;
-	floor.position = { sceneCenter.x, floorY - 50.f, sceneCenter.z }; // top face at floorY
-	floor.friction = physicsFriction;
-	floor.restitution = physicsRestitution;
-	physics.CreateBody(floor);
-
-	Tga::PhysicsShapeDesc ballShape;
-	ballShape.type = Tga::PhysicsShapeType::Sphere;
-	ballShape.radius = debugBallRadius;
-	Tga::PhysicsBodyDesc ball;
-	ball.shape = physics.CreateShape(ballShape);
-	ball.motion = Tga::PhysicsMotion::Dynamic;
-	ball.position = { start.x, start.y, start.z };
-	ball.friction = physicsFriction;
-	ball.restitution = physicsRestitution;
-	ball.mass = physicsMass;
-	physicsBall = physics.CreateBody(ball);
-	physics.OptimizeBroadPhase();
-	if (!physicsBall.IsValid())
+	if (physicsIncludeBall && debugBallValid)
 	{
-		ERROR_PRINT("physics: could not create the sphere body");
-		physics.Shutdown();
-		return;
+		// Start from where the sphere is drawn right now.
+		Vector3f start = debugBallPos;
+		if (debugBallFollowCam)
+		{
+			const Matrix4x4f camXf = camera.GetTransform();
+			start = camXf.GetPosition() + camXf.GetForward() * (debugBallRadius * 5.f);
+		}
+
+		// The scene's own colliders are the floor; only add a plane when it has none.
+		if (scenePhysicsStaticCount == 0)
+		{
+			const float floorY = sceneCenter.y - sceneExtents.y + physicsFloorOffset;
+			const float floorHalf = std::max(std::max(sceneExtents.x, sceneExtents.z) * 4.f, 10000.f);
+
+			PhysicsShapeDesc floorShape;
+			floorShape.type = PhysicsShapeType::Box;
+			floorShape.halfExtents = { floorHalf, 50.f, floorHalf };
+			PhysicsBodyDesc floor;
+			floor.shape = physics.CreateShape(floorShape);
+			floor.motion = PhysicsMotion::Static;
+			floor.position = { sceneCenter.x, floorY - 50.f, sceneCenter.z }; // top face at floorY
+			floor.friction = physicsFriction;
+			floor.restitution = physicsRestitution;
+			physicsFloor = physics.CreateBody(floor);
+		}
+
+		PhysicsShapeDesc ballShape;
+		ballShape.type = PhysicsShapeType::Sphere;
+		ballShape.radius = debugBallRadius;
+		PhysicsBodyDesc ball;
+		ball.shape = physics.CreateShape(ballShape);
+		ball.motion = PhysicsMotion::Dynamic;
+		ball.position = ToPhysics(start);
+		ball.friction = physicsFriction;
+		ball.restitution = physicsRestitution;
+		ball.mass = physicsMass;
+		physicsBall = physics.CreateBody(ball);
+
+		physicsSavedFollowCam = debugBallFollowCam;
+		physicsSavedShowBall = showDebugBall;
+		physicsStartPos = start;
+		debugBallFollowCam = false; // the physics owns the position now
+		debugBallPos = start;
+		showDebugBall = true;
 	}
 
-	physicsSavedFollowCam = debugBallFollowCam;
-	physicsSavedShowBall = showDebugBall;
-	physicsStartPos = start;
-	debugBallFollowCam = false; // the physics owns the position now
-	debugBallPos = start;
-	showDebugBall = true;
+	physics.OptimizeBroadPhase();
 	physicsActive = true;
 }
 
@@ -75,58 +294,115 @@ void GameWorld::Impl::ResetPhysicsTest()
 {
 	if (!physicsActive)
 		return;
-
-	physics.Shutdown(); // removes the bodies and the floor
-	physicsBall = {};
 	physicsActive = false;
 
-	debugBallPos = physicsStartPos;
-	debugBallFollowCam = physicsSavedFollowCam;
-	showDebugBall = physicsSavedShowBall;
+	for (ScenePhysicsObject& object : scenePhysicsObjects)
+	{
+		if (!object.dynamic)
+			continue;
+		if (object.body.IsValid())
+			physics.DestroyBody(object.body);
+		object.body = {};
+		if (object.instance < models.size())
+			models[object.instance].SetTransform(object.startTransform);
+	}
+
+	if (physicsBall.IsValid())
+	{
+		physics.DestroyBody(physicsBall);
+		physicsBall = {};
+		debugBallPos = physicsStartPos;
+		debugBallFollowCam = physicsSavedFollowCam;
+		showDebugBall = physicsSavedShowBall;
+	}
+	if (physicsFloor.IsValid())
+	{
+		physics.DestroyBody(physicsFloor);
+		physicsFloor = {};
+	}
 }
 
 void GameWorld::Impl::UpdatePhysicsTest(float deltaSeconds)
 {
+	if (physicsAutoStart && !scenePhysicsObjects.empty())
+	{
+		physicsAutoStart = false;
+		physicsIncludeBall = false;
+		StartPhysicsTest();
+	}
 	if (!physicsActive)
 		return;
 
 	physics.Update(deltaSeconds);
 
-	Tga::PhysicsVec3 position;
-	Tga::PhysicsQuat rotation;
-	if (physics.GetTransform(physicsBall, position, rotation))
+	PhysicsVec3 position;
+	PhysicsQuat rotation;
+	for (const ScenePhysicsObject& object : scenePhysicsObjects)
+	{
+		if (!object.dynamic || !object.body.IsValid() || object.instance >= models.size())
+			continue;
+		if (!physics.GetTransform(object.body, position, rotation))
+			continue;
+		Matrix4x4f xf = Matrix4x4f::CreateFromScale(object.scale) *
+			Matrix4x4f::CreateFromRotation(Quaternionf(rotation.w, rotation.x, rotation.y, rotation.z));
+		xf.SetPosition({ position.x, position.y, position.z });
+		models[object.instance].SetTransform(xf);
+	}
+
+	physicsLogTimer += deltaSeconds;
+	if (physicsLogTimer >= 1.f && physicsLogCount < 8)
+	{
+		physicsLogTimer = 0.f;
+		++physicsLogCount;
+		for (const ScenePhysicsObject& object : scenePhysicsObjects)
+			if (object.dynamic && physics.GetTransform(object.body, position, rotation))
+			{
+				INFO_PRINT("physics: prop %zu at %.1f, %.1f, %.1f (%s)", object.instance, position.x, position.y, position.z,
+					physics.IsAwake(object.body) ? "moving" : "at rest");
+				break;
+			}
+	}
+
+	if (physicsBall.IsValid() && physics.GetTransform(physicsBall, position, rotation))
 		debugBallPos = { position.x, position.y, position.z };
 }
 
 void GameWorld::Impl::DrawPhysicsTab()
 {
-	if (!debugBallValid)
-	{
-		ImGui::TextDisabled("The debug sphere (Primitives/Sphere.fbx) is not loaded.");
-		return;
-	}
+	int dynamicProps = 0;
+	for (const ScenePhysicsObject& object : scenePhysicsObjects)
+		dynamicProps += object.dynamic ? 1 : 0;
 
-	ImGui::TextWrapped("Drops the material-preview debug sphere onto a floor at the bottom of the scene. "
-		"Move the camera where you want it, then press Start; Reset brings it back.");
+	ImGui::Text("Scene collision: %d static, %d prop(s)", scenePhysicsStaticCount, dynamicProps);
+	ImGui::TextWrapped("Objects get collision from the .tgo Model 'Collision' setting or a Collider component; "
+		"add a Rigidbody to make one fall. Start drops everything, Reset puts it back.");
 	ImGui::Separator();
 
 	if (!physicsActive)
 	{
 		if (ImGui::Button("Start physics"))
 			StartPhysicsTest();
+		ImGui::SameLine();
+		ImGui::BeginDisabled(!debugBallValid);
+		ImGui::Checkbox("Drop the debug sphere", &physicsIncludeBall);
+		ImGui::EndDisabled();
 	}
 	else
 	{
 		if (ImGui::Button("Reset"))
 			ResetPhysicsTest();
-		ImGui::SameLine();
-		if (ImGui::Button("Launch up"))
-			physics.SetLinearVelocity(physicsBall, { 0.f, 600.f, 0.f }); // 6 m/s up
-		ImGui::SameLine();
-		ImGui::TextDisabled("%s", physics.IsAwake(physicsBall) ? "moving" : "at rest");
+		if (physicsBall.IsValid())
+		{
+			ImGui::SameLine();
+			if (ImGui::Button("Launch sphere up"))
+				physics.SetLinearVelocity(physicsBall, { 0.f, 600.f, 0.f }); // 6 m/s up
+			ImGui::SameLine();
+			ImGui::TextDisabled("%s", physics.IsAwake(physicsBall) ? "moving" : "at rest");
+		}
 	}
 
 	ImGui::Separator();
+	ImGui::TextUnformatted("Debug sphere");
 	ImGui::BeginDisabled(physicsActive); // applied when the simulation is started
 	ImGui::SliderFloat("Sphere radius", &debugBallRadius, 5.f, 400.f, "%.0f cm");
 	ImGui::SliderFloat("Mass (0 = from volume)", &physicsMass, 0.f, 500.f, "%.1f kg");
@@ -134,10 +410,13 @@ void GameWorld::Impl::DrawPhysicsTab()
 	ImGui::SliderFloat("Friction", &physicsFriction, 0.f, 2.f, "%.2f");
 	ImGui::SliderFloat("Floor height offset", &physicsFloorOffset, -2000.f, 2000.f, "%.0f cm");
 	ImGui::EndDisabled();
-	if (ImGui::SliderFloat("Gravity", &physicsGravity, 0.f, 30.f, "%.2f m/s\xC2\xB2") && physicsActive)
+	if (scenePhysicsStaticCount > 0)
+		ImGui::TextDisabled("The scene's static collision is the floor; the offset is unused.");
+	ImGui::Separator();
+	if (ImGui::SliderFloat("Gravity", &physicsGravity, 0.f, 30.f, "%.2f m/s\xC2\xB2") && physics.IsInitialized())
 		physics.SetGravity({ 0.f, -physicsGravity, 0.f });
 
-	if (physicsActive)
+	if (physicsBall.IsValid())
 	{
 		ImGui::Separator();
 		ImGui::Text("Sphere position: %.0f, %.0f, %.0f", debugBallPos.x, debugBallPos.y, debugBallPos.z);

@@ -403,6 +403,7 @@ struct GameWorld::Impl
 	// --- physics test on the debug sphere (GameWorldPhysics.cpp) ---
 	Tga::PhysicsWorld physics;
 	Tga::PhysicsBodyId physicsBall;
+	Tga::PhysicsBodyId physicsFloor;      // only when the scene has no static collision
 	bool physicsActive = false;
 	bool physicsSavedFollowCam = true;
 	bool physicsSavedShowBall = false;
@@ -412,10 +413,35 @@ struct GameWorld::Impl
 	float physicsRestitution = 0.5f;
 	float physicsFriction = 0.5f;
 	float physicsFloorOffset = 0.f;       // cm above the bottom of the scene bounds
+	// BENCH_PHYSICS=1: start the simulation as soon as the scene has physics and log the
+	// first prop's height once a second, for checking without the UI.
+	bool physicsAutoStart = false;
+	float physicsLogTimer = 0.f;
+	int physicsLogCount = 0;
+	bool physicsIncludeBall = true;       // drop the debug sphere with the scene's props
 	void StartPhysicsTest();
 	void ResetPhysicsTest();
 	void UpdatePhysicsTest(float deltaSeconds);
 	void DrawPhysicsTab();
+
+	// Scene objects with collision (from the .tgo Model "Collision" setting or a
+	// Collider component). Static ones get a body when the scene loads; dynamic ones
+	// (Rigidbody) get theirs on Start so Reset can put them back.
+	struct ScenePhysicsObject
+	{
+		size_t instance = 0;                 // index into models
+		Tga::PhysicsBodyDesc desc;
+		Tga::PhysicsBodyId body;
+		Matrix4x4f startTransform;
+		Vector3f scale{ 1.f, 1.f, 1.f };
+		bool dynamic = false;
+	};
+	std::vector<ScenePhysicsObject> scenePhysicsObjects;
+	std::unordered_map<std::string, Tga::PhysicsShapeId> scenePhysicsShapes;
+	int scenePhysicsStaticCount = 0;
+	void ClearScenePhysics();
+	void RegisterScenePhysics(const GameScene::SceneEntry& entry, const std::shared_ptr<Model>& model,
+		const Matrix4x4f& worldTransform, size_t instanceIndex);
 #endif
 
 	// Always-on GPU/CPU timing HUD (free-fly only). Reads the per-pass scopes the

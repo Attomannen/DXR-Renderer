@@ -11,6 +11,12 @@ using namespace Tga;
 StringId(*locAssetBrowserGetSelectionFunction)();
 GetModelMeshInfoFunction locGetModelMeshInfoFunction = nullptr;
 
+namespace
+{
+	const char* const kModelCollisionNames[] = { "None", "Auto", "Box", "ConvexHull", "TriangleMesh" };
+	constexpr int kModelCollisionCount = 5;
+}
+
 namespace Tga
 {
 	void RegisterAssetBrowserGetSelectionFunction(StringId(*aGetFunction)())
@@ -46,6 +52,15 @@ namespace Tga
 
 		model.path = StringRegistry::RegisterOrGetString(jsonData.json.value("path", ""));
 
+		model.collision = SceneModelCollision::None;
+		if (jsonData.json.contains("collision"))
+		{
+			const std::string collision = jsonData.json.value("collision", "None");
+			for (int i = 0; i < kModelCollisionCount; i++)
+				if (collision == kModelCollisionNames[i])
+					model.collision = static_cast<SceneModelCollision>(i);
+		}
+
 		if (jsonData.json.contains("materials"))
 		{
 			int i = 0;
@@ -67,6 +82,8 @@ namespace Tga
 		const SceneModel& model = value.Get();
 
 		jsonData.json["path"] = model.path.GetString();
+		if (model.collision != SceneModelCollision::None)
+			jsonData.json["collision"] = kModelCollisionNames[static_cast<int>(model.collision)];
 
 		// Only serialize up to the last assigned slot. MAX_MESHES_PER_MODEL is a
 		// fixed ceiling shared by every model (256, occasionally raised for dense
@@ -133,6 +150,30 @@ namespace Tga
 				hasBeenEdited = true;
 			}
 			ImGui::EndDragDropTarget();
+		}
+
+		PropertyEditor::PropertyLabel(true);
+		ImGui::Indent();
+		ImGui::Text("Collision");
+		ImGui::Unindent();
+		PropertyEditor::PropertyValue(true);
+		{
+			const int current = static_cast<int>(model.collision);
+			if (ImGui::BeginCombo("##ModelCollision", kModelCollisionNames[current]))
+			{
+				for (int i = 0; i < kModelCollisionCount; i++)
+				{
+					if (ImGui::Selectable(kModelCollisionNames[i], i == current) && i != current)
+					{
+						makeEditable();
+						editableModel->collision = static_cast<SceneModelCollision>(i);
+						hasBeenEdited = true;
+					}
+				}
+				ImGui::EndCombo();
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Collision built from this model's geometry.\nAuto: static objects get an exact triangle mesh, objects with a Rigidbody get a convex hull.");
 		}
 
 		PropertyEditor::PropertyLabel(true);

@@ -77,6 +77,7 @@ namespace GameScene
 			out.fbx = v.value("path", "");
 			// tgo paths use backslashes; normalise for ResolveAssetPath
 			std::replace(out.fbx.begin(), out.fbx.end(), '\\', '/');
+			out.physics.modelCollision = v.value("collision", "None");
 			out.materials.clear();
 			if (v.contains("materials"))
 			{
@@ -92,6 +93,43 @@ namespace GameScene
 		return false;
 	}
 
+	// Collider and Rigidbody components from a .tgo's "properties" array.
+	void ParsePhysicsProperties(const json& propsHolder, SceneEntryPhysics& out)
+	{
+		if (!propsHolder.contains("properties")) return;
+		auto vec3 = [](const json& v, const char* key, Vector3f& dst)
+		{
+			if (v.contains(key) && v[key].is_array() && v[key].size() >= 3)
+				dst = { v[key][0].get<float>(), v[key][1].get<float>(), v[key][2].get<float>() };
+		};
+		for (const json& p : propsHolder["properties"])
+		{
+			const std::string type = p.value("type", "");
+			if (!p.contains("value") || !p["value"].is_object()) continue;
+			const json& v = p["value"];
+			if (type == "Collider")
+			{
+				out.hasCollider = true;
+				out.colliderShape = v.value("shape", "Auto");
+				vec3(v, "halfExtents", out.halfExtents);
+				out.radius = v.value("radius", out.radius);
+				out.halfHeight = v.value("halfHeight", out.halfHeight);
+				vec3(v, "offset", out.offset);
+			}
+			else if (type == "Rigidbody")
+			{
+				out.hasBody = true;
+				out.motion = v.value("motion", "Dynamic");
+				out.mass = v.value("mass", out.mass);
+				out.friction = v.value("friction", out.friction);
+				out.restitution = v.value("restitution", out.restitution);
+				out.gravityFactor = v.value("gravityFactor", out.gravityFactor);
+				out.linearDamping = v.value("linearDamping", out.linearDamping);
+				out.angularDamping = v.value("angularDamping", out.angularDamping);
+			}
+		}
+	}
+
 	std::optional<SceneEntry> LoadTgo(const fs::path& tgoPath)
 	{
 		std::ifstream in(tgoPath);
@@ -99,6 +137,7 @@ namespace GameScene
 		json j; try { in >> j; } catch (const std::exception& e) { ERROR_PRINT("bench: tgo parse: %s", e.what()); return std::nullopt; }
 		SceneEntry e;
 		if (!ParseModelProperty(j, e)) { ERROR_PRINT("bench: no Model property in %s", tgoPath.string().c_str()); return std::nullopt; }
+		ParsePhysicsProperties(j, e.physics);
 		return e;
 	}
 
@@ -173,6 +212,7 @@ namespace GameScene
 
 			SceneEntry e;
 			bool haveModel = ParseModelProperty(obj, e);
+			if (haveModel) ParsePhysicsProperties(obj, e.physics);
 			if (!haveModel && obj.contains("path") && !obj["path"].get<std::string>().empty())
 			{
 				std::string tgoRel = obj["path"].get<std::string>();

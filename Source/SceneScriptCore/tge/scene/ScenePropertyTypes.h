@@ -32,12 +32,24 @@ namespace Tga
 	void RegisterGetModelMeshInfoFunction(GetModelMeshInfoFunction aGetFunction);
 	bool GetModelMeshInfo(StringId modelPath, SceneModelMeshInfo& outMeshInfo);
 
+	// Collision generated from the model's own geometry. Static objects (no Rigidbody)
+	// use it as level geometry; with a Rigidbody, Auto/Box/ConvexHull make it a prop.
+	enum class SceneModelCollision : int
+	{
+		None,
+		Auto,         // static -> triangle mesh, dynamic -> convex hull
+		Box,          // fitted to the model bounds
+		ConvexHull,
+		TriangleMesh, // static only
+	};
+
 	struct SceneModel
 	{
 		StringId path;
 		// One authored .tgmat asset per model mesh. Texture-map paths belong to
 		// the material asset, keeping model definitions small and reusable.
 		StringId materials[MAX_MESHES_PER_MODEL] = {};
+		SceneModelCollision collision = SceneModelCollision::None;
 	};
 
 	// Physics components. Collider decides the shape; Rigidbody decides how the object

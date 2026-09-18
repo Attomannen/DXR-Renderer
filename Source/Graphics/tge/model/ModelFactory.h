@@ -22,6 +22,14 @@ class AnimatedModel;
 class ModelInstance;
 class Model;
 
+// Positions and triangle indices of every static mesh in a model, merged, in model
+// space. The model itself drops its CPU geometry after the GPU upload.
+struct CollisionGeometry
+{
+	std::vector<float> positions;     // x,y,z per vertex
+	std::vector<uint32_t> indices;    // triangle list
+};
+
 class ModelFactory
 {
 	bool InitUnitCube();
@@ -40,6 +48,11 @@ public:
 	static void DestroyInstance() { if (ourInstance) { delete ourInstance; ourInstance = nullptr; } }
 
 	std::shared_ptr<Model> GetModel(StringId aFilePath);
+
+	// Reads the geometry back from the model's mesh cache (written when the model was
+	// imported), so nothing has to be kept in memory for models that need no collision.
+	// Call after GetModel. False for skinned models, which are not cached.
+	bool GetCollisionGeometry(StringId aFilePath, CollisionGeometry& outGeometry);
 	std::shared_ptr<Model> GetModel(std::string_view aFilePath);
 
 	// Editor-only asynchronous preload. CPU FBX parsing is performed away from

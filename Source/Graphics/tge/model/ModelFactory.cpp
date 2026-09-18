@@ -1299,6 +1299,58 @@ namespace
 		return true;
 	}
 
+	bool ReadCacheGeometry(const std::string& cachePath, const char* fbxPath, Tga::CollisionGeometry& out)
+	{
+		int64_t fbxTime = 0; uint64_t fbxSize = 0;
+		if (!CacheFileStamp(fbxPath, fbxTime, fbxSize)) return false;
+
+		MappedFile file(cachePath);
+		if (!file.data) return false;
+		CacheCursor in{ file.data, file.data + file.size };
+
+		if (in.Read<uint32_t>() != kMeshCacheMagic || in.Read<uint32_t>() != kMeshCacheVersion) return false;
+		const int64_t cachedTime = in.Read<int64_t>();
+		const uint64_t cachedSize = in.Read<uint64_t>();
+		if (!in.ok || cachedTime != fbxTime || cachedSize != fbxSize) return false;
+
+		const uint32_t meshCount = in.Read<uint32_t>();
+		if (meshCount == 0 || meshCount > MAX_MESHES_PER_MODEL) return false;
+
+		for (uint32_t m = 0; m < meshCount; ++m)
+		{
+			in.ReadStr();                                   // mesh name
+			in.ReadStr();                                   // material name
+			in.Read<Tga::BoxSphereBounds>();
+			const uint8_t layout = in.Read<uint8_t>();
+			const uint32_t vc = in.Read<uint32_t>();
+			const uint32_t floats = layout == 2 ? kCompactColorFloats : kCompactFloats;
+			const uint64_t stride = layout == 1 ? sizeof(Tga::Vertex) : (uint64_t)floats * sizeof(float);
+			const uint8_t* vertexData = in.Take((uint64_t)vc * stride);
+			const uint32_t ic = in.Read<uint32_t>();
+			const uint8_t* indexData = in.Take((uint64_t)ic * sizeof(unsigned int));
+			if (!in.ok || layout > 2) return false;
+			if (vc == 0 || ic == 0) continue;
+
+			const uint32_t base = (uint32_t)(out.positions.size() / 3);
+			out.positions.reserve(out.positions.size() + (size_t)vc * 3);
+			for (uint32_t v = 0; v < vc; ++v)
+			{
+				// Position is the first three floats of both the full and the compact record.
+				float p[3];
+				memcpy(p, vertexData + (size_t)v * stride + (layout == 1 ? offsetof(Tga::Vertex, position) : 0), sizeof(p));
+				out.positions.insert(out.positions.end(), p, p + 3);
+			}
+			out.indices.reserve(out.indices.size() + ic);
+			for (uint32_t i = 0; i < ic; ++i)
+			{
+				uint32_t index;
+				memcpy(&index, indexData + (size_t)i * sizeof(uint32_t), sizeof(index));
+				out.indices.push_back(base + index);
+			}
+		}
+		return !out.indices.empty();
+	}
+
 	void WriteMeshCache(const std::string& cachePath, const char* fbxPath,
 	                    const std::vector<Tga::Model::MeshData>& meshes)
 	{
@@ -1461,6 +1513,15 @@ static void GenerateTangents(std::vector<Vertex>& verts, const std::vector<uint3
 }
 
 
+
+bool ModelFactory::GetCollisionGeometry(StringId someFilePath, CollisionGeometry& outGeometry)
+{
+	outGeometry = {};
+	FilePathStream resolved_path;
+	if (someFilePath.IsEmpty() || !Tga::Settings::ResolveAssetPath(someFilePath, resolved_path))
+		return false;
+	return ReadCacheGeometry(MeshCachePath(someFilePath.GetString()), resolved_path.GetData(), outGeometry);
+}
 
 std::shared_ptr<Model> ModelFactory::LoadModel(StringId someFilePath)
 {
