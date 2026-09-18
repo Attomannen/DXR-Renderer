@@ -23,64 +23,42 @@
 
 using namespace Tga;
 
-void SceneObjectList::Draw()
+namespace
 {
-	// Fixed pseudo-entries for the scene's sun + ambient -- not real
-	// SceneObjects (there's no light scene-object type yet), so they're
-	// selected via SceneLightSelection instead of SceneSelection, and drawn
-	// here rather than coming from GetActiveScene()->GetSceneObjects().
+	// Goes through AddSceneObjectsCommand so creating a light is undoable.
+	void AddLightObject(const bool aSpot)
 	{
-		const SceneLightSelection current = GetSelectedSceneLight();
-		if (ImGui::Selectable(ICON_LC_SUN " Sun", current == SceneLightSelection::Sun, ImGuiSelectableFlags_SpanAllColumns))
+		auto light = std::make_shared<SceneObject>();
+		light->SetName(aSpot ? "Spot Light" : "Point Light");
+		light->SetType(aSpot ? SceneObjectType::SpotLight : SceneObjectType::PointLight);
+		light->GetPosition() = { 0.f, 150.f, 0.f };
+		if (aSpot)
 		{
-			SetSelectedSceneLight(SceneLightSelection::Sun);
-			SceneSelection::GetActiveSceneSelection()->ClearSelection();
-		}
-		if (ImGui::Selectable(ICON_LC_SUN_MEDIUM " Ambient", current == SceneLightSelection::Ambient, ImGuiSelectableFlags_SpanAllColumns))
-		{
-			SetSelectedSceneLight(SceneLightSelection::Ambient);
-			SceneSelection::GetActiveSceneSelection()->ClearSelection();
-		}
-		// CreateSceneObject<SceneObject>() inserted straight into the scene
-		// with no way to undo it -- go through AddSceneObjectsCommand instead,
-		// the same command the hierarchy's own "Duplicate" already uses below,
-		// so light creation joins the undo stack like everything else here.
-		if (ImGui::Button("+ Point Light"))
-		{
-			auto light = std::make_shared<SceneObject>();
-			light->SetName("Point Light");
-			light->SetType(SceneObjectType::PointLight);
-			light->GetPosition() = {0.f, 150.f, 0.f};
-			std::vector<std::shared_ptr<SceneObject>> objects{ light };
-			auto command = std::make_shared<AddSceneObjectsCommand>();
-			command->AddObjects(objects);
-			CommandManager::DoCommand(command);
-			SceneSelection::GetActiveSceneSelection()->ClearSelection();
-			SceneSelection::GetActiveSceneSelection()->AddToSelection(command->GetObjects()[0].first);
-			SetSelectedSceneLight(SceneLightSelection::None);
-			mySceneDirty = true;
-		}
-		ImGui::SameLine();
-		if (ImGui::Button("+ Spot Light"))
-		{
-			auto light = std::make_shared<SceneObject>();
-			light->SetName("Spot Light");
-			light->SetType(SceneObjectType::SpotLight);
-			light->GetPosition() = {0.f, 150.f, 0.f};
 			light->GetLightRange() = 1500.f;
-			light->GetEuler() = {0.f, 0.f, 0.f};
-			std::vector<std::shared_ptr<SceneObject>> objects{ light };
-			auto command = std::make_shared<AddSceneObjectsCommand>();
-			command->AddObjects(objects);
-			CommandManager::DoCommand(command);
-			SceneSelection::GetActiveSceneSelection()->ClearSelection();
-			SceneSelection::GetActiveSceneSelection()->AddToSelection(command->GetObjects()[0].first);
-			SetSelectedSceneLight(SceneLightSelection::None);
-			mySceneDirty = true;
+			light->GetEuler() = { 0.f, 0.f, 0.f };
 		}
-		ImGui::Separator();
+		std::vector<std::shared_ptr<SceneObject>> objects{ light };
+		auto command = std::make_shared<AddSceneObjectsCommand>();
+		command->AddObjects(objects);
+		CommandManager::DoCommand(command);
+		SceneSelection::GetActiveSceneSelection()->ClearSelection();
+		SceneSelection::GetActiveSceneSelection()->AddToSelection(command->GetObjects()[0].first);
+		SetSelectedSceneLight(SceneLightSelection::None);
 	}
 
+	const char* IconFor(const SceneObject& aObject)
+	{
+		switch (aObject.GetType())
+		{
+		case SceneObjectType::PointLight: return ICON_LC_LIGHTBULB " ";
+		case SceneObjectType::SpotLight: return ICON_LC_FLASHLIGHT " ";
+		default: return ICON_LC_BOX " ";
+		}
+	}
+}
+
+void SceneObjectList::Draw()
+{
 	std::vector<bool> isFolderOpenStack;
 	const auto& allObjects = GetActiveScene()->GetSceneObjects();
 
@@ -90,6 +68,26 @@ void SceneObjectList::Draw()
 	const bool needsRebuild = searchDirty || mySceneDirty;
 
 	SearchAndFilterBar(allObjects);
+
+	// The sun and ambient light belong to the scene, not to a SceneObject, so they are
+	// selected through SceneLightSelection and listed first like Unreal's environment actors.
+	if (!hasSearch && !hasFilter)
+	{
+		const SceneLightSelection current = GetSelectedSceneLight();
+		const ImGuiTreeNodeFlags rowFlags = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanFullWidth;
+		ImGui::TreeNodeEx(ICON_LC_SUN " Sun", rowFlags | (current == SceneLightSelection::Sun ? ImGuiTreeNodeFlags_Selected : 0));
+		if (ImGui::IsItemClicked())
+		{
+			SetSelectedSceneLight(SceneLightSelection::Sun);
+			SceneSelection::GetActiveSceneSelection()->ClearSelection();
+		}
+		ImGui::TreeNodeEx(ICON_LC_SUN_MEDIUM " Ambient", rowFlags | (current == SceneLightSelection::Ambient ? ImGuiTreeNodeFlags_Selected : 0));
+		if (ImGui::IsItemClicked())
+		{
+			SetSelectedSceneLight(SceneLightSelection::Ambient);
+			SceneSelection::GetActiveSceneSelection()->ClearSelection();
+		}
+	}
 
 	if (needsRebuild)
 	{
@@ -288,7 +286,7 @@ void SceneObjectList::Draw()
 			}
 			else
 			{
-				sprintf_s(buffer, ICON_LC_BOX " %s", object->GetName());
+				sprintf_s(buffer, "%s%s", IconFor(*object), object->GetName());
 				ImGui::TreeNodeEx(buffer, flags);
 			}
 			if (ImGui::BeginDragDropTarget())
@@ -404,7 +402,8 @@ void SceneObjectList::Draw()
 		}
 	}
 
-	// TODO: this should use a tree view table instead!
+	ImGui::Separator();
+	ImGui::TextDisabled("%d actors", (int)allObjects.size());
 
 	/*
 	char buffer[512];
@@ -437,8 +436,27 @@ void SceneObjectList::SetSceneDirty()
 
 void SceneObjectList::SearchAndFilterBar(const std::unordered_map<uint32_t, std::shared_ptr<SceneObject>>& aAllObjects)
 {
-	ImGui::SetNextItemWidth(150);
-	ImGui::InputTextWithHint("##Search", ICON_LC_SEARCH " Search objects...", mySearchBuffer, IM_ARRAYSIZE(mySearchBuffer));
+	if (ImGui::Button(ICON_LC_PLUS " Add"))
+	{
+		ImGui::OpenPopup("OutlinerAddPopup");
+	}
+	if (ImGui::BeginPopup("OutlinerAddPopup"))
+	{
+		if (ImGui::MenuItem(ICON_LC_LIGHTBULB " Point Light"))
+		{
+			AddLightObject(false);
+			mySceneDirty = true;
+		}
+		if (ImGui::MenuItem(ICON_LC_FLASHLIGHT " Spot Light"))
+		{
+			AddLightObject(true);
+			mySceneDirty = true;
+		}
+		ImGui::EndPopup();
+	}
+	ImGui::SameLine();
+	ImGui::SetNextItemWidth(-ImGui::CalcTextSize(ICON_LC_LIST_FILTER).x - ImGui::GetStyle().FramePadding.x * 2.f - ImGui::GetStyle().ItemSpacing.x);
+	ImGui::InputTextWithHint("##Search", ICON_LC_SEARCH " Search...", mySearchBuffer, IM_ARRAYSIZE(mySearchBuffer));
 	ImGui::SameLine();
 
 	// Only every object's *type* changes what's in the dropdown; typing in
@@ -464,17 +482,20 @@ void SceneObjectList::SearchAndFilterBar(const std::unordered_map<uint32_t, std:
 	}
 	std::vector<const PropertyTypeBase*>& availablePropertyTypes = myAvailablePropertyTypes;
 
-	const char* filterLabel = mySelectedPropertyTypeIndex >= 0
-		? availablePropertyTypes[mySelectedPropertyTypeIndex]->GetName().GetString()
-		: "All";
-	
-	if (ImGui::Button(filterLabel))
+	const bool filterActive = mySelectedPropertyTypeIndex >= 0;
+	if (filterActive) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+	const bool filterClicked = ImGui::Button(ICON_LC_LIST_FILTER);
+	if (filterActive) ImGui::PopStyleColor();
+	if (filterActive && ImGui::IsItemHovered())
+		ImGui::SetTooltip("Showing objects with: %s", availablePropertyTypes[mySelectedPropertyTypeIndex]->GetName().GetString());
+	if (filterClicked)
 	{
 		ImGui::OpenPopup("PropertyTypeFilterPopup");
 	}
 	
 	if (ImGui::BeginPopup("PropertyTypeFilterPopup"))
 	{
+		ImGui::TextDisabled("Show only objects with");
 		if (ImGui::Selectable("All", mySelectedPropertyTypeIndex == -1))
 		{
 			mySelectedPropertyTypeIndex = -1;
@@ -498,14 +519,6 @@ void SceneObjectList::SearchAndFilterBar(const std::unordered_map<uint32_t, std:
 		ImGui::EndPopup();
 	}
 	
-	ImGui::SameLine();
-	if (ImGui::Button("Clear"))
-	{
-		mySearchBuffer[0] = '\0';
-		myRequiredPropertyTypeIds.clear();
-		mySelectedPropertyTypeIndex = -1;
-		mySceneDirty = true;
-	}
 	ImGui::Separator();
 }
 

@@ -28,6 +28,8 @@ float deg_to_rad(float degree) { return (degree * (pi / 180.0f)); }
 #include <tge/editor/Tools/SceneObjectProperties/ChangeSceneLightingFieldCommand.h>
 #include <tge/editor/Tools/SceneObjectProperties/ChangeSceneEnvironmentTextureCommand.h>
 
+#include <IconFontHeaders\IconsLucide.h>
+#include <string>
 #include <vector>
 #include <algorithm>
 #include <cstring>
@@ -157,8 +159,29 @@ namespace
 	}
 }
 
+namespace
+{
+	// A collapsible category with its own property table; pair with EndPropertyTable().
+	bool SectionBegin(const char* aLabel, const bool aForceOpen)
+	{
+		if (aForceOpen) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+		else ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+		return ImGui::CollapsingHeader(aLabel) && PropertyEditor::BeginPropertyTable();
+	}
+
+	bool ContainsNoCase(const char* aText, const char* aFilter)
+	{
+		std::string text = aText;
+		std::string filter = aFilter;
+		std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return (char)tolower(c); });
+		std::transform(filter.begin(), filter.end(), filter.begin(), [](unsigned char c) { return (char)tolower(c); });
+		return text.find(filter) != std::string::npos;
+	}
+}
+
 void SceneObjectProperties::Draw()
 {
+	static char locFilter[128] = "";
 	static char locCreateNewFolderBuffer[512];
 	static std::vector<StringId> allFolderNames;
 
@@ -283,41 +306,33 @@ void SceneObjectProperties::Draw()
 			SceneObject* objectPtr = GetActiveScene()->GetSceneObject(id);
 			if (!objectPtr) { ImGui::PopID(); continue; }
 
-			if (PropertyEditor::BeginPropertyTable())
 			{
 				SceneObject& object = *objectPtr;
 
-				PropertyEditor::PropertyLabel();
-
-				ImGui::Text("Object Definition");
-				PropertyEditor::HelpMarker("Name of the Object Definition this object is using");
-
-				PropertyEditor::PropertyValue();
-
-				ImGui::Text(object.GetSceneObjectDefinitionName().GetString());
-
-				PropertyEditor::PropertyLabel();
-
-				ImGui::Text("Name");
-				PropertyEditor::HelpMarker("Name of this object instance. Can be used to identify the object in the editor and game code");
-
-				PropertyEditor::PropertyValue();
-
 				{
 					char buffer[512];
-
 					strncpy_s(buffer, object.GetName(), sizeof(buffer));
 					buffer[sizeof(buffer) - 1] = '\0';
 
+					ImGui::SetNextItemWidth(-1);
 					ImGui::InputText("##Name", buffer, IM_ARRAYSIZE(buffer));
-
 					if (ImGui::IsItemDeactivatedAfterEdit())
 					{
 						std::shared_ptr<ChangeSceneObjectNameCommand> command = std::make_shared<ChangeSceneObjectNameCommand>(id, buffer, object.GetName());
 						CommandManager::DoCommand(command);
 					}
 				}
+				if (object.IsLight())
+					ImGui::TextDisabled("%s", object.GetType() == SceneObjectType::SpotLight ? "Spot Light" : "Point Light");
+				else
+					ImGui::TextDisabled("Instance of %s", object.GetSceneObjectDefinitionName().GetString());
 
+				ImGui::SetNextItemWidth(-1);
+				ImGui::InputTextWithHint("##DetailsFilter", ICON_LC_SEARCH " Search details...", locFilter, IM_ARRAYSIZE(locFilter));
+				const bool filtering = locFilter[0] != '\0';
+
+				if (!filtering && SectionBegin(ICON_LC_TAG " General", false))
+				{
 				PropertyEditor::PropertyLabel();
 
 				ImGui::Text("Path");
@@ -390,12 +405,10 @@ void SceneObjectProperties::Draw()
 				}
 
 
-				PropertyEditor::PropertyLabel();
+				PropertyEditor::EndPropertyTable();
+				}
 
-				ImGui::Text("Transform");
-
-				PropertyEditor::PropertyValue();
-
+				if (!filtering && SectionBegin(ICON_LC_MOVE_3D " Transform", false))
 				{
 					bool anyActive = false;
 					bool anyDeactivatedAfterEdit = false;
@@ -454,6 +467,7 @@ void SceneObjectProperties::Draw()
 						myTransformCommand.End();
 						myTransformCommand = {};
 					}
+					PropertyEditor::EndPropertyTable();
 				}
 
 				// Lights previously had creation defaults only -- nothing here
@@ -461,7 +475,7 @@ void SceneObjectProperties::Draw()
 				// SceneObject's fields (SceneObject.h); inner/outer cone only
 				// mean anything for spot lights, so they're hidden for point
 				// lights rather than shown disabled.
-				if (object.IsLight())
+				if (!filtering && object.IsLight() && SectionBegin(ICON_LC_LIGHTBULB " Light", false))
 				{
 					const bool isSpot = object.GetType() == SceneObjectType::SpotLight;
 
@@ -523,13 +537,18 @@ void SceneObjectProperties::Draw()
 							DragLightField(id, LightField::OuterAngle, &outer, 1);
 						}
 					}
+					PropertyEditor::EndPropertyTable();
 				}
 
 				std::vector<SceneObject::PropertySourceAndOveride> allProperties;
 				object.CalculateEditablePropertySet(Editor::GetEditor()->GetSceneObjectDefinitionManager(), allProperties);
 
+				if (!allProperties.empty() && SectionBegin(ICON_LC_SLIDERS_HORIZONTAL " Properties", filtering))
+				{
 				for (const SceneObject::PropertySourceAndOveride& propertySourceAndOverride : allProperties)
 				{
+					if (filtering && !ContainsNoCase(propertySourceAndOverride.source.name.GetString(), locFilter))
+						continue;
 					ImGui::PushID(propertySourceAndOverride.source.name.GetString());
 
 					// todo: probably show groups here also
@@ -576,8 +595,8 @@ void SceneObjectProperties::Draw()
 
 					ImGui::PopID();
 				}
-
 				PropertyEditor::EndPropertyTable();
+				}
 			}
 
 			ImGui::PopID();
