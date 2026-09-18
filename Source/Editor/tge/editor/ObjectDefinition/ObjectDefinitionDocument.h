@@ -39,12 +39,15 @@ struct LivePreviewData
 class ObjectDefinitionDocument : public Document, public ViewportInterface
 {
 public:
+	// A Blueprint-style editor: Components and My Blueprint on the left, Details on the right,
+	// Viewport and Event Graph as tabs in the middle, preview panels at the bottom right.
 	enum class Panels
 	{
-		ObjectDefinition,
-		Properties,
+		Components,
+		MyBlueprint,
+		Details,
 		Viewport,
-		Script,
+		EventGraph,
 		VisualPreviewSettings,
 		LivePreview,
 		Count
@@ -69,8 +72,10 @@ public:
 
 	virtual bool HasTransformableSelection() override;
 private:
-	void DrawObjectDefinitionPanel();
-	void DrawPropertyPanel();
+	void DrawToolbar();
+	void DrawComponentsPanel();
+	void DrawMyBlueprintPanel();
+	void DrawDetailsPanel();
 	void DrawAndUpdateLivePreview(float aTimeDelta);
 
 	SceneObjectDefinition* myObjectDefinition;
@@ -84,6 +89,7 @@ private:
 	std::unique_ptr<ObjectDefinitionEditorGraphicsBase> myGraphics;
 
 	bool myIsDockingInitialized = false;
+	bool myShowEventGraphNextFrame = false;
 
 	std::string myPanelWindowNames[(size_t)Panels::Count];
 };

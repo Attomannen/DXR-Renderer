@@ -14,6 +14,8 @@
 
 #include <tge/editor/ObjectDefinition/Commands/ChangePropertiesCommand.h>
 #include <tge/editor/ScriptEditor/ScriptEditor.h>
+#include <tge/editor/ScriptEditor/Commands/SetOverridenValueCommand.h>
+#include <tge/editor/CommandManager/CompositeCommand.h>
 
 #include <tge/editor/Editor.h>
 #include <tge/script/Script.h>
@@ -76,18 +78,20 @@ void ObjectDefinitionDocument::Init(std::string_view aPath)
 	sprintf_s(buffer, "%s%s###Document:%s", myObjectDefinition->GetName().GetString(), asterix, myObjectDefinition->GetPath());
 	myImGuiName = StringRegistry::RegisterOrGetString(buffer);
 
-	sprintf_s(buffer, "ObjectDefinition##Document:%s", aPath.data());
-	myPanelWindowNames[(size_t)Panels::ObjectDefinition] = buffer;
-	sprintf_s(buffer, "Properties##Document:%s", aPath.data());
-	myPanelWindowNames[(size_t)Panels::Properties] = buffer;
-	sprintf_s(buffer, "Viewport##Document:%s", aPath.data());
-	myPanelWindowNames[(size_t)Panels::Viewport] = buffer;
-	sprintf_s(buffer, "Script##Document:%s", aPath.data());
-	myPanelWindowNames[(size_t)Panels::Script] = buffer;
-	sprintf_s(buffer, "Visual Preview Settings##Document:%s", aPath.data());
-	myPanelWindowNames[(size_t)Panels::VisualPreviewSettings] = buffer;
-	sprintf_s(buffer, "Live Preview##Document:%s", aPath.data());
-	myPanelWindowNames[(size_t)Panels::LivePreview] = buffer;
+	const struct { Panels panel; const char* title; } titles[] = {
+		{ Panels::Components, "Components" },
+		{ Panels::MyBlueprint, "My Blueprint" },
+		{ Panels::Details, "Details" },
+		{ Panels::Viewport, "Viewport" },
+		{ Panels::EventGraph, "Event Graph" },
+		{ Panels::VisualPreviewSettings, "Preview Settings" },
+		{ Panels::LivePreview, "Live Preview" },
+	};
+	for (const auto& title : titles)
+	{
+		sprintf_s(buffer, "%s##Document:%s", title.title, aPath.data());
+		myPanelWindowNames[(size_t)title.panel] = buffer;
+	}
 
 	Camera& camera = myViewport.GetCamera();
 	Vector2i resolution = myViewport.GetViewportSize();
@@ -163,6 +167,8 @@ void ObjectDefinitionDocument::Update(float aTimeDelta, InputManager& inputManag
 		}
 		ImGui::PopStyleVar(2);
 
+		DrawToolbar();
+
 		ImVec2 docSpaceSize = ImGui::GetContentRegionAvail();
 		ImGuiID dockSpaceId = ImGui::GetID("Document Dockspace");
 		// todo: ImGui::GetContentRegionAvail() returns wrong result first time it seems. What to do instead?
@@ -170,7 +176,7 @@ void ObjectDefinitionDocument::Update(float aTimeDelta, InputManager& inputManag
 
 		if (!myIsDockingInitialized && docSpaceSize.x > 0.0f && docSpaceSize.y > 0.0f)
 		{
-			ImGuiID center = 0, left = 0, right = 0;
+			ImGuiID center = 0, left = 0, right = 0, leftBottom = 0, rightBottom = 0;
 
 			ImGui::DockBuilderRemoveNode(dockSpaceId); // clear any previous layout
 			ImGui::DockBuilderAddNode(dockSpaceId, ImGuiDockNodeFlags_DockSpace);
@@ -178,19 +184,19 @@ void ObjectDefinitionDocument::Update(float aTimeDelta, InputManager& inputManag
 
 			center = dockSpaceId;
 
-			ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.2f, &left, &center);
-			ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.25f, &right, &center);
+			// Components over My Blueprint on the left, Details over the previews on the right.
+			ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.20f, &left, &center);
+			ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.26f, &right, &center);
+			ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.55f, &leftBottom, &left);
+			ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.30f, &rightBottom, &right);
 
-			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Properties].c_str(), right);
-			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::VisualPreviewSettings].c_str(), left);
-			
-			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::LivePreview].c_str(), left);
-
-			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::ObjectDefinition].c_str(), left);
-
-			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Script].c_str(), center);
-
+			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Components].c_str(), left);
+			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::MyBlueprint].c_str(), leftBottom);
+			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Details].c_str(), right);
+			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::LivePreview].c_str(), rightBottom);
+			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::VisualPreviewSettings].c_str(), rightBottom);
 			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Viewport].c_str(), center);
+			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::EventGraph].c_str(), center);
 
 			ImGui::DockBuilderFinish(dockSpaceId);
 			myIsDockingInitialized = true;
@@ -218,23 +224,32 @@ void ObjectDefinitionDocument::Update(float aTimeDelta, InputManager& inputManag
 
 	ImGui::SetNextWindowClass(&myDocumentWindowClass);
 
-	ImGui::Begin(myPanelWindowNames[(size_t)Panels::ObjectDefinition].c_str());
+	ImGui::Begin(myPanelWindowNames[(size_t)Panels::Components].c_str());
+	DrawComponentsPanel();
+	ImGui::End();
 
-	DrawObjectDefinitionPanel();
+	ImGui::SetNextWindowClass(&myDocumentWindowClass);
+	ImGui::Begin(myPanelWindowNames[(size_t)Panels::MyBlueprint].c_str());
+	DrawMyBlueprintPanel();
 
 	ImGui::End();
 
 	ImGui::SetNextWindowClass(&myDocumentWindowClass);
-	ImGui::Begin(myPanelWindowNames[(size_t)Panels::Script].c_str());
+	if (myShowEventGraphNextFrame)
+	{
+		ImGui::SetNextWindowFocus();
+		myShowEventGraphNextFrame = false;
+	}
+	ImGui::Begin(myPanelWindowNames[(size_t)Panels::EventGraph].c_str());
 	myGraphEditor.Display(myObjectDefinition->EditEventGraph(), myObjectDefinition, myLivePreviewData.pinToTrigger, myLivePreviewData.mode == LivePreviewMode::Running);
 	ImGui::End();
 
 	ImGui::SetNextWindowClass(&myDocumentWindowClass);
 
 	isViewportOrPropertiesFocused = isViewportOrPropertiesFocused || ImGui::IsWindowFocused();
-	ImGui::Begin(myPanelWindowNames[(size_t)Panels::Properties].c_str());
+	ImGui::Begin(myPanelWindowNames[(size_t)Panels::Details].c_str());
 
-	DrawPropertyPanel();
+	DrawDetailsPanel();
 
 	ImGui::End();
 
@@ -278,269 +293,289 @@ void ObjectDefinitionDocument::OnAction(CommandManager::Action action)
 	}
 }
 
-struct CreateVariableData
+namespace
 {
-	char name[MAX_OBJECTDEFINITION_TEXT_LENGTH];
-	StringId typeName;
-};
-
-void ObjectDefinitionDocument::DrawObjectDefinitionPanel()
-{
-	static CreateVariableData locCreateVariableData;
-
-	// todo: add option to select parent object definition here
-
-	ImGuiTreeNodeFlags sectionFlags = ImGuiTreeNodeFlags_DefaultOpen;
-	ImGuiTreeNodeFlags categoryFlags = ImGuiTreeNodeFlags_DefaultOpen;
-	ImGuiTreeNodeFlags itemFlags = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
-
-	// Components: what the object is made of (Mesh, Collider, Rigidbody), like a Blueprint.
-	// Everything else below is a plain variable.
-	bool showComponents = ImGui::TreeNodeEx("Components", sectionFlags);
-	ImGui::SameLine();
-	if (ImGui::SmallButton("Add##Component"))
+	// The colour a pin of this type has in the graph, so a variable is recognisable there.
+	ImU32 VariableColor(const PropertyTypeBase* type)
 	{
-		locCreateVariableData.typeName = StringId();
-		for (const StringId& name : PropertyTypeRegistry::GetAllPropertyNames())
-		{
-			if (PropertyTypeRegistry::GetPropertyType(name)->IsComponent())
-			{
-				locCreateVariableData.typeName = name;
-				break;
-			}
-		}
-		ImGui::OpenPopup("Add Component");
+		ScriptPin pin = {};
+		pin.type = ScriptLinkType::Property;
+		pin.dataType = type;
+		const uint8_t* c = GetScriptLinkColor(pin);
+		return IM_COL32(c[0], c[1], c[2], 255);
 	}
 
-	if (ImGui::BeginPopupModal("Add Component", NULL, ImGuiWindowFlags_AlwaysAutoResize))
+	bool MatchesFilter(const char* text, const char* filter)
 	{
-		if (ImGui::BeginCombo("##ComponentType", locCreateVariableData.typeName.GetString()))
+		if (!filter || !*filter)
+			return true;
+		std::string lowerText(text), lowerFilter(filter);
+		for (char& c : lowerText) c = (char)std::tolower((unsigned char)c);
+		for (char& c : lowerFilter) c = (char)std::tolower((unsigned char)c);
+		return lowerText.find(lowerFilter) != std::string::npos;
+	}
+}
+
+void ObjectDefinitionDocument::DrawToolbar()
+{
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.f, 5.f));
+	ImGui::BeginChild("##ObjectToolbar", ImVec2(0.f, 34.f), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar);
+	ImGui::PopStyleVar();
+
+	if (ImGui::Button(ICON_LC_SAVE " Save"))
+		Save();
+	ImGui::SameLine();
+	ImGui::TextDisabled("|");
+	ImGui::SameLine();
+
+	const ImVec2 size = ImVec2(28.f, 0.f);
+	const bool running = myLivePreviewData.mode == LivePreviewMode::Running;
+	const bool stopped = myLivePreviewData.mode == LivePreviewMode::Stopped;
+
+	ImGui::BeginDisabled(running);
+	if (ImGui::Button(ICON_LC_PLAY, size))
+	{
+		if (stopped)
 		{
-			for (const StringId& name : PropertyTypeRegistry::GetAllPropertyNames())
+			for (const ScenePropertyDefinition& p : myObjectDefinition->GetProperties())
 			{
-				if (!PropertyTypeRegistry::GetPropertyType(name)->IsComponent())
-					continue;
-
-				bool isSelected = name == locCreateVariableData.typeName;
-				if (ImGui::Selectable(name.GetString(), isSelected))
-					locCreateVariableData.typeName = name;
-				if (isSelected)
-					ImGui::SetItemDefaultFocus();
+				if ((p.flags & ScenePropertyFlags::IsDynamic) != ScenePropertyFlags::None)
+					myLivePreviewData.dynamicProperties[p.name] = p.value;
+				else
+					myLivePreviewData.staticProperties[p.name] = p.value;
 			}
-			ImGui::EndCombo();
+			if (myObjectDefinition->HasEventGraph())
+			{
+				myLivePreviewData.graph = std::make_unique<ScriptRuntimeInstance>(myObjectDefinition->GetEventGraphSnapshot());
+				myLivePreviewData.graph->Init();
+			}
 		}
+		myLivePreviewData.mode = LivePreviewMode::Running;
+	}
+	ImGui::EndDisabled();
+	if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+		ImGui::SetTooltip("Run the Event Graph on this object in the viewport");
 
-		ImGui::Separator();
+	ImGui::SameLine();
+	ImGui::BeginDisabled(!running);
+	if (ImGui::Button(ICON_LC_PAUSE, size))
+		myLivePreviewData.mode = LivePreviewMode::Paused;
+	ImGui::EndDisabled();
 
-		if (ImGui::Button("Add", ImVec2(120, 0)) && !locCreateVariableData.typeName.IsEmpty())
+	ImGui::SameLine();
+	ImGui::BeginDisabled(stopped);
+	if (ImGui::Button(ICON_LC_SQUARE, size))
+	{
+		myLivePreviewData.mode = LivePreviewMode::Stopped;
+		myLivePreviewData.poses.clear();
+		myLivePreviewData.dynamicProperties.clear();
+		myLivePreviewData.staticProperties.clear();
+		myLivePreviewData.graph.reset();
+		myLivePreviewData.frameNumber = 0;
+	}
+	ImGui::EndDisabled();
+
+	ImGui::SameLine();
+	ImGui::TextDisabled("%s", running ? "Running" : (stopped ? "Stopped" : "Paused"));
+
+	ImGui::EndChild();
+}
+
+void ObjectDefinitionDocument::DrawComponentsPanel()
+{
+	if (ImGui::Button(ICON_LC_PLUS " Add"))
+		ImGui::OpenPopup("AddComponentMenu");
+
+	if (ImGui::BeginPopup("AddComponentMenu"))
+	{
+		for (const StringId& name : PropertyTypeRegistry::GetAllPropertyNames())
 		{
-			const PropertyTypeBase* type = PropertyTypeRegistry::GetPropertyType(locCreateVariableData.typeName);
+			const PropertyTypeBase* type = PropertyTypeRegistry::GetPropertyType(name);
+			if (!type->IsComponent())
+				continue;
 
-			// The component is named after its type, and a definition holds one of each.
-			bool alreadyPresent = false;
+			// An object holds one of each component.
+			bool present = false;
 			for (const ScenePropertyDefinition& existing : myObjectDefinition->GetProperties())
-				alreadyPresent |= existing.type == type;
+				present |= existing.type == type;
 
-			if (!alreadyPresent)
+			ImGui::BeginDisabled(present);
+			if (ImGui::Selectable(name.GetString()))
 			{
 				ScenePropertyDefinition newProperty = {};
 				newProperty.name = type->GetName();
 				newProperty.type = type;
 				newProperty.value = Property(type);
 				newProperty.flags = ScenePropertyFlags::None;
-
-				std::shared_ptr<ChangePropertiesCommand> command = std::make_shared<ChangePropertiesCommand>(*myObjectDefinition, ChangePropertiesCommand::Action::Add, newProperty, ScenePropertyDefinition{});
-				CommandManager::DoCommand(command);
+				CommandManager::DoCommand(std::make_shared<ChangePropertiesCommand>(*myObjectDefinition, ChangePropertiesCommand::Action::Add, newProperty, ScenePropertyDefinition{}));
 				mySelectedProperty = newProperty.name;
 			}
-
-			ImGui::CloseCurrentPopup();
+			ImGui::EndDisabled();
 		}
-
-		ImGui::SameLine();
-		if (ImGui::Button("Cancel##Component", ImVec2(120, 0)))
-			ImGui::CloseCurrentPopup();
-
 		ImGui::EndPopup();
 	}
+	ImGui::Separator();
 
-	if (showComponents)
+	// The object itself is the root; components hang under it.
+	char rootLabel[256];
+	sprintf_s(rootLabel, "%s (Self)", myObjectDefinition->GetName().GetString());
+	ImGuiTreeNodeFlags rootFlags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
+	if (mySelectedProperty.IsEmpty())
+		rootFlags |= ImGuiTreeNodeFlags_Selected;
+	const bool rootOpen = ImGui::TreeNodeEx(rootLabel, rootFlags);
+	if (ImGui::IsItemClicked())
+		mySelectedProperty = {};
+
+	if (rootOpen)
 	{
-		std::span<const ScenePropertyDefinition> components = myObjectDefinition->GetProperties();
-		for (int i = 0; i < components.size(); i++)
+		std::span<const ScenePropertyDefinition> properties = myObjectDefinition->GetProperties();
+		for (int i = 0; i < properties.size(); i++)
 		{
-			if (!components[i].type->IsComponent())
+			if (!properties[i].type->IsComponent())
 				continue;
 
-			ImGuiTreeNodeFlags flags = itemFlags;
-			if (mySelectedProperty == components[i].name)
+			ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanAvailWidth;
+			if (mySelectedProperty == properties[i].name)
 				flags |= ImGuiTreeNodeFlags_Selected;
 
-			ImGui::TreeNodeEx(components[i].name.GetString(), flags);
+			char label[256];
+			sprintf_s(label, "%s  %s", ICON_LC_BOX, properties[i].name.GetString());
+			ImGui::TreeNodeEx(label, flags);
 			if (ImGui::IsItemClicked())
-			{
-				mySelectedProperty = components[i].name;
-			}
+				mySelectedProperty = properties[i].name;
 
-			if (ImGui::BeginPopupContextItem(components[i].name.GetString()))
+			if (ImGui::BeginPopupContextItem(properties[i].name.GetString()))
 			{
-				if (ImGui::Selectable("Remove"))
-				{
-					std::shared_ptr<ChangePropertiesCommand> command = std::make_shared<ChangePropertiesCommand>(*myObjectDefinition, ChangePropertiesCommand::Action::Remove, ScenePropertyDefinition{}, components[i]);
-					CommandManager::DoCommand(command);
-				}
+				if (ImGui::Selectable(ICON_LC_TRASH_2 "  Remove"))
+					CommandManager::DoCommand(std::make_shared<ChangePropertiesCommand>(*myObjectDefinition, ChangePropertiesCommand::Action::Remove, ScenePropertyDefinition{}, properties[i]));
 				ImGui::EndPopup();
 			}
 		}
 		ImGui::TreePop();
 	}
+}
 
-	bool showVariables = ImGui::TreeNodeEx("Variables", sectionFlags);
-	ImGui::SameLine();
-	if (ImGui::SmallButton("Add##Variable"))
+void ObjectDefinitionDocument::DrawMyBlueprintPanel()
+{
+	static char filter[64] = "";
+
+	if (ImGui::Button(ICON_LC_PLUS " Variable"))
+		ImGui::OpenPopup("NewVariableType");
+
+	if (ImGui::BeginPopup("NewVariableType"))
 	{
-		strncpy_s(locCreateVariableData.name, "untitled", sizeof(locCreateVariableData.name));
-		locCreateVariableData.name[sizeof(locCreateVariableData.name) - 1] = '\0';
+		ImGui::TextDisabled("Type");
+		ImGui::Separator();
 		for (const StringId& name : PropertyTypeRegistry::GetAllPropertyNames())
 		{
-			if (!PropertyTypeRegistry::GetPropertyType(name)->IsComponent())
+			const PropertyTypeBase* type = PropertyTypeRegistry::GetPropertyType(name);
+			if (type->IsComponent())
+				continue;
+
+			ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(VariableColor(type)));
+			ImGui::TextUnformatted(ICON_LC_CIRCLE);
+			ImGui::PopStyleColor();
+			ImGui::SameLine();
+			if (ImGui::Selectable(name.GetString()))
 			{
-				locCreateVariableData.typeName = name;
-				break;
-			}
-		}
-
-		ImGui::OpenPopup("Add Property");
-	}
-
-	if (ImGui::BeginPopupModal("Add Property", NULL, ImGuiWindowFlags_AlwaysAutoResize))
-	{
-
-		ImGui::InputText("##Name", locCreateVariableData.name, IM_ARRAYSIZE(locCreateVariableData.name), ImGuiInputTextFlags_AutoSelectAll);
-
-		if (ImGui::BeginCombo("##Type", locCreateVariableData.typeName.GetString()))
-		{
-			std::span<StringId> allTypes = PropertyTypeRegistry::GetAllPropertyNames();
-
-			for (const StringId& name : allTypes)
-			{
-				if (PropertyTypeRegistry::GetPropertyType(name)->IsComponent())
-					continue;
-
-				bool isSelected = name == locCreateVariableData.typeName;
-				if (ImGui::Selectable(name.GetString(), isSelected))
+				// "NewVar", made unique, ready to be renamed in Details.
+				std::string base = "NewVar", unique = base;
+				for (int suffix = 2;; ++suffix)
 				{
-					locCreateVariableData.typeName = name;
+					bool taken = false;
+					for (const ScenePropertyDefinition& existing : myObjectDefinition->GetProperties())
+						taken |= unique == existing.name.GetString();
+					if (!taken)
+						break;
+					unique = base + std::to_string(suffix);
 				}
 
-				if (isSelected)
-				{
-					ImGui::SetItemDefaultFocus();
-				}
+				ScenePropertyDefinition newProperty = {};
+				newProperty.name = StringRegistry::RegisterOrGetString(unique);
+				newProperty.type = type;
+				newProperty.value = Property(type);
+				newProperty.flags = ScenePropertyFlags::IsDynamic | ScenePropertyFlags::IsPerInstance;
+				newProperty.groupName = StringRegistry::RegisterOrGetString("Variables");
+				CommandManager::DoCommand(std::make_shared<ChangePropertiesCommand>(*myObjectDefinition, ChangePropertiesCommand::Action::Add, newProperty, ScenePropertyDefinition{}));
+				mySelectedProperty = newProperty.name;
 			}
-
-			ImGui::EndCombo();
 		}
-
-		ImGui::Separator();
-
-		if (ImGui::Button("Create", ImVec2(120, 0)))
-		{
-			const PropertyTypeBase* type = PropertyTypeRegistry::GetPropertyType(locCreateVariableData.typeName);
-
-			ScenePropertyDefinition newProperty = {};
-			newProperty.name = StringRegistry::RegisterOrGetString(locCreateVariableData.name);
-			newProperty.type = type;
-			newProperty.value = Property(type);
-			newProperty.flags = ScenePropertyFlags::None;
-
-			std::shared_ptr<ChangePropertiesCommand> command = std::make_shared<ChangePropertiesCommand>(*myObjectDefinition, ChangePropertiesCommand::Action::Add, newProperty, ScenePropertyDefinition{});
-			CommandManager::DoCommand(command);
-
-			ImGui::CloseCurrentPopup();
-		}
-
-		ImGui::SetItemDefaultFocus();
-		ImGui::SameLine();
-		if (ImGui::Button("Cancel", ImVec2(120, 0)))
-		{
-			ImGui::CloseCurrentPopup();
-		}
-
 		ImGui::EndPopup();
 	}
 
-	if (showVariables)
-	{
-		StringId groupName;
-		bool showGroup = true;
+	ImGui::SameLine();
+	ImGui::SetNextItemWidth(-1.f);
+	ImGui::InputTextWithHint("##variablesearch", ICON_LC_SEARCH " Search", filter, sizeof(filter));
+	ImGui::Separator();
 
+	ImGuiTreeNodeFlags sectionFlags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth;
+
+	if (ImGui::CollapsingHeader("GRAPHS", sectionFlags))
+	{
+		ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanAvailWidth;
+		char label[64];
+		sprintf_s(label, "%s  Event Graph", ICON_LC_WORKFLOW);
+		ImGui::TreeNodeEx(label, flags);
+		if (ImGui::IsItemClicked() || (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)))
+			myShowEventGraphNextFrame = true;
+	}
+
+	if (ImGui::CollapsingHeader("VARIABLES", sectionFlags))
+	{
 		std::span<const ScenePropertyDefinition> properties = myObjectDefinition->GetProperties();
+		int shown = 0;
 		for (int i = 0; i < properties.size(); i++)
 		{
-			if (properties[i].type->IsComponent())
+			if (properties[i].type->IsComponent() || !MatchesFilter(properties[i].name.GetString(), filter))
 				continue;
+			++shown;
 
-			if (properties[i].groupName != groupName)
+			ImGui::PushID(i);
+			const bool selected = mySelectedProperty == properties[i].name;
+			const ImVec2 rowStart = ImGui::GetCursorScreenPos();
+
+			// Type colour dot, name, and the type on the right: same colours as the pins in the graph.
+			ImGui::Selectable("##variable", selected, ImGuiSelectableFlags_SpanAllColumns);
+			const bool clicked = ImGui::IsItemClicked();
+
+			if (ImGui::BeginDragDropSource())
 			{
-				if (!groupName.IsEmpty() && showGroup)
-				{
-					ImGui::TreePop();
-				}
-
-				groupName = properties[i].groupName;
-				showGroup = ImGui::TreeNodeEx(groupName.GetString(), categoryFlags);
+				// Drop it in the Event Graph: a Get node, or a Set node with Alt held.
+				struct Payload { PropertyTypeId type; StringId name; };
+				Payload payload = { .type = properties[i].type->GetTypeId(), .name = properties[i].name };
+				ImGui::SetDragDropPayload("property_payload", (void*)&payload, sizeof(payload));
+				ImGui::Text("%s  (%s)", properties[i].name.GetString(), properties[i].type->GetName().GetString());
+				ImGui::TextDisabled("Drop in the Event Graph. Hold Alt for Set.");
+				ImGui::EndDragDropSource();
+			}
+			else if (clicked)
+			{
+				mySelectedProperty = properties[i].name;
 			}
 
-			if (showGroup)
+			const ImVec2 rowEnd = ImVec2(ImGui::GetItemRectMax().x, ImGui::GetItemRectMax().y);
+			ImDrawList* draw = ImGui::GetWindowDrawList();
+			const float lineHeight = ImGui::GetTextLineHeight();
+			draw->AddCircleFilled(ImVec2(rowStart.x + 10.f, rowStart.y + lineHeight * 0.5f + 2.f), 5.f, VariableColor(properties[i].type));
+			draw->AddText(ImVec2(rowStart.x + 24.f, rowStart.y + 1.f), ImGui::GetColorU32(ImGuiCol_Text), properties[i].name.GetString());
+			const char* typeName = properties[i].type->GetName().GetString();
+			const float typeWidth = ImGui::CalcTextSize(typeName).x;
+			draw->AddText(ImVec2(rowEnd.x - typeWidth - 8.f, rowStart.y + 1.f), ImGui::GetColorU32(ImGuiCol_TextDisabled), typeName);
+
+			if (ImGui::BeginPopupContextItem("VariableMenu"))
 			{
-				ImGuiTreeNodeFlags flags = itemFlags;
-
-				if (mySelectedProperty == properties[i].name)
-					flags |= ImGuiTreeNodeFlags_Selected;
-
-				ImGui::TreeNodeEx(properties[i].name.GetString(), flags);
-				if(ImGui::BeginDragDropSource()) 
-				{
-					struct Payload { PropertyTypeId type; StringId name; };
-					Payload payload = { .type = properties[i].type->GetTypeId(), .name = properties[i].name };
-
-					ImGui::SetDragDropPayload("property_payload", (void*)&payload, sizeof(payload));
-					char buffer[255];
-					sprintf_s(buffer, "property_name_payload");
-					sprintf_s(buffer, "%s, (Type: %s)", properties[i].name.GetString(), properties[i].type->GetName().GetString());
-					ImGui::Text(buffer);
-					ImGui::EndDragDropSource();
-				}
-				// Todo: probably show type, and value if compact enough.
-
-				else if (ImGui::IsItemClicked())
-				{
-					mySelectedProperty = properties[i].name;
-				}
-
-				if (ImGui::BeginPopupContextItem(properties[i].name.GetString()))
-				{
-					if (ImGui::Selectable("Remove"))
-					{
-						std::shared_ptr<ChangePropertiesCommand> command = std::make_shared<ChangePropertiesCommand>(*myObjectDefinition, ChangePropertiesCommand::Action::Remove, ScenePropertyDefinition{}, properties[i]);
-						CommandManager::DoCommand(command);
-					}
-					ImGui::EndPopup();
-				}
+				if (ImGui::Selectable(ICON_LC_TRASH_2 "  Remove"))
+					CommandManager::DoCommand(std::make_shared<ChangePropertiesCommand>(*myObjectDefinition, ChangePropertiesCommand::Action::Remove, ScenePropertyDefinition{}, properties[i]));
+				ImGui::EndPopup();
 			}
+			ImGui::PopID();
 		}
-
-		if (!groupName.IsEmpty() && showGroup)
-		{
-			ImGui::TreePop();
-		}
-
-		ImGui::TreePop();
+		if (shown == 0)
+			ImGui::TextDisabled(filter[0] ? "No variable matches" : "No variables yet. Press + Variable.");
 	}
 }
 
-void ObjectDefinitionDocument::DrawPropertyPanel()
+void ObjectDefinitionDocument::DrawDetailsPanel()
 {
 	char buffer[MAX_OBJECTDEFINITION_TEXT_LENGTH];
 
@@ -562,8 +597,14 @@ void ObjectDefinitionDocument::DrawPropertyPanel()
 		const ScenePropertyDefinition& property = properties[selectedPropertyIndex];
 		ScenePropertyDefinition newProperty = property;
 		bool hasChange = false;
+		const bool isComponent = property.type->IsComponent();
 
-		if (PropertyEditor::PropertyHeader("Variable Definition"))
+		ImGui::Text("%s", property.name.GetString());
+		ImGui::SameLine();
+		ImGui::TextDisabled("(%s)", isComponent ? "Component" : property.type->GetName().GetString());
+		ImGui::Separator();
+
+		if (!isComponent && PropertyEditor::PropertyHeader("Variable"))
 		{
 			if (PropertyEditor::BeginPropertyTable())
 			{
@@ -713,7 +754,7 @@ void ObjectDefinitionDocument::DrawPropertyPanel()
 			}
 		}
 
-		if (PropertyEditor::PropertyHeader("Default Value"))
+		if (PropertyEditor::PropertyHeader(isComponent ? "Component" : "Default Value"))
 		{
 			if (PropertyEditor::BeginPropertyTable())
 			{			
@@ -730,72 +771,47 @@ void ObjectDefinitionDocument::DrawPropertyPanel()
 		if (hasChange)
 		{
 			std::shared_ptr<ChangePropertiesCommand> command = std::make_shared<ChangePropertiesCommand>(*myObjectDefinition, ChangePropertiesCommand::Action::Edit, newProperty, property);
-			CommandManager::DoCommand(command);
+
+			if (newProperty.name != property.name && myObjectDefinition->HasEventGraph())
+			{
+				// A renamed variable keeps working: the Get / Set nodes that named it follow the rename,
+				// as one undo step with the rename itself.
+				auto composite = std::make_shared<CompositeCommand>("Rename Variable");
+				composite->Do(command);
+
+				Script& graph = myObjectDefinition->EditEventGraph();
+				for (ScriptNodeId node = graph.GetFirstNodeId(); node.id != ScriptNodeId::InvalidId; node = graph.GetNextNodeId(node))
+				{
+					size_t count;
+					const ScriptPinId* inputs = graph.GetInputPins(node, count);
+					for (size_t i = 0; i < count; i++)
+					{
+						const ScriptPin& pin = graph.GetPin(inputs[i]);
+						if (pin.name != "Name"_tgaid || pin.dataType != GetPropertyType<StringId>() || !pin.overridenValue.HasValue())
+							continue;
+						const StringId* current = pin.overridenValue.Get<StringId>();
+						if (current && *current == property.name)
+							composite->Do(std::make_shared<SetOverridenValueCommand>(graph, myGraphEditor.GetSelection(), inputs[i], Property::Create<StringId>(newProperty.name)));
+					}
+				}
+				CommandManager::DoCommand(composite);
+			}
+			else
+			{
+				CommandManager::DoCommand(command);
+			}
 
 			mySelectedProperty = newProperty.name;
 		}
+	}
+	else
+	{
+		ImGui::TextDisabled("Select a component or a variable to see its details.");
 	}
 }
 
 void ObjectDefinitionDocument::DrawAndUpdateLivePreview(float deltaTime)
 {
-	if (ImGui::BeginTable("Toolbar", 3, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingFixedFit))
-	{
-		ImGui::TableNextRow();
-		ImGui::TableSetColumnIndex(0);
-
-		ImVec2 toolbarItemSize = ImVec2(26, 28);
-
-		if (ImGui::Selectable(ICON_LC_PLAY, myLivePreviewData.mode == LivePreviewMode::Running, myLivePreviewData.mode == LivePreviewMode::Running ? ImGuiSelectableFlags_Disabled : 0, toolbarItemSize))
-		{
-			if (myLivePreviewData.mode == LivePreviewMode::Stopped)
-			{
-				std::span<const ScenePropertyDefinition> properties = myObjectDefinition->GetProperties();
-
-				for (auto p : properties)
-				{
-					if ((p.flags & ScenePropertyFlags::IsDynamic) != ScenePropertyFlags::None)
-					{
-						myLivePreviewData.dynamicProperties[p.name] = p.value;
-					}
-					else
-					{
-						myLivePreviewData.staticProperties[p.name] = p.value;
-					}
-				}
-
-				if (myObjectDefinition->HasEventGraph())
-				{
-					myLivePreviewData.graph = std::make_unique<ScriptRuntimeInstance>(myObjectDefinition->GetEventGraphSnapshot());
-					myLivePreviewData.graph->Init();
-				}
-			}
-
-			myLivePreviewData.mode = LivePreviewMode::Running;
-		}
-	
-		ImGui::TableSetColumnIndex(1);
-
-		if (ImGui::Selectable(ICON_LC_PAUSE, myLivePreviewData.mode == LivePreviewMode::Paused, myLivePreviewData.mode == LivePreviewMode::Running ? 0 : ImGuiSelectableFlags_Disabled, toolbarItemSize))
-		{
-			myLivePreviewData.mode = LivePreviewMode::Paused;
-		}
-
-		ImGui::TableSetColumnIndex(2);
-
-		if (ImGui::Selectable(ICON_LC_SQUARE, myLivePreviewData.mode == LivePreviewMode::Stopped, myLivePreviewData.mode != LivePreviewMode::Stopped ? 0 : ImGuiSelectableFlags_Disabled, toolbarItemSize))
-		{
-			myLivePreviewData.mode = LivePreviewMode::Stopped;
-			myLivePreviewData.poses.clear();
-			myLivePreviewData.dynamicProperties.clear();
-			myLivePreviewData.staticProperties.clear();
-			myLivePreviewData.graph.reset();
-			myLivePreviewData.frameNumber = 0;
-		}
-
-		ImGui::EndTable();
-	}
-
 	if (!myObjectDefinition->HasEventGraph())
 		ImGui::TextDisabled("The Event Graph is empty. Add nodes to it to preview.");
 	else if (myLivePreviewData.graph && myLivePreviewData.graph->GetScript().GetSequenceNumber() != myObjectDefinition->EditEventGraph().GetSequenceNumber())

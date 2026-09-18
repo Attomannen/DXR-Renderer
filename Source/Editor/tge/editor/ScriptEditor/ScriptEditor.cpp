@@ -1564,18 +1564,20 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 			ed::SetCurrentEditor(activeScript.nodeEditorContext);
 			const ImVec2 dropPos = ed::ScreenToCanvas(ImGui::GetMousePos());
 
+			// Dropping a variable makes a Get node; with Alt held, a Set node.
+			const char* accessKind = ImGui::GetIO().KeyAlt ? "Write" : "Read";
 			ScriptNodeTypeId typeToCreate;
 
 			// todo: Perhaps this mapping could be more automatic?
-			if (data.type == PropertyTypeRegistry::GetPropertyType("Color"_tgaid)->GetTypeId()) { typeToCreate = ScriptNodeTypeRegistry::GetTypeId("Read Color Property"); }
-			if (data.type == PropertyTypeRegistry::GetPropertyType("Bool"_tgaid)->GetTypeId()) { typeToCreate = ScriptNodeTypeRegistry::GetTypeId("Read Bool Property"); }
-			if (data.type == PropertyTypeRegistry::GetPropertyType("Int"_tgaid)->GetTypeId()) { typeToCreate = ScriptNodeTypeRegistry::GetTypeId("Read Int Property"); }
-			if (data.type == PropertyTypeRegistry::GetPropertyType("Float4"_tgaid)->GetTypeId()) { typeToCreate = ScriptNodeTypeRegistry::GetTypeId("Read Float4 Property"); }
-			if (data.type == PropertyTypeRegistry::GetPropertyType("Float"_tgaid)->GetTypeId()) { typeToCreate = ScriptNodeTypeRegistry::GetTypeId("Read Float Property"); }
-			if (data.type == PropertyTypeRegistry::GetPropertyType("Animation Clip"_tgaid)->GetTypeId()) { typeToCreate = ScriptNodeTypeRegistry::GetTypeId("Read Animation Clip Property"); }
-			if (data.type == PropertyTypeRegistry::GetPropertyType("Float2"_tgaid)->GetTypeId()) { typeToCreate = ScriptNodeTypeRegistry::GetTypeId("Read Float2 Property"); }
-			if (data.type == PropertyTypeRegistry::GetPropertyType("Float3"_tgaid)->GetTypeId()) { typeToCreate = ScriptNodeTypeRegistry::GetTypeId("Read Float3 Property"); }
-			if (data.type == PropertyTypeRegistry::GetPropertyType("StringId"_tgaid)->GetTypeId()) { typeToCreate = ScriptNodeTypeRegistry::GetTypeId("Read String Property"); }
+			if (data.type == PropertyTypeRegistry::GetPropertyType("Color"_tgaid)->GetTypeId()) { typeToCreate = ScriptNodeTypeRegistry::GetTypeId(std::string(accessKind) + " Color Property"); }
+			if (data.type == PropertyTypeRegistry::GetPropertyType("Bool"_tgaid)->GetTypeId()) { typeToCreate = ScriptNodeTypeRegistry::GetTypeId(std::string(accessKind) + " Bool Property"); }
+			if (data.type == PropertyTypeRegistry::GetPropertyType("Int"_tgaid)->GetTypeId()) { typeToCreate = ScriptNodeTypeRegistry::GetTypeId(std::string(accessKind) + " Int Property"); }
+			if (data.type == PropertyTypeRegistry::GetPropertyType("Float4"_tgaid)->GetTypeId()) { typeToCreate = ScriptNodeTypeRegistry::GetTypeId(std::string(accessKind) + " Float4 Property"); }
+			if (data.type == PropertyTypeRegistry::GetPropertyType("Float"_tgaid)->GetTypeId()) { typeToCreate = ScriptNodeTypeRegistry::GetTypeId(std::string(accessKind) + " Float Property"); }
+			if (data.type == PropertyTypeRegistry::GetPropertyType("Animation Clip"_tgaid)->GetTypeId()) { typeToCreate = ScriptNodeTypeRegistry::GetTypeId(std::string(accessKind) + " Animation Clip Property"); }
+			if (data.type == PropertyTypeRegistry::GetPropertyType("Float2"_tgaid)->GetTypeId()) { typeToCreate = ScriptNodeTypeRegistry::GetTypeId(std::string(accessKind) + " Float2 Property"); }
+			if (data.type == PropertyTypeRegistry::GetPropertyType("Float3"_tgaid)->GetTypeId()) { typeToCreate = ScriptNodeTypeRegistry::GetTypeId(std::string(accessKind) + " Float3 Property"); }
+			if (data.type == PropertyTypeRegistry::GetPropertyType("StringId"_tgaid)->GetTypeId()) { typeToCreate = ScriptNodeTypeRegistry::GetTypeId(std::string(accessKind) + " String Property"); }
 
 			if (typeToCreate.id != ScriptNodeTypeId::InvalidId)
 			{
