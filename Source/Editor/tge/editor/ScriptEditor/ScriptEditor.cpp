@@ -18,6 +18,7 @@
 #include <tge/editor/ObjectDefinition/Commands/ChangePropertiesCommand.h>
 #include <tge/editor/Editor.h>
 #include <tge/script/Nodes/CommentNode.h>
+#include <tge/script/Nodes/EventNode.h>
 #include <tge/scene/SceneObjectDefinitionManager.h>
 
 #include <tge/script/BaseProperties.h>
@@ -192,6 +193,15 @@ Tga::ScriptGraphEditor::~ScriptGraphEditor()
 		ed::DestroyEditor(myState.nodeEditorContext);
 }
 
+// The node editor turns node, pin and link ids into the same kind of Dear ImGui id, so a node 1 and
+// a pin 1 collide ("items with conflicting ID"). Each kind gets its own range, and an id of 0 stays
+// valid (the library treats a plain 0 as "none").
+static constexpr unsigned int kNodeIdSpace = 0x10000000u, kPinIdSpace = 0x20000000u, kLinkIdSpace = 0x30000000u, kEdIdMask = 0x0FFFFFFFu;
+static ed::NodeId EdNode(unsigned int id) { return ed::NodeId(id | kNodeIdSpace); }
+static ed::PinId EdPin(unsigned int id) { return ed::PinId(id | kPinIdSpace); }
+static ed::LinkId EdLink(unsigned int id) { return ed::LinkId(id | kLinkIdSpace); }
+static unsigned int FromEd(uintptr_t id) { return (unsigned int)id & kEdIdMask; }
+
 static ImU32 ColorU32(const uint8_t* aColor) { return IM_COL32(aColor[0], aColor[1], aColor[2], 255); }
 static ImVec4 ColorVec4(const uint8_t* aColor) { return ImVec4(aColor[0] / 255.f, aColor[1] / 255.f, aColor[2] / 255.f, 1.f); }
 
@@ -258,7 +268,7 @@ namespace
 			flowOutputs += script.GetPin(outPins[i]).type == ScriptLinkType::Flow ? 1 : 0;
 
 		NodeLook look = {};
-		look.event = script.GetNode(id).ShouldExecuteAtStart() || title == "Trigger";
+		look.event = script.GetNode(id).ShouldExecuteAtStart() || title == "Trigger" || dynamic_cast<const EventNode*>(&script.GetNode(id)) != nullptr;
 		look.pure = !hasFlowInput && flowOutputs == 0 && !look.event;
 
 		const bool isVariable = (title.rfind("Read ", 0) == 0 || title.rfind("Write ", 0) == 0) && title.find("Property") != std::string_view::npos;
@@ -329,7 +339,7 @@ namespace
 				flowOutputConnected |= links > 0;
 			}
 
-			const bool isEvent = script.GetNode(id).ShouldExecuteAtStart() || title == "Trigger";
+			const bool isEvent = script.GetNode(id).ShouldExecuteAtStart() || title == "Trigger" || dynamic_cast<const EventNode*>(&script.GetNode(id)) != nullptr;
 			if (hasFlowInput && !flowInputConnected && !isEvent)
 				issues.push_back({ false, id, std::string(title) + ": never runs, nothing triggers it." });
 
@@ -849,7 +859,7 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 	for (ScriptNodeId currentNodeId = script.GetFirstNodeId(); currentNodeId.id != ScriptNodeId::InvalidId; currentNodeId = script.GetNextNodeId(currentNodeId))
 	{
 		Vector2f pos = script.GetPosition(currentNodeId);
-		ed::SetNodePosition(ed::NodeId(currentNodeId.id), ImVec2(pos.x, pos.y));
+		ed::SetNodePosition(EdNode(currentNodeId.id), ImVec2(pos.x, pos.y));
 	}
 
 	ed::Begin("ScriptGraph");
@@ -857,7 +867,7 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 	if (activeScript.pendingFocusNode.id != ScriptNodeId::InvalidId)
 	{
 		ed::ClearSelection();
-		ed::SelectNode(ed::NodeId(activeScript.pendingFocusNode.id));
+		ed::SelectNode(EdNode(activeScript.pendingFocusNode.id));
 		ed::NavigateToSelection();
 		activeScript.pendingFocusNode = { ScriptNodeId::InvalidId };
 	}
@@ -871,7 +881,7 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 			ed::PushStyleColor(ed::StyleColor_NodeBg, ImColor(255, 255, 255, 26));
 			ed::PushStyleColor(ed::StyleColor_NodeBorder, ImColor(255, 255, 255, 96));
 			ed::PushStyleVar(ed::StyleVar_NodePadding, ImVec4(10.f, 8.f, 10.f, 8.f));
-			ed::BeginNode(ed::NodeId(currentNodeId.id));
+			ed::BeginNode(EdNode(currentNodeId.id));
 			ImGui::PushID((int)currentNodeId.id);
 			ImGui::TextUnformatted(comment->text.c_str());
 			if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))
@@ -890,9 +900,9 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 		const ImVec4 nodePadding = look.pure ? ImVec4(10.f, 6.f, 10.f, 8.f) : ImVec4(14.f, 10.f, 14.f, 12.f);
 
 		ed::PushStyleVar(ed::StyleVar_NodePadding, nodePadding);
-		ed::BeginNode(ed::NodeId(currentNodeId.id));
+		ed::BeginNode(EdNode(currentNodeId.id));
 
-		bool isNodeHighlighted = ed::IsNodeSelected(ed::NodeId(currentNodeId.id)) || activeScript.hoveredNode == currentNodeId;
+		bool isNodeHighlighted = ed::IsNodeSelected(EdNode(currentNodeId.id)) || activeScript.hoveredNode == currentNodeId;
 
 		const float nodeLeftScreenX = ImGui::GetCursorScreenPos().x;
 		float contentWidth = 0.f;
@@ -929,12 +939,12 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 			const uint8_t* linkColor = GetScriptLinkColor(pin);
 			const uint8_t* linkHoverColor = GetScriptLinkHoverColor(pin);
 			const uint8_t* linkSelectedColor = GetScriptLinkSelectedColor(pin);
-			const bool isPinHovered = ed::GetHoveredPin() == ed::PinId(pinId.id);
+			const bool isPinHovered = ed::GetHoveredPin() == EdPin(pinId.id);
 			const ImU32 iconColor = isPinHovered ? ColorU32(linkHoverColor) : isNodeHighlighted ? ColorU32(linkSelectedColor) : ColorU32(linkColor);
 			size_t connectionCount;
 			script.GetConnectedLinks(pinId, connectionCount);
 
-			ed::BeginPin(ed::PinId(pinId.id), ed::PinKind::Input);
+			ed::BeginPin(EdPin(pinId.id), ed::PinKind::Input);
 			NodeEditorPinIcon(iconColor, connectionCount > 0);
 			const ImVec2 iconMin = ImGui::GetItemRectMin();
 			const ImVec2 iconMax = ImGui::GetItemRectMax();
@@ -978,13 +988,13 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 			const uint8_t* linkColor = GetScriptLinkColor(pin);
 			const uint8_t* linkHoverColor = GetScriptLinkHoverColor(pin);
 			const uint8_t* linkSelectedColor = GetScriptLinkSelectedColor(pin);
-			const bool isPinHovered = ed::GetHoveredPin() == ed::PinId(pinId.id);
+			const bool isPinHovered = ed::GetHoveredPin() == EdPin(pinId.id);
 			const ImU32 iconColor = isPinHovered ? ColorU32(linkHoverColor) : isNodeHighlighted ? ColorU32(linkSelectedColor) : ColorU32(linkColor);
 			size_t connectionCount;
 			script.GetConnectedLinks(pinId, connectionCount);
 
 			ImGui::SetCursorPos(rowPos);
-			ed::BeginPin(ed::PinId(pinId.id), ed::PinKind::Output);
+			ed::BeginPin(EdPin(pinId.id), ed::PinKind::Output);
 			ImGui::SetCursorPosX(rowPos.x + (widthRight - ImGui::CalcTextSize(pinName.data()).x));
 			ImGui::TextUnformatted(pinName.data());
 			ImGui::SameLine();
@@ -1006,7 +1016,7 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 		// Header colour by kind (event / action / data / flow control / variable), drawn on the
 		// node's own background layer so it sits under the text.
 		{
-			const ed::NodeId nodeId(currentNodeId.id);
+			const ed::NodeId nodeId = EdNode(currentNodeId.id);
 			ImDrawList* background = ed::GetNodeBackgroundDrawList(nodeId);
 			const ImVec2 nodePosition = ed::GetNodePosition(nodeId);
 			const ImVec2 nodeSize = ed::GetNodeSize(nodeId);
@@ -1026,7 +1036,7 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 		ed::ClearSelection();
 		for (ScriptNodeId id : activeScript.pendingSelect)
 			if (script.Exists(id))
-				ed::SelectNode(ed::NodeId(id.id), true);
+				ed::SelectNode(EdNode(id.id), true);
 		activeScript.pendingSelect.clear();
 	}
 
@@ -1048,7 +1058,7 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 		// leaves hover/selection feedback to its own default border style
 		// (StyleColor_(Hov|Sel)LinkBorder) rather than fully replicating the
 		// three-way color swap.
-		ed::Link(ed::LinkId(linkId.id), ed::PinId(link.sourcePinId.id), ed::PinId(link.targetPinId.id), ColorVec4(GetScriptLinkColor(pin)), 2.0f);
+		ed::Link(EdLink(linkId.id), EdPin(link.sourcePinId.id), EdPin(link.targetPinId.id), ColorVec4(GetScriptLinkColor(pin)), 2.0f);
 	}
 
 	// Link creation is a multi-frame gesture (drag from a pin, hover a
@@ -1065,11 +1075,11 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 		ed::PinId startPinId, endPinId;
 		if (ed::QueryNewLink(&startPinId, &endPinId))
 		{
-			const ScriptPinId sourcePinId = { (unsigned int)startPinId.Get() };
+			const ScriptPinId sourcePinId = { FromEd(startPinId.Get()) };
 			activeScript.inProgressLinkPin = sourcePinId;
 			if (endPinId)
 			{
-				const ScriptPinId targetPinId = { (unsigned int)endPinId.Get() };
+				const ScriptPinId targetPinId = { FromEd(endPinId.Get()) };
 				const ScriptPin& sourcePin = script.GetPin(sourcePinId);
 				const ScriptPin& targetPin = script.GetPin(targetPinId);
 				const bool compatible = sourcePin.type == targetPin.type && sourcePin.dataType == targetPin.dataType && sourcePin.type != ScriptLinkType::Unknown;
@@ -1091,9 +1101,9 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 			ed::PinId dragPinId;
 			if (ed::QueryNewNode(&dragPinId))
 			{
-				activeScript.inProgressLinkPin = ScriptPinId{ (unsigned int)dragPinId.Get() };
+				activeScript.inProgressLinkPin = ScriptPinId{ FromEd(dragPinId.Get()) };
 				if (ed::AcceptNewItem())
-					openDragCreatePin = ScriptPinId{ (unsigned int)dragPinId.Get() };
+					openDragCreatePin = ScriptPinId{ FromEd(dragPinId.Get()) };
 			}
 		}
 	}
@@ -1121,15 +1131,15 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 			while (ed::QueryDeletedLink(&deletedLinkId))
 			{
 				if (ed::AcceptDeletedItem())
-					ensureCommand()->Add(ScriptLinkId{ (unsigned int)deletedLinkId.Get() });
+					ensureCommand()->Add(ScriptLinkId{ FromEd(deletedLinkId.Get()) });
 			}
 			ed::NodeId deletedNodeId;
 			while (ed::QueryDeletedNode(&deletedNodeId))
 			{
 				if (ed::AcceptDeletedItem())
 				{
-					ensureCommand()->Add(ScriptNodeId{ (unsigned int)deletedNodeId.Get() });
-					deletedNodes.push_back(ScriptNodeId{ (unsigned int)deletedNodeId.Get() });
+					ensureCommand()->Add(ScriptNodeId{ FromEd(deletedNodeId.Get()) });
+					deletedNodes.push_back(ScriptNodeId{ FromEd(deletedNodeId.Get()) });
 				}
 			}
 		}
@@ -1139,7 +1149,7 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 			DoDelete(script, activeScript.selection, command, deletedNodes, ImGui::GetIO().KeyShift);
 	}
 
-	activeScript.hoveredNode = { (unsigned int)ed::GetHoveredNode().Get() };
+	activeScript.hoveredNode = ed::GetHoveredNode() ? ScriptNodeId{ FromEd(ed::GetHoveredNode().Get()) } : ScriptNodeId{ ScriptNodeId::InvalidId };
 
 	// Persist wherever the user actually dragged each node to -- safe to run
 	// unconditionally here (unlike MaterialDocument's equivalent loop, which
@@ -1148,7 +1158,7 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 	for (ScriptNodeId currentNodeId = script.GetFirstNodeId(); currentNodeId.id != ScriptNodeId::InvalidId; currentNodeId = script.GetNextNodeId(currentNodeId))
 	{
 		Vector2f oldPos = script.GetPosition(currentNodeId);
-		ImVec2 newPos = ed::GetNodePosition(ed::NodeId(currentNodeId.id));
+		ImVec2 newPos = ed::GetNodePosition(EdNode(currentNodeId.id));
 
 		if (newPos.x != oldPos.x || newPos.y != oldPos.y)
 		{
@@ -1184,12 +1194,12 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 		if (!selectedNodeIds.empty() || !selectedLinkIds.empty())
 		{
 			std::shared_ptr<DestroyNodeAndLinksCommand> command = std::make_shared<DestroyNodeAndLinksCommand>(script, activeScript.selection);
-			for (ed::LinkId id : selectedLinkIds) command->Add(ScriptLinkId{ (unsigned int)id.Get() });
+			for (ed::LinkId id : selectedLinkIds) command->Add(ScriptLinkId{ FromEd(id.Get()) });
 			std::vector<ScriptNodeId> nodes;
 			for (ed::NodeId id : selectedNodeIds)
 			{
-				command->Add(ScriptNodeId{ (unsigned int)id.Get() });
-				nodes.push_back(ScriptNodeId{ (unsigned int)id.Get() });
+				command->Add(ScriptNodeId{ FromEd(id.Get()) });
+				nodes.push_back(ScriptNodeId{ FromEd(id.Get()) });
 			}
 			DoDelete(script, activeScript.selection, command, nodes, ImGui::GetIO().KeyShift);
 		}
@@ -1203,7 +1213,7 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 			CommentNode* comment = dynamic_cast<CommentNode*>(&script.EditNode(id));
 			if (!comment)
 				continue;
-			const ImVec2 nodeSize = ed::GetNodeSize(ed::NodeId(id.id));
+			const ImVec2 nodeSize = ed::GetNodeSize(EdNode(id.id));
 			if (nodeSize.x <= 0.f)
 				continue;
 			if (!interacting)
@@ -1242,7 +1252,7 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 		std::vector<ed::NodeId> selectedIds(selectedCount);
 		selectedIds.resize(ed::GetSelectedNodes(selectedIds.data(), selectedCount));
 		for (ed::NodeId id : selectedIds)
-			shortcut.selected.push_back(ScriptNodeId{ (unsigned int)id.Get() });
+			shortcut.selected.push_back(ScriptNodeId{ FromEd(id.Get()) });
 
 		shortcut.mouseScreen = ImGui::GetMousePos();
 		if (allowed)
@@ -1306,7 +1316,7 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 	ed::NodeId contextNodeId;
 	if (ed::ShowPinContextMenu(&contextPinId))
 	{
-		attribute.id = (int)contextPinId.Get();
+		attribute.id = (int)FromEd(contextPinId.Get());
 		attribute.type = decltype(attribute)::Type::Pin;
 		const ScriptPinId pinid{ .id = (unsigned int)attribute.id };
 		if (aIsRunning && script.GetPin(pinid).type == ScriptLinkType::Flow)
@@ -1321,14 +1331,14 @@ void Tga::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defi
 	}
 	else if (ed::ShowNodeContextMenu(&contextNodeId))
 	{
-		if (dynamic_cast<CommentNode*>(&script.EditNode(ScriptNodeId{ (unsigned int)contextNodeId.Get() })))
-			openCommentEditFor = ScriptNodeId{ (unsigned int)contextNodeId.Get() };
+		if (dynamic_cast<CommentNode*>(&script.EditNode(ScriptNodeId{ FromEd(contextNodeId.Get()) })))
+			openCommentEditFor = ScriptNodeId{ FromEd(contextNodeId.Get()) };
 	}
 	else if (ed::ShowLinkContextMenu(&contextLinkId))
 	{
 		if (aIsRunning)
 		{
-			attribute.id = (int)contextLinkId.Get();
+			attribute.id = (int)FromEd(contextLinkId.Get());
 			attribute.type = decltype(attribute)::Type::Link;
 			ScriptLinkId linkid = { .id = (unsigned int)attribute.id };
 			ScriptPinId pinid = script.GetLink(linkid).sourcePinId;

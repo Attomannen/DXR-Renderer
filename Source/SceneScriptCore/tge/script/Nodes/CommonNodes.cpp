@@ -58,7 +58,7 @@ public:
 	{
 		ScriptPin outputPin = {};
 		outputPin.type = ScriptLinkType::Flow;
-		outputPin.name = "Tick"_tgaid;
+		outputPin.name = "Then"_tgaid;
 		outputPin.node = ctx.GetNodeId();
 		outputPin.role = ScriptPinRole::Output;
 		myOutTickPinId = ctx.FindOrCreatePin(outputPin);
