@@ -380,18 +380,45 @@ float3 OffsetRayOrigin(float3 position, float3 geometricNormal, float3 outgoingD
 	return position + n * (dot(n, outgoingDirection) >= 0.0f ? 0.05f : -0.05f);
 }
 
+// Integer hash of a world position's bit pattern. Varies per pixel (no two
+// shading points share a position) but is stable for a given surface point
+// across frames, so the temporal resolve keeps seeing the same estimator for
+// the same point rather than a pattern that swims with the camera.
+uint HashPosition(float3 position, uint salt)
+{
+	uint h = asuint(position.x) * 73856093u ^ asuint(position.y) * 19349663u ^ asuint(position.z) * 83492791u;
+	h += salt * 747796405u;
+	h ^= h >> 16; h *= 2246822519u; h ^= h >> 13; h *= 3266489917u; h ^= h >> 16;
+	return h;
+}
+float UnitFromHash(uint h) { return (float)(h & 0x00ffffffu) / 16777216.0f; }
+
 float TraceSunVisibility(float3 position, float3 geometricNormal, float3 dir, uint sourceInstanceId, uint sourcePrimitive, uint sampleCount = 4u, float rotationOffset = 0.0f)
 {
 	const float3 t = normalize(abs(dir.y) < 0.99f ? cross(dir, float3(0,1,0)) : cross(dir, float3(1,0,0)));
 	const float3 b = cross(dir, t);
-	// rotationOffset varies per frame when few samples are traced, so the
-	// temporal resolve can integrate the penumbra instead of freezing a pattern.
-	const float rotation = frac(sin(dot(position, float3(12.9898f, 78.233f, 37.719f))) * 43758.5453f + rotationOffset);
+	// The sun disc is sampled in polar coordinates, so it needs TWO random
+	// numbers, not one. The previous version randomised only the azimuth and
+	// took the radius straight from the stratum centre, sqrt((i+0.5)/N) -- at
+	// one sample per pixel that is a constant sqrt(0.5), i.e. every pixel in
+	// the scene sampled the same ring of the disc and none sampled its centre
+	// or its rim. The penumbra that produced was both biased and identical
+	// everywhere, which no amount of temporal or spatial filtering can fix,
+	// because there is no variance for a filter to average away.
+	//
+	// Both coordinates now get their own decorrelated per-point value, and
+	// both are rotated per frame (Cranley-Patterson), so one ray per pixel is
+	// an unbiased estimate that the denoiser and the temporal resolve can
+	// actually converge. The radial stratum is kept for the multi-sample
+	// counts, where it still helps.
+	const uint h = HashPosition(position, 0u);
+	const float rotAngle = frac(UnitFromHash(h) + rotationOffset);
+	const float rotRadius = frac(UnitFromHash(HashPosition(position, 0x9e3779b9u)) + rotationOffset * 0.7548777f);
 	float visibility = 0.0f;
 	const uint sunSamples = clamp(sampleCount, 1u, 4u);
 	const float invSunSamples = 1.0f / float(sunSamples);
 	[loop] for (uint i = 0; i < sunSamples; ++i) {
-		const float u = (float(i) + 0.5f) * invSunSamples;
+		const float u = frac((float(i) + 0.5f) * invSunSamples + rotRadius);
 		uint bits = i;
 		bits = (bits << 16u) | (bits >> 16u);
 		bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
@@ -399,7 +426,7 @@ float TraceSunVisibility(float3 position, float3 geometricNormal, float3 dir, ui
 		bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
 		bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
 		const float v = float(bits) * 2.3283064365386963e-10f;
-		const float angle = 6.283185307f * frac(v + rotation);
+		const float angle = 6.283185307f * frac(v + rotAngle);
 		const float radius = sqrt(u);
 		const float3 sampleDir = normalize(dir + 0.00329f * radius * (t * cos(angle) + b * sin(angle)));
 		visibility += TraceShadowRay(OffsetRayOrigin(position, geometricNormal, sampleDir), sampleDir, 100000.0f, sourceInstanceId, sourcePrimitive);

@@ -433,7 +433,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
 	}
 	if (gEnableDirectLighting != 0u)
 		color += ShadeDirect(hs, shadowOrigin, viewDir, gSunDirToLight, gLightCount, gSunRadiance, gAmbientIntensity, clamp(gSunShadowSamples, 1u, 4u),
-			gSunShadowSamples < 4u ? frac(float(gReflectionFrameIndex) * 0.618034f) : 0.0f);
+			frac(float(gReflectionFrameIndex) * 0.618034f));
 	// Replace environment specular smoothly; do not add the same sky twice.
 	// Keep the prefiltered environment as a conservative fallback at the rough
 	// end where one scene ray is too noisy without a dedicated denoiser.

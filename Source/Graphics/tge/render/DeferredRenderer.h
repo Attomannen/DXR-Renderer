@@ -266,7 +266,13 @@ namespace Tga
 			float volumetricAnisotropy = 0.45f;
 			float volumetricDistance = 120.f;
 			int volumetricSteps = 32;
-			int volumetricResolution = 1;   // volume march at 1/(2^n) of the fog target: 0 full, 1 half, 2 quarter
+			// Volume march at 1/(2^n) of the fog target: 0 full, 1 half, 2 quarter.
+			// Quarter by default: the march was 7.2 ms of a 32 ms frame at half
+			// resolution on the Bistro and 2.2 ms at quarter, for no difference
+			// the eye or an image diff could find. Fog is a low-frequency term
+			// upsampled with a depth-aware filter, so it does not need the
+			// resolution its cost implies.
+			int volumetricResolution = 2;
 			bool sunDiskEnabled = true;
 			// Radians. The real sun's angular RADIUS is ~0.267 degrees (its full
 			// disk, i.e. diameter, is the commonly-quoted ~0.53 degrees / 32
@@ -390,7 +396,11 @@ namespace Tga
 			// ~15.5 ms) purely because this was a hardcoded 4. It is the
 			// stochastic term the temporal resolve converges best, so this is
 			// the first dial to turn when the frame is too slow.
-			int dxrAoSamples = 2;
+			// One by default: measured at 1600x900 on the Bistro, dropping from
+			// two to one returned 2.6 ms of a 32 ms frame, and the result was
+			// indistinguishable from two rays once the denoiser had it -- the
+			// difference sat inside the renderer's own run-to-run noise.
+			int dxrAoSamples = 1;
 			bool dxrTextureFiltering = true;
 			// Emissive geometry as area lights. RIS candidates per pixel; 0 off.
 			// Art without punctual lights (Bistro) gets all its local light from
@@ -429,7 +439,16 @@ namespace Tga
 			bool nrdMotion25D = false;         // feed NRD viewZprev - viewZ in motion.z (2.5D)
 			// Sun shadow rays per pixel (1-4); fewer rays rotate per frame and
 			// rely on the temporal resolve for the soft penumbra.
-			int dxrSunShadowSamples = 4;
+			//
+			// One by default. This was the largest single term in the DXR
+			// frame, 3.5 ms of 32 ms at 1600x900 on the Bistro just for the
+			// three extra rays, for one directional light whose penumbra the
+			// denoiser reconstructs anyway. Going to one ray only became
+			// defensible once TraceSunVisibility sampled the disc properly:
+			// it used to randomise the azimuth alone and take the radius from
+			// the stratum centre, which at one sample is a constant, so every
+			// pixel sampled the same ring. See DxrCommon.hlsli.
+			int dxrSunShadowSamples = 1;
 			// The depth/motion rejection protects disocclusions. Keep more history
 			// on valid samples so single-sample DXR AO and reflections converge
 			// rather than visibly pulse while the camera is still.
