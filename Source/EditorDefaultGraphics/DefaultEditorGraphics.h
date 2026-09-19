@@ -1,7 +1,7 @@
 #pragma once
-#include <tge/editor/EditorGraphics/EditorGraphicsBase.h>
+#include <age/editor/EditorGraphics/EditorGraphicsBase.h>
 
-namespace Tga
+namespace Ag
 {
 
 class ObjectDefinitionEditorGraphicsBase;

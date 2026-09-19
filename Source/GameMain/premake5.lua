@@ -81,7 +81,7 @@ project (projectname)
 		defines {
 			"WIN32",
 			"_LIB", 
-			"TGE_SYSTEM_WINDOWS" 
+			"AGE_SYSTEM_WINDOWS" 
 		}    
 	-- Options to support Live++ editing of code
 	filter { "system:windows", "not configurations:Retail" }

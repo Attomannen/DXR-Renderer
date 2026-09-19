@@ -3,9 +3,9 @@
 // Scene and material file loading for the GameWorld harness (.tgs, .tgo,
 // .tgmat) plus the small string and environment helpers it shares.
 
-#include <tge/render/DeferredRenderer.h>
-#include <tge/material/MaterialAsset.h>
-#include <tge/math/Matrix4x4.h>
+#include <age/render/DeferredRenderer.h>
+#include <age/material/MaterialAsset.h>
+#include <age/math/Matrix4x4.h>
 #include <nlohmann/json.hpp>
 #include <array>
 #include <cstdlib>
@@ -18,7 +18,7 @@ namespace GameScene
 {
 	namespace fs = std::filesystem;
 	using json = nlohmann::json;
-	using namespace Tga;
+	using namespace Ag;
 
 	inline int   EnvInt(const char* name, int def)   { const char* v = std::getenv(name); return v ? std::atoi(v) : def; }
 	inline float EnvFloat(const char* name, float def) { const char* v = std::getenv(name); return v ? (float)std::atof(v) : def; }
@@ -26,7 +26,7 @@ namespace GameScene
 	inline float Rad2Deg(float r) { return r * 57.2957795131f; }
 
 	// .tgmat materials; the format lives in the Graphics library.
-	using MaterialDef = Tga::MaterialAsset;
+	using MaterialDef = Ag::MaterialAsset;
 
 	// One renderable from a .tgo / scene object: model + one .tgmat asset per
 	// mesh/material + a world transform.

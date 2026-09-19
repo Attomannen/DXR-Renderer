@@ -88,7 +88,7 @@ project "Graphics"
 			"WIN32_LEAN_AND_MEAN",
 			"NOMINMAX",	
 			"_LIB", 
-			"TGE_SYSTEM_WINDOWS",
+			"AGE_SYSTEM_WINDOWS",
 			"_CRT_SECURE_NO_WARNINGS",
 		}
 	-- Options to support Live++ editing of code

@@ -1,8 +1,0 @@
-#pragma once
-
-namespace Tga
-{
-	// Nodes that act on the object a script runs on. They need a GameScriptContext,
-	// so they do nothing when run somewhere that does not provide one (editor preview).
-	void RegisterGameObjectNodes();
-} // namespace Tga

@@ -33,7 +33,7 @@ overlaps.
 
 ### Normal convention
 
-The TGE model pixel shader builds its TBN with a **negated bitangent**, i.e. it
+The AttoEngine model pixel shader builds its TBN with a **negated bitangent**, i.e. it
 expects **DirectX-convention** (green-down) tangent-space normal maps. Most
 authored sources (Substance, Khronos Sponza, …) are **OpenGL** (green-up), so the
 cooker **flips green by default** (`--src-normals gl`). Pass `--src-normals dx` for

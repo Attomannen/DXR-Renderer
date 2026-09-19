@@ -1,12 +1,12 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "SceneFiles.h"
 
-#include <tge/settings/settings.h>
-#include <tge/log/Log.h>
+#include <age/settings/settings.h>
+#include <age/log/Log.h>
 #ifndef _RETAIL
 #include <imgui/imgui.h>
 #endif
-#include <tge/math/Photometry.h>
+#include <age/math/Photometry.h>
 #include <algorithm>
 #include <cctype>
 #include <fstream>
@@ -176,7 +176,7 @@ namespace GameScene
 		ParseCharacterProperty(j, e.character);
 		{
 			std::error_code pathEc;
-			fs::path relative = fs::relative(tgoPath, Tga::Settings::GameAssetRoot(), pathEc);
+			fs::path relative = fs::relative(tgoPath, Ag::Settings::GameAssetRoot(), pathEc);
 			if (!pathEc) e.tgoPath = relative.replace_extension("").generic_string();
 		}
 		return e;
@@ -187,7 +187,7 @@ namespace GameScene
 	// present in the asset tree.
 	std::optional<std::string> FindFirstTgsScene()
 	{
-		const fs::path root = Tga::Settings::GameAssetRoot();
+		const fs::path root = Ag::Settings::GameAssetRoot();
 		std::error_code ec;
 		std::vector<fs::path> scenes;
 		for (const fs::directory_entry& item : fs::recursive_directory_iterator(root, ec))
@@ -212,7 +212,7 @@ namespace GameScene
 	std::vector<SceneEntry> LoadTgs(const std::string& name)
 	{
 		std::vector<SceneEntry> out;
-		const fs::path root = fs::path(Tga::Settings::GameAssetRoot());
+		const fs::path root = fs::path(Ag::Settings::GameAssetRoot());
 		const fs::path scenePath = root / fs::path(name).replace_extension(".tgs");
 		fs::path levelData = scenePath;
 		levelData.replace_extension(".leveldata");

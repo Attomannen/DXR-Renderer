@@ -3,8 +3,8 @@
 #define WIN32_LEAN_AND_MEAN
 
 #include "GameWorldImpl.h"
-#include <tge/physics/PhysicsWorld.h>
-#include <tge/math/Quaternion.h>
+#include <age/physics/PhysicsWorld.h>
+#include <age/math/Quaternion.h>
 
 // Physics in the game harness.
 //
@@ -14,7 +14,7 @@
 // Reset puts them back. The material-preview debug sphere can join in, and brings its
 // own floor when the scene has no static collision.
 
-using namespace Tga;
+using namespace Ag;
 
 namespace
 {
@@ -117,7 +117,7 @@ void GameWorld::Impl::RegisterScenePhysics(const GameScene::SceneEntry& entry, c
 	else
 	{
 		PhysicsShapeDesc desc;
-		const Tga::BoxSphereBounds& bounds = model->GetBounds();
+		const Ag::BoxSphereBounds& bounds = model->GetBounds();
 		const float maxXZ = std::max(scale.x, scale.z);
 
 		switch (kind)

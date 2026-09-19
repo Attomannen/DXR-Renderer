@@ -1,15 +1,15 @@
 #include "stdafx.h"
 #include "MaterialGraphBake.h"
 
-#include <tge/editor/EditorGraphics/EditorGraphicsBase.h>
-#include <tge/editor/Material/MaterialAsset.h>
-#include <tge/texture/TextureCpu.h>
+#include <age/editor/EditorGraphics/EditorGraphicsBase.h>
+#include <age/editor/Material/MaterialAsset.h>
+#include <age/texture/TextureCpu.h>
 
 #include <algorithm>
 #include <filesystem>
 #include <map>
 
-using namespace Tga::MaterialGraphNS;
+using namespace Ag::MaterialGraphNS;
 namespace fs = std::filesystem;
 
 namespace
@@ -19,15 +19,15 @@ namespace
 	// per texel.
 	struct BakeCache
 	{
-		std::map<std::string, Tga::TextureCpu::Image> images;
+		std::map<std::string, Ag::TextureCpu::Image> images;
 		int width = 0, height = 0;
 
-		const Tga::TextureCpu::Image& Get(const std::string& path)
+		const Ag::TextureCpu::Image& Get(const std::string& path)
 		{
 			auto it = images.find(path);
 			if (it != images.end()) return it->second;
-			Tga::TextureCpu::Image img = Tga::TextureCpu::Load(path);
-			if (img.ok) img = Tga::TextureCpu::Resize(img, width, height);
+			Ag::TextureCpu::Image img = Ag::TextureCpu::Load(path);
+			if (img.ok) img = Ag::TextureCpu::Resize(img, width, height);
 			return images.emplace(path, std::move(img)).first->second;
 		}
 	};
@@ -35,7 +35,7 @@ namespace
 	GraphValue SampleCallback(void* userData, const std::string& path, float u, float v)
 	{
 		BakeCache& cache = *(BakeCache*)userData;
-		const Tga::TextureCpu::Image& img = cache.Get(path);
+		const Ag::TextureCpu::Image& img = cache.Get(path);
 		GraphValue out;
 		if (!img.ok || img.width <= 0 || img.height <= 0)
 		{
@@ -64,7 +64,7 @@ namespace
 	// constant rather than forcing every ORM sub-channel to be wired just
 	// because one of them is.
 	std::vector<float> EvaluatePlane(const MaterialGraph& graph, Id pin, int component, float fallback,
-		int w, int h, Tga::MaterialGraphNS::MaterialGraph::SampleFn sampleFn, BakeCache& cache)
+		int w, int h, Ag::MaterialGraphNS::MaterialGraph::SampleFn sampleFn, BakeCache& cache)
 	{
 		std::vector<float> plane((size_t)w * h, fallback);
 		if (pin == kInvalidId) return plane;
@@ -81,7 +81,7 @@ namespace
 	}
 }
 
-bool Tga::BakeMaterialGraphImpl(const MaterialGraphBakeRequest& request)
+bool Ag::BakeMaterialGraphImpl(const MaterialGraphBakeRequest& request)
 {
 	if (!request.graph || !request.material || request.absoluteMatPath.empty()) return false;
 	const MaterialGraph& graph = *request.graph;

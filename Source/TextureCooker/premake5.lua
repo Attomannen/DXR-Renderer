@@ -74,4 +74,4 @@ project "TextureCooker"
 
 	filter "system:windows"
 		staticruntime "off"
-		defines { "WIN32", "TGE_SYSTEM_WINDOWS" }
+		defines { "WIN32", "AGE_SYSTEM_WINDOWS" }

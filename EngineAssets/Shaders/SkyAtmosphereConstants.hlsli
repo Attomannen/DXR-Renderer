@@ -14,7 +14,7 @@
 
 #ifdef __cplusplus
 #	include <cstdint>
-namespace Tga::SkyShared
+namespace Ag::SkyShared
 {
 	using uint = uint32_t;
 	struct float3 { float v[3]; float& operator[](int i) { return v[i]; } };
@@ -51,7 +51,7 @@ SKY_CBUFFER_BEGIN(SkyAtmosphereConstants, b11)
 SKY_CBUFFER_END
 
 #ifdef __cplusplus
-}   // namespace Tga::SkyShared
+}   // namespace Ag::SkyShared
 #endif
 
 #endif

@@ -8,7 +8,7 @@
 
 #ifdef __cplusplus
 #	include <cstdint>
-namespace Tga::DxrShared
+namespace Ag::DxrShared
 {
 	using uint = uint32_t;
 	struct uint2 { uint v[2]; uint& operator[](int i) { return v[i]; } };
@@ -85,7 +85,7 @@ DXR_CBUFFER_BEGIN(DxrLightingConstants, b0)
 DXR_CBUFFER_END
 
 #ifdef __cplusplus
-}   // namespace Tga::DxrShared
+}   // namespace Ag::DxrShared
 #endif
 
 #endif

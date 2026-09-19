@@ -1,10 +1,10 @@
 #include <CppUnitTest.h>
-#include <tge/util/FixedStream.h>
+#include <age/util/FixedStream.h>
 #include <string>
 #include <exception>
 
 using namespace Microsoft::VisualStudio::CppUnitTestFramework;
-using namespace Tga;
+using namespace Ag;
 
 namespace FixedStreamTests
 {

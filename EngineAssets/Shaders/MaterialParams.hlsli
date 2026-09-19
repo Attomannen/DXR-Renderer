@@ -1,7 +1,7 @@
 #ifndef MATERIAL_PARAMS_HLSLI
 #define MATERIAL_PARAMS_HLSLI
 
-// Per-material parameters, shared by C++ (Tga::MaterialParams) and every
+// Per-material parameters, shared by C++ (Ag::MaterialParams) and every
 // material shader: the deferred G-buffer pass, forward glass, the editor
 // preview and the DXR hit decode (inside RayMaterialRecord).
 //
@@ -26,7 +26,7 @@
 
 #ifdef __cplusplus
 #	include <cstdint>
-namespace Tga::MaterialShared
+namespace Ag::MaterialShared
 {
 	using uint = uint32_t;
 	struct float3 { float x, y, z; };
@@ -57,7 +57,7 @@ MATERIAL_STRUCT_BEGIN(MaterialParams)
 MATERIAL_STRUCT_END
 
 #ifdef __cplusplus
-}   // namespace Tga::MaterialShared
+}   // namespace Ag::MaterialShared
 #else
 
 // Bound per draw by ModelShader::RenderMesh.

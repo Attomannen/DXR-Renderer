@@ -1,4 +1,4 @@
-# TGE rendering backend roadmap
+# AttoEngine rendering backend roadmap
 
 Living plan for the graphics-backend remake. Status legend:
 `[x]` done · `[~]` in progress · `[ ]` not started · `[>]` deferred / parked
@@ -40,7 +40,7 @@ Bench + baselines: `Source/Game/BENCH.md`. Per-phase numbers are captured there.
 
 ## Phase 2.5 — Productionize deferred + instrument  `[~]`
 
-- [x] GPU timestamp profiler — `Source/Graphics/tge/render/GpuProfiler.{h,cpp}` (disjoint + per-scope begin/end, 5-frame ring-buffered non-blocking readback, `TGA_GPU_SCOPE` macro)
+- [x] GPU timestamp profiler — `Source/Graphics/age/render/GpuProfiler.{h,cpp}` (disjoint + per-scope begin/end, 5-frame ring-buffered non-blocking readback, `AG_GPU_SCOPE` macro)
 - [x] Per-pass timing in the bench report (`gpu_ms: { frame, geometry, lighting, composite }`)
   - Finding: **lighting is flat ~0.2 ms regardless of scene / overdraw**; all cost is the G-buffer geometry pass. Confirms Phase 3 (many lights) will be cheap.
 - [x] On-screen pass-timing overlay — `GameWorld::Impl::DrawPerfOverlayImpl()`: always-on HUD in free-fly,
@@ -48,7 +48,7 @@ Bench + baselines: `Source/Game/BENCH.md`. Per-phase numbers are captured there.
 - [x] Shader hot-reload **verified present** — `DX11::CompileShaderIfChanged` registers a `FileWatcher`
       callback per top-level `.hlsl`, `Application::Update` calls `FlushChanges()` each frame. Works for
       direct `.hlsl` edits; editing a shared `.hlsli` include needs a relaunch (watcher only tracks the entry files).
-- [x] **GPU debug markers** — `Tga::GpuMarkerScope` / `TGA_GPU_MARKER` (`Source/Graphics/tge/render/GpuMarker.{h,cpp}`),
+- [x] **GPU debug markers** — `Ag::GpuMarkerScope` / `AG_GPU_MARKER` (`Source/Graphics/age/render/GpuMarker.{h,cpp}`),
   lazily QIs `DX11::Context` for `ID3DUserDefinedAnnotation`. The render graph wraps every pass automatically.
 - [ ] Verify shader hot-reload covers the deferred set — `FileWatcher` + runtime `D3DCompileFromFile` already exist
   behind `DebugFeature::Filewatcher`; confirm it picks up `GBufferPS` / `DeferredLightingPS` / `DeferredDebugPS` (free Phase 3 iteration speed if so)
@@ -59,7 +59,7 @@ Bench + baselines: `Source/Game/BENCH.md`. Per-phase numbers are captured there.
   `BENCH_CAMFILE`. Scripts: `Bin/frame.bat <model>` (curated per-model framing, one command → hero shot + bench),
   `Bin/view.bat <model>` (free-fly + F5 save), `Bin/shot.bat <model> [out] [spin|fixed|room|orbit|forward]`.
 - [x] Promote `DeferredRenderer` into `GraphicsEngine` (engine owns the G-buffer + passes) — moved to
-  `Source/Graphics/tge/render/DeferredRenderer.{h,cpp}` in `namespace Tga`; `GraphicsEngine` constructs one in
+  `Source/Graphics/age/render/DeferredRenderer.{h,cpp}` in `namespace Ag`; `GraphicsEngine` constructs one in
   `Init()` sized to `Application::GetRenderSize()`, exposes `GetDeferredRenderer()` + `IsReady()` / `OnResize()`.
   The bench now drives the engine-owned instance instead of owning its own. Forward path unaffected.
 - [x] Forward pass for transparency — `DeferredRenderer::BuildFrame` now takes a `drawTransparent` fn and
@@ -291,15 +291,15 @@ Progress log: memory `p5g3-dx12-port`.
 does, *not* adopting NVIDIA NVRHI — NVRHI's `BindingLayout`/`BindingSet` model doesn't
 match the engine's free `register(b#/t#/s#/u#)` convention, and adopting it would touch
 every shader + every bind site (more churn than writing the seam by hand). New code
-lives in `Source/Application/tge/rhi/` (`Tga::rhi` namespace; in Application rather
-than a separate lib, to avoid a link cycle with `Tga::DX11`), with a `dx11/` backend
+lives in `Source/Application/age/rhi/` (`Ag::rhi` namespace; in Application rather
+than a separate lib, to avoid a link cycle with `Ag::DX11`), with a `dx11/` backend
 subfolder. Four stages:
 
 - **Stage 1 — COMPLETE** (functionally; see the honest exceptions list below) — RHI seam +
   DX11 backend at parity, zero visible change, heavily verified at every step:
   - [x] Step 0 — RHI interface (`Handles.h`/`Descs.h`/`Device.h`/`CommandContext.h`) +
     DX11 backend (`Dx11Device`, `Dx11CommandContext`, gen-checked handle pools) wrapping
-    the pre-existing `Tga::DX11` statics.
+    the pre-existing `Ag::DX11` statics.
   - [x] Step 1 — `DX11.{h,cpp}` becomes a thin facade over `rhi::IDevice`; shader cache
     (`PixelShader`/`VertexShader`/`ComputeShader`) moved to `rhi/ShaderCache.h`.
   - [x] Step 2 — `TextureResource`/`RenderTarget`/`DepthBuffer` gain lazy `GetSrv()`/
@@ -355,7 +355,7 @@ subfolder. Four stages:
     **zero raw D3D11 references** — down from ~390 at the start of step 7), and `CubemapData`
     gained a leak-safe `GetSrv()` bridge (`MigrationView`, invalidated on each `Reset()`).
     Raw D3D11 refs: `GameWorld.cpp` 17 → 1 (bench screenshot capture, step-12 territory).
-  - [x] Step 10 — `Source/Graphics/tge/videoplayer/video.cpp`: DYNAMIC texture + Map/Unmap
+  - [x] Step 10 — `Source/Graphics/age/videoplayer/video.cpp`: DYNAMIC texture + Map/Unmap
     per decoded frame → `IDevice::CreateTexture`/`CreateSrv` (once) + new `ctx.UpdateTexture`
     (every frame). Also added `IDevice::GetNativeSrv` (raw-pointer bridge for legacy
     `TextureResource` construction). Raw D3D11 calls: 6 → 0. Not wired into GameMain/
@@ -411,7 +411,7 @@ subfolder. Four stages:
     (`github.com/Attomannen/TGE-DX12-Port`, private) specifically so this kind of
     regression is bisectable going forward.
 - **Stage 2** `[~]` — DX12 backend behind the same seam. **Milestone 1 done** (2026-09-11):
-  `Source/Application/tge/rhi/dx12/` (`Dx12Device`/`Dx12CommandContext`/`Dx12DescriptorHeap`)
+  `Source/Application/age/rhi/dx12/` (`Dx12Device`/`Dx12CommandContext`/`Dx12DescriptorHeap`)
   implements real device/adapter/queue creation, a flip-model swapchain + `Resize()`, 4
   descriptor heaps (RTV/DSV/CBV-SRV-UAV/Sampler) with free-list slot allocation, per-frame
   command-allocator + fence pacing, `CreateBuffer`/`CreateTexture`/`CreateSrv`/`CreateUav`/
@@ -449,7 +449,7 @@ subfolder. Four stages:
   changes resource every frame (flip-model, unlike DX11's single stable backbuffer) — solved
   with a dynamic-resolve mode (`RenderTarget::CreateFromDeviceBackBuffer`) that re-queries
   `IDevice::GetBackBufferRtv()` every call instead of caching a handle.
-  `DX11::Init()`/`ResizeToWindowSize()` now branch on a `TGE_RHI=dx12` env var (no CLI-flag
+  `DX11::Init()`/`ResizeToWindowSize()` now branch on a `AGE_RHI=dx12` env var (no CLI-flag
   plumbing exists yet) into `InitDx12()`/`ResizeToWindowSizeDx12()`, which construct the RHI
   device directly against the real window handle and populate `BackBuffer`/
   `BackBufferNoSrgbConversion`/`DepthBuffer` via the new factories, skipping the raw D3D11
@@ -458,7 +458,7 @@ subfolder. Four stages:
   DX12 backend presents its own swapchain from inside `Dx12Device::EndFrame`) — now branches.
   **First real end-to-end run of the DX12 backend through the actual engine init path**
   (not an isolated smoke test): `GameEditor_Debug.exe`/`GameMain_Debug.exe` launched with
-  `TGE_RHI=dx12` now get all the way through device/adapter/swapchain creation, backbuffer +
+  `AGE_RHI=dx12` now get all the way through device/adapter/swapchain creation, backbuffer +
   depth-buffer setup, and reach the first per-frame `BeginFrame()`. Caught and fixed one bug
   along the way: `DepthBuffer::Create`'s DX12 branch was passing the typeless resource format
   (`R32_Typeless`) instead of the logical depth format (`D32_Float`) to `CreateTexture`, which
@@ -784,7 +784,7 @@ subfolder. Four stages:
   reveal.
 - **`DEVICE_HUNG`: actual root cause found and fixed** (2026-09-11, same day, continued further) —
   a PIX capture (walked through interactively: Developer Mode + admin launch for timing data,
-  `TGE_RHI=dx12 BENCH_FRAMES=10 BENCH_WARMUP=0`, GPU crash dump capture on) showed
+  `AGE_RHI=dx12 BENCH_FRAMES=10 BENCH_WARMUP=0`, GPU crash dump capture on) showed
   `DeviceRemovalDetected(DXGI_ERROR_DEVICE_HUNG)` as the literal last event, preceded only by
   ordinary `SpriteDrawer` instanced-quad draws — nothing exotic. Found and fixed in passing:
   ImGui's vendored `imgui_impl_dx12.cpp` unconditionally created its **own** independent
@@ -802,7 +802,7 @@ subfolder. Four stages:
   (previously entirely absent engine-wide). Neither fix alone stopped the hang, but they made the
   next step possible: `Dx12Device::DrainDebugMessages` (an `ID3D12InfoQueue` message pump, written
   earlier but never actually wired up) was hooked into `EndFrame`, and the D3D12 debug layer was
-  re-enabled (`TGE_DX12_DEBUG_LAYER=1`; the layer's break-on-severity is disabled in
+  re-enabled (`AGE_DX12_DEBUG_LAYER=1`; the layer's break-on-severity is disabled in
   `CreateDeviceAndQueue`, so it now only logs instead of raising an uncatchable `DebugBreak()` —
   the earlier "enabling it crashes outright" finding was this, not a fundamental incompatibility).
   This surfaced two real, previously invisible bugs:
@@ -844,8 +844,8 @@ subfolder. Four stages:
   message remains, not a hang cause). `BENCH_SCREENSHOT` confirms DX12 renders the Sponza scene
   correctly, pixel-equivalent to the DX11 reference (same geometry, same colored lights). DX11
   regression-checked via the same screenshot path: unaffected. The DX12 debug layer is now a real,
-  usable diagnostic tool going forward — opt in via `TGE_DX12_DEBUG_LAYER=1`
-  (`TGE_DX12_GPU_VALIDATION=1` for GPU-based validation on top; both `_DEBUG`-only, off by default
+  usable diagnostic tool going forward — opt in via `AGE_DX12_DEBUG_LAYER=1`
+  (`AGE_DX12_GPU_VALIDATION=1` for GPU-based validation on top; both `_DEBUG`-only, off by default
   since GPU-based validation alone roughly halves frame rate).
 - **"Fix Stage 2" cleanup pass (2026-09-12) — closed every remaining known DX12 gap, including a
   real GameEditor-crashing bug found live with the user.**
@@ -940,15 +940,15 @@ subfolder. Four stages:
   both trees). DX12 GameEditor is, for the first time this port, genuinely usable end-to-end:
   device/swapchain/UI bring-up, real texture/cubemap loading, opening a scene, viewing it in the
   3D viewport, and mouse-hovering/picking objects in it all work without crashing.
-- **Backend chooser launcher (2026-09-12)** — with `TGE_RHI=dx12` no longer needed just to keep
+- **Backend chooser launcher (2026-09-12)** — with `AGE_RHI=dx12` no longer needed just to keep
   the engine from immediately hanging/crashing, added a small native Win32 window (no ImGui/D3D
   device exists yet at this point, so it can't be one) with two buttons, "Legacy" and "DX12",
-  shown before either `GameMain` or `GameEditor` boots (`Source/Application/tge/windows/
-  BackendChooser.{h,cpp}`) — picking one just sets the `TGE_RHI` env var the existing
+  shown before either `GameMain` or `GameEditor` boots (`Source/Application/age/windows/
+  BackendChooser.{h,cpp}`) — picking one just sets the `AGE_RHI` env var the existing
   `DX11::Init()` check already reads, so it's a friendlier front end for that switch, not a new
-  selection mechanism. Skipped entirely (no popup) whenever `TGE_RHI` is already set, so every
+  selection mechanism. Skipped entirely (no popup) whenever `AGE_RHI` is already set, so every
   scripted/bench/CI invocation from this whole port is unaffected. Also added a permanent,
-  shared top-level crash handler (`Source/Application/tge/windows/CrashHandler.{h,cpp}`,
+  shared top-level crash handler (`Source/Application/age/windows/CrashHandler.{h,cpp}`,
   factored out of the GameEditor-specific one from the `DEVICE_HUNG`/editor-crash work) to both
   `Go.cpp` and `GoEditor.cpp`.
   **Found and fixed a real bug via live testing with the user**: the chooser's `WM_DESTROY`
@@ -984,7 +984,7 @@ subfolder. Four stages:
 
 - [x] **Render-graph / pass-list abstraction** — `RenderGraph` (thin linear pass list, auto GPU marker +
   `GpuProfiler` scope per pass), `RenderResourcePool` (frame-transient `RenderTarget` pool, keyed by
-  w/h/format, `ReleaseAll()` after Execute), `GpuMarker`. All in `Source/Graphics/tge/render/`. Engine owns
+  w/h/format, `ReleaseAll()` after Execute), `GpuMarker`. All in `Source/Graphics/age/render/`. Engine owns
   the pool (`GraphicsEngine::GetRenderResourcePool()`); `DeferredRenderer::BuildFrame(graph, drawOpaque, dbg)`
   registers geometry/lighting/composite (or gbufDebug). No auto-reordering/aliasing yet — passes run in add
   order. Next passes (SSAO, bloom, shadows, SSR) `AddPass` + `pool.Acquire` instead of hard-wiring.

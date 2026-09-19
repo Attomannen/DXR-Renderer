@@ -61,7 +61,7 @@ function default_settings()
 			window_size = {w=1600, h=900},
 			render_size = {w=1600, h=900},
 			target_size = {w=1600, h=900},
-			title = "TGE - Never give up on your dreams!",
+			title = "AttoEngine 0.1",
 	 		clear_color = {r=0.0, g=0.2, b=0.25, a=1.0},
 
 			keep_aspect_ratio = true,
@@ -86,10 +86,10 @@ end
 ---------------------------------------------------------------------------
 -- Utility function to create individual project-settings any game project, 
 -- tutorial or similar is responsible for running:
--- Tga::LoadSettings("game_name.json"); at startup
+-- Ag::LoadSettings("game_name.json"); at startup
 function verify_or_create_settings(game_name)
 	local settings_filename = game_name .. ".json"
-	defines { 'TGE_PROJECT_SETTINGS_FILE="' .. settings_filename .. '"' }
+	defines { 'AGE_PROJECT_SETTINGS_FILE="' .. settings_filename .. '"' }
 	local game_settings = dirs["settings"] .. settings_filename
 	
 	local settings = default_settings()

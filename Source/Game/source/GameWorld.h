@@ -14,7 +14,7 @@
 //   BENCH_SCENE         scene path (without .tgs); when unset, the first .tgs
 //                       found under the game asset root is loaded.
 
-namespace Tga { class InputManager; }
+namespace Ag { class InputManager; }
 
 class GameWorld
 {

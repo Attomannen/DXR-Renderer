@@ -15,7 +15,7 @@ because several of them were wrong in instructive ways.
 Companion documents, still valid and not repeated here:
 - `PORTFOLIO_ROADMAP.md` - measured costs, hardware caveats, SHARC / SER plan.
 - `DXR_RENDERER_AUDIT.md` - the measurement protocol and the per-ray cost audit.
-- `Source/Graphics/tge/render/Lighting.md` - lighting conventions and validation.
+- `Source/Graphics/age/render/Lighting.md` - lighting conventions and validation.
 
 ---
 

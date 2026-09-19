@@ -1,11 +1,11 @@
 #include "CppUnitTest.h"
-#include <tge/script/CopyOnWriteWrapper.h>
+#include <age/script/CopyOnWriteWrapper.h>
 #include <string>
 #include <iostream>
 #include <vector> 
 
 using namespace Microsoft::VisualStudio::CppUnitTestFramework;
-using namespace Tga;
+using namespace Ag;
 
 namespace CopyOnWriteTests
 {
@@ -186,7 +186,7 @@ namespace CopyOnWriteTests
 
         TEST_METHOD(StaticObjectPoolHandlesMultiBucketCreationAndDestruction)
         {
-            const int numObjectsToCreate = Tga::impl::StaticPoolBucketBase::BucketSize + 50;
+            const int numObjectsToCreate = Ag::impl::StaticPoolBucketBase::BucketSize + 50;
 
             std::vector<CopyOnWriteWrapper<MyData>> wrappers;
             wrappers.reserve(numObjectsToCreate);
@@ -201,8 +201,8 @@ namespace CopyOnWriteTests
             Assert::AreEqual("Capacity Test 0", wrappers[0].Get().text.c_str());
 
             // Check the last element of the first bucket to ensure it's still correct at the boundary.
-            Assert::AreEqual(Tga::impl::StaticPoolBucketBase::BucketSize - 1, wrappers[Tga::impl::StaticPoolBucketBase::BucketSize - 1].Get().val);
-            Assert::AreEqual(("Capacity Test " + std::to_string(Tga::impl::StaticPoolBucketBase::BucketSize - 1)).c_str(), wrappers[Tga::impl::StaticPoolBucketBase::BucketSize - 1].Get().text.c_str());
+            Assert::AreEqual(Ag::impl::StaticPoolBucketBase::BucketSize - 1, wrappers[Ag::impl::StaticPoolBucketBase::BucketSize - 1].Get().val);
+            Assert::AreEqual(("Capacity Test " + std::to_string(Ag::impl::StaticPoolBucketBase::BucketSize - 1)).c_str(), wrappers[Ag::impl::StaticPoolBucketBase::BucketSize - 1].Get().text.c_str());
 
             wrappers.clear();
         }

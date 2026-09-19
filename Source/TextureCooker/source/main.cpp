@@ -1,5 +1,5 @@
 // =============================================================================
-//  TextureCooker  --  TGA texture-packing-standard DDS cooker for TGE / Tga2D
+//  TextureCooker  --  TGA texture-packing-standard DDS cooker for AttoEngine
 // -----------------------------------------------------------------------------
 //  Groups loose source maps by material, repacks channels to Unreal Engine's
 //  packing standard and writes compressed, mipped .dds that the engine's
@@ -43,7 +43,7 @@
 
 #include <ufbx/ufbx.h>
 #include <nlohmann/json.hpp>
-#include "../../Core/tge/EngineDefines.h"
+#include "../../Core/age/EngineDefines.h"
 
 #include <d3d11.h>
 #include <wrl/client.h>

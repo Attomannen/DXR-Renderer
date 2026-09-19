@@ -2,16 +2,16 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include "CubemapPrefilter.h"
-#include <tge/graphics/DepthBuffer.h>
+#include <age/graphics/DepthBuffer.h>
 
-#include <tge/graphics/DX11.h>
-#include <tge/graphics/RenderTarget.h>
-#include <tge/rhi/Format.h>
-#include <tge/graphics/GraphicsEngine.h>
-#include <tge/graphics/GraphicsStateStack.h>
-#include <tge/log/Log.h>
-#include <tge/settings/settings.h>
-#include <tge/util/StringCast.h>
+#include <age/graphics/DX11.h>
+#include <age/graphics/RenderTarget.h>
+#include <age/rhi/Format.h>
+#include <age/graphics/GraphicsEngine.h>
+#include <age/graphics/GraphicsStateStack.h>
+#include <age/log/Log.h>
+#include <age/settings/settings.h>
+#include <age/util/StringCast.h>
 
 #include <DirectXTex/DDSTextureLoader/DDSTextureLoader11.h>
 #include <DirectXTex/WICTextureLoader/WICTextureLoader11.h>
@@ -21,7 +21,7 @@
 #include <algorithm>
 #include <filesystem>
 
-namespace Tga
+namespace Ag
 {
     rhi::SrvHandle CubemapData::GetSrv() const
     {

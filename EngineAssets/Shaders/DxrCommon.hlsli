@@ -767,7 +767,7 @@ HitSurface DecodeHit(RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES> q, float cone
 		if (g.vertexFormat == 1u)
 		{
 			// MeshVertex: four snorm16 (octahedral normal, tangent) and a float
-			// bitangent sign. See Tga::MeshVertex.
+			// bitangent sign. See Ag::MeshVertex.
 			const uint packed = gRawGeometry[vertexSlot].Load(vBase + g.normalOffset);
 			const uint packed2 = gRawGeometry[vertexSlot].Load(vBase + g.normalOffset + 4u);
 			const float2 octN = float2(SnormFromU16(packed & 0xFFFFu), SnormFromU16(packed >> 16));

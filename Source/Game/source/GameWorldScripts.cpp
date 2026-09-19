@@ -3,12 +3,12 @@
 #define WIN32_LEAN_AND_MEAN
 
 #include "GameWorldImpl.h"
-#include <tge/script/Script.h>
-#include <tge/script/JsonData.h>
-#include <tge/script/Nodes/EventNode.h>
-#include <tge/scene/SceneObjectDefinition.h>
+#include <age/script/Script.h>
+#include <age/script/JsonData.h>
+#include <age/script/Nodes/EventNode.h>
+#include <age/scene/SceneObjectDefinition.h>
 
-namespace Tga
+namespace Ag
 {
 	void EnsureScenePropertiesAreLoaded();
 	void EnsureBasePropertiesAreLoaded();
@@ -27,7 +27,7 @@ namespace Tga
 
 namespace
 {
-	using namespace Tga;
+	using namespace Ag;
 
 	// What a script sees of its object: the model instance's transform, and the physics
 	// body when the object has one that is currently simulated.
@@ -48,8 +48,8 @@ namespace
 			if (const GameWorld::Impl::ScenePhysicsObject* object = FindBody())
 			{
 				// A simulated body is the truth; the next physics sync would undo a model-only move.
-				Tga::PhysicsVec3 position;
-				Tga::PhysicsQuat rotation;
+				Ag::PhysicsVec3 position;
+				Ag::PhysicsQuat rotation;
 				if (myWorld.physics.GetTransform(object->body, position, rotation))
 				{
 					myWorld.physics.SetTransform(object->body, { location.x, location.y, location.z }, rotation);
@@ -151,7 +151,7 @@ namespace
 		{
 			if (const GameWorld::Impl::ScenePhysicsObject* object = FindBody())
 			{
-				const Tga::PhysicsVec3 v = myWorld.physics.GetLinearVelocity(object->body);
+				const Ag::PhysicsVec3 v = myWorld.physics.GetLinearVelocity(object->body);
 				return { v.x, v.y, v.z };
 			}
 			return { 0.f, 0.f, 0.f };
@@ -234,8 +234,8 @@ namespace
 static void LoadObjectDefinition(const GameScene::SceneEntry& entry, GameWorld::Impl::SceneScriptObject& object)
 {
 	// The property types register themselves from static initialisers; make sure they linked.
-	Tga::EnsureScenePropertiesAreLoaded();
-	Tga::EnsureBasePropertiesAreLoaded();
+	Ag::EnsureScenePropertiesAreLoaded();
+	Ag::EnsureBasePropertiesAreLoaded();
 
 	try
 	{
@@ -307,7 +307,7 @@ void GameWorld::Impl::RegisterSceneScripts(const GameScene::SceneEntry& entry, s
 
 void GameWorld::Impl::DispatchContactEvents()
 {
-	std::vector<Tga::PhysicsContactEvent> events;
+	std::vector<Ag::PhysicsContactEvent> events;
 	physics.TakeContactEvents(events);
 	if (events.empty() || sceneScripts.empty())
 		return;
@@ -328,11 +328,11 @@ void GameWorld::Impl::DispatchContactEvents()
 			context.dynamicProperties = &object.dynamicProperties;
 			context.staticProperties = &object.staticProperties;
 			context.eventOtherObject = other == 0 ? -1 : (int)(other - 1);
-			object.graph->TriggerEvent(trigger ? Tga::ScriptEventKind::TriggerEnter : Tga::ScriptEventKind::CollisionEnter, context);
+			object.graph->TriggerEvent(trigger ? Ag::ScriptEventKind::TriggerEnter : Ag::ScriptEventKind::CollisionEnter, context);
 			return;
 		}
 	};
-	for (const Tga::PhysicsContactEvent& event : events)
+	for (const Ag::PhysicsContactEvent& event : events)
 	{
 		raise(event.userDataA, event.userDataB, event.trigger);
 		raise(event.userDataB, event.userDataA, event.trigger);

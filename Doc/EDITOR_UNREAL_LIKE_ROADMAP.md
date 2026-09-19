@@ -37,7 +37,7 @@ rather than one missing button:
 ## 1. Current state, verified
 
 ### 1.1 Shell
-- ImGui docking and multi-viewport on (`Editor/tge/editor/Editor.cpp:160`).
+- ImGui docking and multi-viewport on (`Editor/age/editor/Editor.cpp:160`).
   One hardcoded DockBuilder layout (`:447-465`), persisted only through
   `imgui.ini`. No layout presets, reset, or workspaces.
 - Menus: File (Save only), Edit (Undo/Redo), View (grid toggle), Create, Assets
@@ -47,7 +47,7 @@ rather than one missing button:
   size. No virtual destructor (`Material/MaterialDocument.h:34`).
 - `Editor::Save()` saves all open **and closed** documents (`Editor.cpp:695`).
 - Global single undo stack, no coalescing, no names, no limit
-  (`Core/tge/editor/CommandManager/CommandManager.cpp:9`). Undo refocuses the
+  (`Core/age/editor/CommandManager/CommandManager.cpp:9`). Undo refocuses the
   owning document (`Editor.cpp:714-783`).
 - Shortcuts hardcoded: Ctrl+Z/Shift+Z/S, F5, F, Ctrl+D, Delete, W/E/R, F2.
 - No editor theme; Lucide icon font in use. No settings persistence for
@@ -68,13 +68,13 @@ rather than one missing button:
   **Missing versus the game:** GI volume and reflection probes disabled
   (`:613`), local shadows off (`:626`), env cubemap hardcoded to
   `horizonCubeMap.dds` so the scene's own HDRI is ignored (`:598`), no DLSS,
-  no NRD, no fog or sky controls. View modes only via `TGE_EDITOR_GBUF` env var
+  no NRD, no fog or sky controls. View modes only via `AGE_EDITOR_GBUF` env var
   (`:723`). No stats overlay.
 - Play: launches `GameMain_*.exe` as a separate process
   (`Tools/ProjectRunControls/ProjectRunControls.cpp:20-66`).
 
 ### 1.3 Scene and hierarchy
-- `SceneObject` (`SceneScriptCore/tge/scene/SceneObject.h`): name, folder
+- `SceneObject` (`SceneScriptCore/age/scene/SceneObject.h`): name, folder
   string, TRS, prefab name, type (GameObject / PointLight / SpotLight) with
   inline light fields, property overrides. No components, no parenting, no
   visibility, lock, layers, tags, or mobility.

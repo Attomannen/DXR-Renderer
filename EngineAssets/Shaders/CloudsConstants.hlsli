@@ -8,7 +8,7 @@
 
 #ifdef __cplusplus
 #	include <cstdint>
-namespace Tga::CloudsShared
+namespace Ag::CloudsShared
 {
 	using uint = uint32_t;
 	struct float2 { float v[2]; float& operator[](int i) { return v[i]; } };
@@ -56,7 +56,7 @@ CLOUDS_CBUFFER_BEGIN(CloudsConstants, b13)
 CLOUDS_CBUFFER_END
 
 #ifdef __cplusplus
-}   // namespace Tga::CloudsShared
+}   // namespace Ag::CloudsShared
 #endif
 
 #endif

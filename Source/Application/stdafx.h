@@ -1,17 +1,17 @@
 ﻿#pragma once
-#pragma message("-------Never give up on your dreams!-------------")
+#pragma message("-------AttoEngine-------------")
 #include "targetver.h"
-#include <tge/log/Log.h>
+#include <age/log/Log.h>
 
 #if !defined(WIN32_LEAN_AND_MEAN)
 #define WIN32_LEAN_AND_MEAN
 #endif
 
-#include <tge/math/matrix4x4.h>
-#include <tge/math/vector2.h>
-#include <tge/math/vector4.h>
+#include <age/math/matrix4x4.h>
+#include <age/math/vector2.h>
+#include <age/math/vector4.h>
 
-#include <tge/settings/settings.h>
+#include <age/settings/settings.h>
 
 #include <algorithm>
 #include <array>

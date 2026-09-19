@@ -54,7 +54,7 @@ project (projectname)
 
 	defines
 	{
-		"TGE_PROJECT_SETTINGS_FILE=\"Game.json\""
+		"AGE_PROJECT_SETTINGS_FILE=\"Game.json\""
 	}
 
 	filter "configurations:Debug"
@@ -91,7 +91,7 @@ project (projectname)
 		defines {
 			"WIN32",
 			"_LIB", 
-			"TGE_SYSTEM_WINDOWS" 
+			"AGE_SYSTEM_WINDOWS" 
 		}
 
 

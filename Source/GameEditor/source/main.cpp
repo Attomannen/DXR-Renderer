@@ -1,6 +1,6 @@
 #include <cstdint>
 
-#include <tge/editor/GoEditor.h>
+#include <age/editor/GoEditor.h>
 
 #include <DefaultEditorGraphics.h>
 
@@ -22,6 +22,6 @@ extern "C" {
 
 int main(const int /*argc*/, const char* /*argc*/[])
 {
-	GoEditor(TGE_PROJECT_SETTINGS_FILE, DefaultEditorConfiguration, std::make_unique<Tga::DefaultEditorGraphics>());
+	GoEditor(AGE_PROJECT_SETTINGS_FILE, DefaultEditorConfiguration, std::make_unique<Ag::DefaultEditorGraphics>());
 	return 0;
 }

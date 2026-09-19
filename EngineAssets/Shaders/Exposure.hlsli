@@ -2,7 +2,7 @@
 #define EXPOSURE_HLSLI
 
 // One scene unit of luminance/illuminance in cd/m² / lux. Must match
-// Tga::Photometry::kNitsPerUnit: a 100 000 lux sun is pi scene units.
+// Ag::Photometry::kNitsPerUnit: a 100 000 lux sun is pi scene units.
 static const float kNitsPerUnit = 100000.0f / 3.14159265f;
 static const float kMeterCalibration = 12.5f;
 

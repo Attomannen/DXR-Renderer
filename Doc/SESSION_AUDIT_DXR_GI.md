@@ -62,7 +62,7 @@ these would bring back real, confirmed bugs.
    risk, purely a "no data" default, does not touch any live-data path).
 
 5. **`EngineAssets/Shaders/DxrCommon.hlsli`, `AcceptRayTriangle` +
-   `Source/Graphics/tge/render/RayTracingMaterialTable.h`** — every
+   `Source/Graphics/age/render/RayTracingMaterialTable.h`** — every
    `RayQuery` in the DXR pipeline carries `RAY_FLAG_FORCE_NON_OPAQUE`, so
    every candidate triangle of every material, opaque included, ran through
    `AcceptRayTriangle`'s texture sample + threshold compare, even for
@@ -142,7 +142,7 @@ the GI regression is in this list.
    it's a less likely cause of the GI symptom specifically, but it's new,
    unverified-in-practice behaviour in the same family of changes.
 
-4. **`Source/Graphics/tge/render/DeferredRenderer.h/.cpp` +
+4. **`Source/Graphics/age/render/DeferredRenderer.h/.cpp` +
    `EngineAssets/Shaders/GiTraceInlineCS.hlsl` — batched probe dispatch**
    (`GiProjectProbeBatchRT`, `GiProbeBatchEntry`, one `Dispatch(batchSize,1,1)`
    instead of `batchSize` separate dispatches). Idea: probes were traced one

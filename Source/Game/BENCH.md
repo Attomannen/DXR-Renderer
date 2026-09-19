@@ -147,8 +147,8 @@ Engine changes: `RenderTarget::GetRenderTargetView()` accessor;
 
 ## Phase 2.5 (in progress) — GPU profiler
 
-`Source/Graphics/tge/render/GpuProfiler.{h,cpp}` — D3D11 timestamp queries, nested
-`TGA_GPU_SCOPE(profiler, "name")` scopes, 5-frame ring-buffered non-blocking
+`Source/Graphics/age/render/GpuProfiler.{h,cpp}` — D3D11 timestamp queries, nested
+`AG_GPU_SCOPE(profiler, "name")` scopes, 5-frame ring-buffered non-blocking
 readback. The bench brackets `geometry` / `lighting` / `composite` (deferred) or
 `forward`; the report gains a `gpu_ms` block.
 

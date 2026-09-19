@@ -5,44 +5,44 @@
 
 #include <filesystem>
 
-#include <tge/Application.h>
-#include <tge/scene/Scene.h>
-#include <tge/scene/ScenePropertyTypes.h>
+#include <age/Application.h>
+#include <age/scene/Scene.h>
+#include <age/scene/ScenePropertyTypes.h>
 
-#include <tge/editor/Editor.h>
-#include <tge/editor/Material/MaterialAsset.h>
-#include <tge/render/RayTracingMaterialTable.h>
-#include <tge/editor/Tools/Viewport/Viewport.h>
+#include <age/editor/Editor.h>
+#include <age/editor/Material/MaterialAsset.h>
+#include <age/render/RayTracingMaterialTable.h>
+#include <age/editor/Tools/Viewport/Viewport.h>
 
-#include <tge/script/BaseProperties.h>
+#include <age/script/BaseProperties.h>
 
-#include <tge/graphics/DX11.h>
-#include <tge/rhi/ConstantBuffer.h>
+#include <age/graphics/DX11.h>
+#include <age/rhi/ConstantBuffer.h>
 
-#include <tge/graphics/GraphicsEngine.h>
-#include <tge/texture/TextureManager.h>
+#include <age/graphics/GraphicsEngine.h>
+#include <age/texture/TextureManager.h>
 
-#include <tge/math/BoxSphereBounds.h>
-#include <tge/graphics/Camera.h>
-#include <tge/graphics/GraphicsStateStack.h>
+#include <age/math/BoxSphereBounds.h>
+#include <age/graphics/Camera.h>
+#include <age/graphics/GraphicsStateStack.h>
 
-#include <tge/model/ModelFactory.h>
-#include <tge/model/ModelInstance.h>
-#include <tge/model/Model.h>
-#include <tge/rhi/Device.h>
+#include <age/model/ModelFactory.h>
+#include <age/model/ModelInstance.h>
+#include <age/model/Model.h>
+#include <age/rhi/Device.h>
 
-#include <tge/drawers/ModelDrawer.h>
-#include <tge/drawers/LineDrawer.h>
-#include <tge/drawers/SpriteDrawer.h>
-#include <tge/primitives/LinePrimitive.h>
+#include <age/drawers/ModelDrawer.h>
+#include <age/drawers/LineDrawer.h>
+#include <age/drawers/SpriteDrawer.h>
+#include <age/primitives/LinePrimitive.h>
 
-#include <tge/log/Log.h>
-#include <tge/settings/settings.h>
-#include "tge/shaders/SpriteShader.h"
-#include "tge/shaders/ModelShader.h"
-#include "tge/sprite/sprite.h"
+#include <age/log/Log.h>
+#include <age/settings/settings.h>
+#include "age/shaders/SpriteShader.h"
+#include "age/shaders/ModelShader.h"
+#include "age/sprite/sprite.h"
 
-using namespace Tga;
+using namespace Ag;
 
 namespace
 {
@@ -138,7 +138,7 @@ static void EnsureInitialized()
 
 		locRenderdata.selectionOutlineEffect.Init("Shaders/PostProcessSelectionOutline_PS");
 
-		// use last slot to not interfere if slots are added to TGE/in game project;
+		// use last slot to not interfere if slots are added to AttoEngine/in game project;
 		// bound to both VS and PS (SetupIdPass/DrawOutlines bind it at both stages).
 		locRenderdata.selectionOutlineConstantBuffer.Create(*DX11::Rhi(), sizeof(SelectionOutlineConstantBuffer),
 			rhi::ShaderStage::AllGraphics, 13, "SelectionOutlineCb");
@@ -152,13 +152,13 @@ static void EnsureInitialized()
 
 }
 
-void Tga::SetupIdPass()
+void Ag::SetupIdPass()
 	{
 	EnsureInitialized();
-	// use last slot to not interfere if slots are added to TGE/in game project
+	// use last slot to not interfere if slots are added to AttoEngine/in game project
 	locRenderdata.idConstantBuffer.Bind(DX11::Rhi()->GetContext());
 	}
-void Tga::DrawOutlines(const EditorViewport& viewport)
+void Ag::DrawOutlines(const EditorViewport& viewport)
 	{
 	EnsureInitialized();
 
@@ -183,7 +183,7 @@ void Tga::DrawOutlines(const EditorViewport& viewport)
 	ctx.SetShaderResource(rhi::ShaderStage::Pixel, 1, viewport.GetIdRenderTarget().GetSrv());
 	locRenderdata.selectionOutlineEffect.Render();
 }
-void Tga::SetObjectAndSelectionId(uint32_t anObjectId, uint32_t aSelectionId)
+void Ag::SetObjectAndSelectionId(uint32_t anObjectId, uint32_t aSelectionId)
 	{
 	EnsureInitialized();
 
@@ -201,14 +201,14 @@ void Tga::SetObjectAndSelectionId(uint32_t anObjectId, uint32_t aSelectionId)
 	locRenderdata.idConstantBuffer.Bind(ctx);
 }
 
-void Tga::SceneCache::ClearCache()
+void Ag::SceneCache::ClearCache()
 {
 	myTextureCache.clear();
 	myModelCache.clear();
 	myMaterialCache.clear();
 }
 
-void Tga::SceneCache::ClearCacheThrottled(float aMinIntervalSeconds)
+void Ag::SceneCache::ClearCacheThrottled(float aMinIntervalSeconds)
 {
 	const auto now = std::chrono::steady_clock::now();
 	if (myLastClear.time_since_epoch().count() != 0 &&
@@ -218,7 +218,7 @@ void Tga::SceneCache::ClearCacheThrottled(float aMinIntervalSeconds)
 	ClearCache();
 }
 
-const Tga::MaterialAsset* Tga::SceneCache::GetMaterialUsingCache(StringId path)
+const Ag::MaterialAsset* Ag::SceneCache::GetMaterialUsingCache(StringId path)
 {
 	if (path.IsEmpty()) return nullptr;
 	if (auto it = myMaterialCache.find(path); it != myMaterialCache.end()) return it->second.get();
@@ -234,7 +234,7 @@ const Tga::MaterialAsset* Tga::SceneCache::GetMaterialUsingCache(StringId path)
 	return material.get();
 }
 
-std::shared_ptr<Model> Tga::SceneCache::GetModelUsingCache(StringId path)
+std::shared_ptr<Model> Ag::SceneCache::GetModelUsingCache(StringId path)
 {
 	if (path.IsEmpty())
 		return nullptr;
@@ -265,7 +265,7 @@ std::shared_ptr<Model> Tga::SceneCache::GetModelUsingCache(StringId path)
 	return model;
 }
 
-Texture* Tga::SceneCache::GetTextureUsingCache(StringId path, TextureSrgbMode srgbMode)
+Texture* Ag::SceneCache::GetTextureUsingCache(StringId path, TextureSrgbMode srgbMode)
 {
 	if (path.IsEmpty())
 		return nullptr;
@@ -279,7 +279,7 @@ Texture* Tga::SceneCache::GetTextureUsingCache(StringId path, TextureSrgbMode sr
 	}
 	else
 	{
-		auto& engine = *Tga::GraphicsEngine::GetInstance();
+		auto& engine = *Ag::GraphicsEngine::GetInstance();
 		auto& textureManager = engine.GetTextureManager();
 
 		texture = textureManager.GetTexture(path.GetString(), srgbMode);
@@ -289,7 +289,7 @@ Texture* Tga::SceneCache::GetTextureUsingCache(StringId path, TextureSrgbMode sr
 	return texture;
 }
 
-Scene* Tga::SceneCache::GetSceneUsingCache(StringId path)
+Scene* Ag::SceneCache::GetSceneUsingCache(StringId path)
 {
 	if (path.IsEmpty())
 		return nullptr;
@@ -303,7 +303,7 @@ Scene* Tga::SceneCache::GetSceneUsingCache(StringId path)
 	}
 	else
 	{
-		auto& editor = *Tga::Editor::GetEditor();
+		auto& editor = *Ag::Editor::GetEditor();
 		auto& sceneManager = editor.GetEditorSceneManager();
 
 		scene = sceneManager.Get(path.GetString());
@@ -315,10 +315,10 @@ Scene* Tga::SceneCache::GetSceneUsingCache(StringId path)
 
 
 // One TLAS instance per sub-mesh, matching GameWorld's own TLAS build.
-static void CollectRayInstances(const Tga::ModelInstance& anInstance, const Tga::Matrix4x4f& aTransform,
-	std::vector<Tga::rhi::RaytracingInstanceDesc>& outInstances)
+static void CollectRayInstances(const Ag::ModelInstance& anInstance, const Ag::Matrix4x4f& aTransform,
+	std::vector<Ag::rhi::RaytracingInstanceDesc>& outInstances)
 {
-	using namespace Tga;
+	using namespace Ag;
 	rhi::IDevice* device = DX11::Rhi();
 	const std::shared_ptr<Model> model = anInstance.GetModel();
 	if (!device || !model) return;
@@ -356,12 +356,12 @@ static void CollectRayInstances(const Tga::ModelInstance& anInstance, const Tga:
 	}
 }
 
-bool Tga::CheckBounds(const Frustum& frustum, Tga::Matrix4x4f matrix, float maxScale, Model& model)
+bool Ag::CheckBounds(const Frustum& frustum, Ag::Matrix4x4f matrix, float maxScale, Model& model)
 {
 	int meshCount = (int)model.GetMeshCount();
 	for (int i = 0; i < meshCount; i++)
 	{
-		const Tga::BoxSphereBounds& bounds = model.GetMeshData(i).bounds;
+		const Ag::BoxSphereBounds& bounds = model.GetMeshData(i).bounds;
 		Vector3f transformedCenter = bounds.center * matrix;
 
 		if (CheckFrustum(frustum, transformedCenter, maxScale * bounds.radius))
@@ -375,13 +375,13 @@ bool Tga::CheckBounds(const Frustum& frustum, Tga::Matrix4x4f matrix, float maxS
 static int locScenePropertyDepth = -1;
 static std::vector<std::vector<ScenePropertyDefinition>> locSceneObjectProperties;
 
-void DrawBounds(const Tga::BoxSphereBounds& bounds, Tga::Vector4f color)
+void DrawBounds(const Ag::BoxSphereBounds& bounds, Ag::Vector4f color)
 {
 	bounds;
 	color;
 
-	auto& debug = Tga::GraphicsEngine::GetInstance()->GetLineDrawer();
-	Tga::LinePrimitive primitive{};
+	auto& debug = Ag::GraphicsEngine::GetInstance()->GetLineDrawer();
+	Ag::LinePrimitive primitive{};
 	primitive.color = color;
 	auto min = bounds.center - bounds.boxExtents;
 	auto max = bounds.center + bounds.boxExtents;
@@ -427,7 +427,7 @@ void DrawBounds(const Tga::BoxSphereBounds& bounds, Tga::Vector4f color)
 
 
 
-bool Tga::DrawSceneProperty(const ScenePropertyDefinition& property, float maxScale, DrawParameters& drawParameters)
+bool Ag::DrawSceneProperty(const ScenePropertyDefinition& property, float maxScale, DrawParameters& drawParameters)
 	{
 	EnsureInitialized();
 	
@@ -470,13 +470,13 @@ bool Tga::DrawSceneProperty(const ScenePropertyDefinition& property, float maxSc
 					AnimatedModelInstance instance;
 					instance.Init(model);
 					instance.SetPose(*pose);
-					Tga::GraphicsEngine::GetInstance()->GetModelDrawer().Draw(instance, locRenderdata.idAnimatedModelShader);
+					Ag::GraphicsEngine::GetInstance()->GetModelDrawer().Draw(instance, locRenderdata.idAnimatedModelShader);
 				}
 				else
 				{
 					ModelInstance instance;
 					instance.Init(model);
-					Tga::GraphicsEngine::GetInstance()->GetModelDrawer().Draw(instance, locRenderdata.idModelShader);
+					Ag::GraphicsEngine::GetInstance()->GetModelDrawer().Draw(instance, locRenderdata.idModelShader);
 				}
 				hasBeenRendered = true;
 			}
@@ -493,7 +493,7 @@ bool Tga::DrawSceneProperty(const ScenePropertyDefinition& property, float maxSc
 			instance.pivot = value.pivot;
 			instance.size = value.size;
 
-			Tga::GraphicsEngine::GetInstance()->GetSpriteDrawer().Draw(sharedData, instance);
+			Ag::GraphicsEngine::GetInstance()->GetSpriteDrawer().Draw(sharedData, instance);
 
 			hasBeenRendered = true;
 
@@ -531,7 +531,7 @@ bool Tga::DrawSceneProperty(const ScenePropertyDefinition& property, float maxSc
 					ApplyModelMaterials(value, instance, drawParameters.cache);
 
 					// todo override shader
-					Tga::GraphicsEngine::GetInstance()->GetModelDrawer().Draw(instance);
+					Ag::GraphicsEngine::GetInstance()->GetModelDrawer().Draw(instance);
 				}
 				else
 				{
@@ -557,17 +557,17 @@ bool Tga::DrawSceneProperty(const ScenePropertyDefinition& property, float maxSc
 							if (transparent == wantTransparent) meshes.push_back(m);
 						}
 						const ModelShader& shader = drawParameters.overrideModelShader
-							? *drawParameters.overrideModelShader : Tga::GraphicsEngine::GetInstance()->GetModelDrawer().GetPbrShader();
+							? *drawParameters.overrideModelShader : Ag::GraphicsEngine::GetInstance()->GetModelDrawer().GetPbrShader();
 						instance.Render(shader, meshes);
 					}
 					else if (drawParameters.overrideModelShader)
 					{
-						Tga::GraphicsEngine::GetInstance()->GetModelDrawer().Draw(instance, *drawParameters.overrideModelShader);
+						Ag::GraphicsEngine::GetInstance()->GetModelDrawer().Draw(instance, *drawParameters.overrideModelShader);
 
 					}
 					else
 					{
-						Tga::GraphicsEngine::GetInstance()->GetModelDrawer().Draw(instance);
+						Ag::GraphicsEngine::GetInstance()->GetModelDrawer().Draw(instance);
 					}
 				}
 
@@ -593,7 +593,7 @@ bool Tga::DrawSceneProperty(const ScenePropertyDefinition& property, float maxSc
 			Sprite2DInstanceData instance = {};
 			instance.pivot = value.pivot;
 			instance.size = value.size;
-			Tga::GraphicsEngine::GetInstance()->GetSpriteDrawer().Draw(sharedData, instance);
+			Ag::GraphicsEngine::GetInstance()->GetSpriteDrawer().Draw(sharedData, instance);
 
 			hasBeenRendered = true;
 		}
@@ -602,7 +602,7 @@ bool Tga::DrawSceneProperty(const ScenePropertyDefinition& property, float maxSc
 	return hasBeenRendered;
 }
 
-void Tga::DrawSceneObject(const SceneObject& sceneObject, DrawParameters& drawParameters)
+void Ag::DrawSceneObject(const SceneObject& sceneObject, DrawParameters& drawParameters)
 {
 	EnsureInitialized();
 
@@ -642,11 +642,11 @@ void Tga::DrawSceneObject(const SceneObject& sceneObject, DrawParameters& drawPa
 
 			if (drawParameters.useIdShader)
 			{
-				Tga::GraphicsEngine::GetInstance()->GetModelDrawer().Draw(instance, locRenderdata.idModelShader);
+				Ag::GraphicsEngine::GetInstance()->GetModelDrawer().Draw(instance, locRenderdata.idModelShader);
 			}
 			else
 			{
-				Tga::GraphicsEngine::GetInstance()->GetModelDrawer().Draw(instance);
+				Ag::GraphicsEngine::GetInstance()->GetModelDrawer().Draw(instance);
 
 				if (drawParameters.drawBounds)
 				{
@@ -665,7 +665,7 @@ void Tga::DrawSceneObject(const SceneObject& sceneObject, DrawParameters& drawPa
 
 }
 
-void Tga::DrawScene(const Scene& scene, DrawParameters& drawParameters)
+void Ag::DrawScene(const Scene& scene, DrawParameters& drawParameters)
 {
 	EnsureInitialized();
 

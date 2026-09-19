@@ -5,36 +5,36 @@
 #include "GameWorld.h"
 #include "CubemapPrefilter.h"
 #include <cstdio>
-#include <tge/render/DeferredRenderer.h>
-#include <tge/render/RayTracingMaterialTable.h>
-#include <tge/graphics/RenderTarget.h>
-#include <tge/graphics/DepthBuffer.h>
-#include <tge/render/RenderGraph.h>
-#include <tge/render/RenderResourcePool.h>
-#include <tge/graphics/GraphicsEngine.h>
-#include <tge/graphics/GraphicsStateStack.h>
-#include <tge/graphics/DX11.h>
-#include <tge/graphics/Camera.h>
-#include <tge/graphics/AmbientLight.h>
-#include <tge/graphics/DirectionalLight.h>
-#include <tge/graphics/PointLight.h>
-#include <tge/math/Photometry.h>
-#include <tge/debugging/CpuProfiler.h>
-#include <tge/drawers/ModelDrawer.h>
-#include <tge/render/GpuProfiler.h>
-#include <tge/model/Model.h>
-#include <tge/model/ModelFactory.h>
-#include <tge/model/ModelInstance.h>
-#include <tge/texture/TextureManager.h>
-#include <tge/texture/texture.h>
-#include <tge/input/InputManager.h>
-#include <tge/application.h>
-#include <tge/settings/settings.h>
-#include <tge/log/Log.h>
-#include <tge/EngineDefines.h>
-#include <tge/physics/PhysicsWorld.h>
-#include <tge/script/ScriptRuntimeInstance.h>
-#include <tge/script/Contexts/GameScriptContext.h>
+#include <age/render/DeferredRenderer.h>
+#include <age/render/RayTracingMaterialTable.h>
+#include <age/graphics/RenderTarget.h>
+#include <age/graphics/DepthBuffer.h>
+#include <age/render/RenderGraph.h>
+#include <age/render/RenderResourcePool.h>
+#include <age/graphics/GraphicsEngine.h>
+#include <age/graphics/GraphicsStateStack.h>
+#include <age/graphics/DX11.h>
+#include <age/graphics/Camera.h>
+#include <age/graphics/AmbientLight.h>
+#include <age/graphics/DirectionalLight.h>
+#include <age/graphics/PointLight.h>
+#include <age/math/Photometry.h>
+#include <age/debugging/CpuProfiler.h>
+#include <age/drawers/ModelDrawer.h>
+#include <age/render/GpuProfiler.h>
+#include <age/model/Model.h>
+#include <age/model/ModelFactory.h>
+#include <age/model/ModelInstance.h>
+#include <age/texture/TextureManager.h>
+#include <age/texture/texture.h>
+#include <age/input/InputManager.h>
+#include <age/application.h>
+#include <age/settings/settings.h>
+#include <age/log/Log.h>
+#include <age/EngineDefines.h>
+#include <age/physics/PhysicsWorld.h>
+#include <age/script/ScriptRuntimeInstance.h>
+#include <age/script/Contexts/GameScriptContext.h>
 #include <Windows.h>
 #include <d3d11.h>
 #include <dxgi.h>
@@ -64,11 +64,11 @@
 #include <vector>
 #include "SceneFiles.h"
 #include "GiProbeScheduler.h"
-#include <tge/shaders/ModelShader.h>
-#include <tge/material/MaterialAsset.h>
+#include <age/shaders/ModelShader.h>
+#include <age/material/MaterialAsset.h>
 #include "BenchConfig.h"
 
-using namespace Tga;
+using namespace Ag;
 using namespace GameScene;
 
 struct GameWorld::Impl
@@ -404,9 +404,9 @@ struct GameWorld::Impl
 	void DrawProfilerTab();
 
 	// --- physics test on the debug sphere (GameWorldPhysics.cpp) ---
-	Tga::PhysicsWorld physics;
-	Tga::PhysicsBodyId physicsBall;
-	Tga::PhysicsBodyId physicsFloor;      // only when the scene has no static collision
+	Ag::PhysicsWorld physics;
+	Ag::PhysicsBodyId physicsBall;
+	Ag::PhysicsBodyId physicsFloor;      // only when the scene has no static collision
 	bool physicsActive = false;
 	bool physicsSavedFollowCam = true;
 	bool physicsSavedShowBall = false;
@@ -428,9 +428,9 @@ struct GameWorld::Impl
 	{
 		size_t instance = 0;                                   // index into models
 		std::string name;                                      // for logs
-		std::unique_ptr<Tga::ScriptRuntimeInstance> graph;
-		std::unordered_map<StringId, Tga::Property> dynamicProperties;
-		std::unordered_map<StringId, Tga::Property> staticProperties;
+		std::unique_ptr<Ag::ScriptRuntimeInstance> graph;
+		std::unordered_map<StringId, Ag::Property> dynamicProperties;
+		std::unordered_map<StringId, Ag::Property> staticProperties;
 
 		SceneScriptObject() = default;
 		SceneScriptObject(const SceneScriptObject&) = delete;
@@ -451,8 +451,8 @@ struct GameWorld::Impl
 	struct SceneCharacterObject
 	{
 		size_t instance = 0;
-		Tga::PhysicsCharacterDesc desc;
-		Tga::PhysicsCharacterId id;
+		Ag::PhysicsCharacterDesc desc;
+		Ag::PhysicsCharacterId id;
 		Matrix4x4f startTransform;
 	};
 	std::vector<SceneCharacterObject> sceneCharacters;
@@ -476,7 +476,7 @@ struct GameWorld::Impl
 
 	bool showPhysicsWireframe = false;    // draw collision edges (green static, orange awake, blue asleep)
 	float physicsWireRadius = 3000.f;     // only near the camera; a level mesh has far too many edges
-	Tga::PhysicsDebugLines physicsWireLines;
+	Ag::PhysicsDebugLines physicsWireLines;
 	void DrawPhysicsOverlay();
 	bool physicsIncludeBall = true;       // drop the debug sphere with the scene's props
 	void StartPhysicsTest();
@@ -490,14 +490,14 @@ struct GameWorld::Impl
 	struct ScenePhysicsObject
 	{
 		size_t instance = 0;                 // index into models
-		Tga::PhysicsBodyDesc desc;
-		Tga::PhysicsBodyId body;
+		Ag::PhysicsBodyDesc desc;
+		Ag::PhysicsBodyId body;
 		Matrix4x4f startTransform;
 		Vector3f scale{ 1.f, 1.f, 1.f };
 		bool dynamic = false;
 	};
 	std::vector<ScenePhysicsObject> scenePhysicsObjects;
-	std::unordered_map<std::string, Tga::PhysicsShapeId> scenePhysicsShapes;
+	std::unordered_map<std::string, Ag::PhysicsShapeId> scenePhysicsShapes;
 	int scenePhysicsStaticCount = 0;
 	void ClearScenePhysics();
 	void RegisterScenePhysics(const GameScene::SceneEntry& entry, const std::shared_ptr<Model>& model,

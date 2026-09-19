@@ -72,7 +72,7 @@ project "Application"
 			"_CRT_SECURE_NO_WARNINGS", 
 			"_LIB", 
 			"_WIN32_WINNT=0x0601",
-			"TGE_SYSTEM_WINDOWS" 
+			"AGE_SYSTEM_WINDOWS" 
 		}
 
 	shadermodel("5.0")

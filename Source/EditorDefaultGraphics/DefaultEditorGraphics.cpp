@@ -3,50 +3,50 @@
 
 #include <filesystem>
 #include <imgui.h>
-#include <tge/editor/Scene/ActiveScene.h>
-#include <tge/editor/Scene/SceneSelection.h>
+#include <age/editor/Scene/ActiveScene.h>
+#include <age/editor/Scene/SceneSelection.h>
 #include <SceneUtil.h>
-#include <tge/editor/Tools/Viewport/Viewport.h>
+#include <age/editor/Tools/Viewport/Viewport.h>
 
-#include "tge/animation/Animation.h"
-#include "tge/animation/AnimationClip.h"
-#include "tge/animation/AnimationPlayer.h"
-#include "tge/graphics/GraphicsEngine.h"
-#include "tge/graphics/GraphicsStateStack.h"
-#include "tge/drawers/LineDrawer.h"
-#include "tge/drawers/ModelDrawer.h"
-#include "tge/model/AnimatedModelInstance.h"
-#include "tge/model/ModelFactory.h"
-#include "tge/primitives/LinePrimitive.h"
-#include "tge/render/RenderCommon.h"
-#include "tge/render/RenderGraph.h"
-#include "tge/render/DeferredRenderer.h"
-#include <tge/graphics/RenderTarget.h>
-#include <tge/graphics/DepthBuffer.h>
-#include <tge/texture/TextureManager.h>
-#include <tge/graphics/AmbientLight.h>
-#include <tge/graphics/DirectionalLight.h>
-#include "tge/settings/settings.h"
-#include "tge/texture/TextureManager.h"
-#include "tge/texture/texture.h"
-#include "tge/scene/ScenePropertyTypes.h"
-#include "tge/shaders/ModelShader.h"
-#include <tge/editor/ObjectDefinition/ObjectDefinitionDocument.h>
-#include <tge/shaders/SpriteShader.h>
-#include <tge/imgui/ImGuiPropertyEditor.h>
-#include <tge/editor/Editor.h>
-#include <tge/editor/Material/MaterialAsset.h>
+#include "age/animation/Animation.h"
+#include "age/animation/AnimationClip.h"
+#include "age/animation/AnimationPlayer.h"
+#include "age/graphics/GraphicsEngine.h"
+#include "age/graphics/GraphicsStateStack.h"
+#include "age/drawers/LineDrawer.h"
+#include "age/drawers/ModelDrawer.h"
+#include "age/model/AnimatedModelInstance.h"
+#include "age/model/ModelFactory.h"
+#include "age/primitives/LinePrimitive.h"
+#include "age/render/RenderCommon.h"
+#include "age/render/RenderGraph.h"
+#include "age/render/DeferredRenderer.h"
+#include <age/graphics/RenderTarget.h>
+#include <age/graphics/DepthBuffer.h>
+#include <age/texture/TextureManager.h>
+#include <age/graphics/AmbientLight.h>
+#include <age/graphics/DirectionalLight.h>
+#include "age/settings/settings.h"
+#include "age/texture/TextureManager.h"
+#include "age/texture/texture.h"
+#include "age/scene/ScenePropertyTypes.h"
+#include "age/shaders/ModelShader.h"
+#include <age/editor/ObjectDefinition/ObjectDefinitionDocument.h>
+#include <age/shaders/SpriteShader.h>
+#include <age/imgui/ImGuiPropertyEditor.h>
+#include <age/editor/Editor.h>
+#include <age/editor/Material/MaterialAsset.h>
 #include "Material/MaterialGraphBake.h"
-#include <tge/render/RayTracingMaterialTable.h>
-#include <tge/editor/imgui_widgets/imgui_widgets.h>
-#include <tge/graphics/DX11.h>
-#include <tge/rhi/Device.h>
-#include <tge/model/ModelInstance.h>
-#include <tge/rhi/ConstantBuffer.h>
+#include <age/render/RayTracingMaterialTable.h>
+#include <age/editor/imgui_widgets/imgui_widgets.h>
+#include <age/graphics/DX11.h>
+#include <age/rhi/Device.h>
+#include <age/model/ModelInstance.h>
+#include <age/rhi/ConstantBuffer.h>
 
-using namespace Tga;
+using namespace Ag;
 
-namespace Tga
+namespace Ag
 {
 	class DefaultObjectDefinitionEditorGraphics : public ObjectDefinitionEditorGraphicsBase
 	{
@@ -208,7 +208,7 @@ void DefaultObjectDefinitionEditorGraphics::Draw(ObjectDefinitionDrawParameters&
 		auto& graphicsStateStack = GraphicsEngine::GetInstance()->GetGraphicsStateStack();
 
 		graphicsStateStack.SetCamera(renderCamera);
-		graphicsStateStack.SetBlendState(Tga::BlendState::Disabled);
+		graphicsStateStack.SetBlendState(Ag::BlendState::Disabled);
 		parameters.viewport->BeginDraw();
 
 		{
@@ -273,7 +273,7 @@ void DefaultObjectDefinitionEditorGraphics::Draw(ObjectDefinitionDrawParameters&
 	GraphicsEngine::GetInstance()->EndFrame();
 
 }
-void Tga::DefaultObjectDefinitionEditorGraphics::DrawVisualPreviewSettings()
+void Ag::DefaultObjectDefinitionEditorGraphics::DrawVisualPreviewSettings()
 {
 	if (PropertyEditor::PropertyHeader("Default Value"))
 	{
@@ -430,7 +430,7 @@ void DefaultSceneEditorGraphics::Draw(const SceneDrawParameters& parameters)
 		auto& graphicsStateStack = GraphicsEngine::GetInstance()->GetGraphicsStateStack();
 
 		graphicsStateStack.SetCamera(renderCamera);
-		graphicsStateStack.SetBlendState(Tga::BlendState::Disabled);
+		graphicsStateStack.SetBlendState(Ag::BlendState::Disabled);
 
 		std::vector<ScenePropertyDefinition> sceneObjectProperties;
 
@@ -477,10 +477,10 @@ void DefaultSceneEditorGraphics::Draw(const SceneDrawParameters& parameters)
 
 			for (auto& p : GetActiveScene()->GetSceneObjects())
 			{
-				drawParameters.boundsColor = Tga::Vector4f(0.f, 1.f, 0.f, 1.f);
+				drawParameters.boundsColor = Ag::Vector4f(0.f, 1.f, 0.f, 1.f);
 				if (ImGui::GetIO().KeyShift)
 				{
-					drawParameters.boundsColor = SceneSelection::GetActiveSceneSelection()->Contains(p.first) ? Tga::Vector4f(0.f, 0.f, 0.f, 0.0f) : Tga::Vector4f(0.f, 1.f, 0.f, 1.f);
+					drawParameters.boundsColor = SceneSelection::GetActiveSceneSelection()->Contains(p.first) ? Ag::Vector4f(0.f, 0.f, 0.f, 0.0f) : Ag::Vector4f(0.f, 1.f, 0.f, 1.f);
 				}
 
 				DrawSceneObject(*p.second, drawParameters);
@@ -552,7 +552,7 @@ bool DefaultSceneEditorGraphics::DrawDeferredColorPass(const SceneDrawParameters
 	DeferredRenderer& dr = ge.GetDeferredRenderer();
 	Scene* scene = parameters.scene ? parameters.scene : GetActiveScene();
 	size_t forwardFlagLength = 0;
-	getenv_s(&forwardFlagLength, nullptr, 0, "TGE_EDITOR_FORWARD");   // any value keeps the old forward view
+	getenv_s(&forwardFlagLength, nullptr, 0, "AGE_EDITOR_FORWARD");   // any value keeps the old forward view
 	if (!dr.IsReady() || !scene || forwardFlagLength > 0) return false;
 
 	EditorViewport& viewport = *parameters.viewport;
@@ -717,10 +717,10 @@ bool DefaultSceneEditorGraphics::DrawDeferredColorPass(const SceneDrawParameters
 
 	{
 		RenderGraph graph(ge.GetRenderResourcePool(), nullptr);
-		// TGE_EDITOR_GBUF=1..8 shows one G-buffer channel instead of lighting.
+		// AGE_EDITOR_GBUF=1..8 shows one G-buffer channel instead of lighting.
 		char channel[8] = {};
 		size_t channelLength = 0;
-		getenv_s(&channelLength, channel, sizeof(channel), "TGE_EDITOR_GBUF");
+		getenv_s(&channelLength, channel, sizeof(channel), "AGE_EDITOR_GBUF");
 		dr.BuildFrame(graph, drawOpaque, drawTransparent, drawShadowCasters, channelLength ? atoi(channel) : 0);
 		graph.Execute();
 	}
@@ -737,7 +737,7 @@ bool DefaultSceneEditorGraphics::DrawDeferredColorPass(const SceneDrawParameters
 
 void DefaultAnimationClipEditorGraphics::Draw(const AnimationClipDrawParameters& parameters)
 {
-	Tga::LineDrawer& lineDrawer = GraphicsEngine::GetInstance()->GetLineDrawer();
+	Ag::LineDrawer& lineDrawer = GraphicsEngine::GetInstance()->GetLineDrawer();
 	myCache.ClearCacheThrottled();
 
 	std::shared_ptr<Model> model;
@@ -758,7 +758,7 @@ void DefaultAnimationClipEditorGraphics::Draw(const AnimationClipDrawParameters&
 	const Camera& renderCamera = parameters.viewport->GetCamera();
 
 	graphicsStateStack.SetCamera(renderCamera);
-	graphicsStateStack.SetBlendState(Tga::BlendState::Disabled);
+	graphicsStateStack.SetBlendState(Ag::BlendState::Disabled);
 
 	{
 		parameters.viewport->SetupIdPass();
@@ -858,7 +858,7 @@ void DefaultAnimationClipEditorGraphics::Draw(const AnimationClipDrawParameters&
 					Vector3f from[3] = { o, o, o };
 					Vector3f to[3] = { x, y, z };
 
-					Tga::LineMultiPrimitive lines{
+					Ag::LineMultiPrimitive lines{
 						.colors = colors,
 						.fromPositions = from,
 						.toPositions = to,
@@ -898,7 +898,7 @@ void DefaultMaterialEditorGraphics::Draw(const MaterialEditorDrawParameters& par
 	auto& stack = GraphicsEngine::GetInstance()->GetGraphicsStateStack();
 	const Camera& cam = parameters.viewport->GetCamera();
 	stack.SetCamera(cam);
-	stack.SetBlendState(Tga::BlendState::Disabled);
+	stack.SetBlendState(Ag::BlendState::Disabled);
 
 	parameters.viewport->BeginDraw();
 	parameters.viewport->SetupColorPass();
@@ -1074,7 +1074,7 @@ void DefaultMaterialEditorGraphics::DrawPreviewSettings()
 
 bool DefaultMaterialEditorGraphics::BakeMaterialGraph(const MaterialGraphBakeRequest& request)
 {
-	return Tga::BakeMaterialGraphImpl(request);
+	return Ag::BakeMaterialGraphImpl(request);
 }
 
 DefaultEditorGraphics::DefaultEditorGraphics()
@@ -1165,7 +1165,7 @@ ImTextureID DefaultEditorGraphics::GetTextureID(std::string_view aTexturePath) c
 	if (!GraphicsEngine::GetInstance())
 		GraphicsEngine::Start();
 
-	Tga::TextureManager& tm = GraphicsEngine::GetInstance()->GetTextureManager();
+	Ag::TextureManager& tm = GraphicsEngine::GetInstance()->GetTextureManager();
 	std::string pathStr(aTexturePath);
 	const Texture* img = tm.GetTexture(pathStr.c_str(), TextureSrgbMode::ForceNoSrgbFormat);
 	if (!img)
@@ -1197,7 +1197,7 @@ void DefaultEditorGraphics::DrawLines(const Color* someColors, const Vector3f* s
 	{
 		unsigned int count = std::min(MaxLinesPerBatch, aCount - offset);
 
-		Tga::LineMultiPrimitive lines{
+		Ag::LineMultiPrimitive lines{
 			.colors = someColors + offset,
 			.fromPositions = someFromPositions + offset,
 			.toPositions = someToPositions + offset,

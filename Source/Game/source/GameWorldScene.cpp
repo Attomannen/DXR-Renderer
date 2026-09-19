@@ -347,7 +347,7 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 		for (const ModelInstance& mi : models)
 		{
 			if (!mi.GetModel()) continue;
-			const Tga::BoxSphereBounds& b = mi.GetModel()->GetBounds();
+			const Ag::BoxSphereBounds& b = mi.GetModel()->GetBounds();
 			const Matrix4x4f& w = mi.GetTransform();
 			for (int sx = -1; sx <= 1; sx += 2)
 			for (int sy = -1; sy <= 1; sy += 2)

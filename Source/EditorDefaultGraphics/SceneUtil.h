@@ -3,16 +3,16 @@
 #include <unordered_map>
 #include <chrono>
 #include <memory>
-#include <tge/stringRegistry/StringRegistry.h>
-#include <tge/math/Matrix4x4.h>
+#include <age/stringRegistry/StringRegistry.h>
+#include <age/math/Matrix4x4.h>
 
-#include "tge/animation/Pose.h"
+#include "age/animation/Pose.h"
 #include <vector>
-#include <tge/rhi/Descs.h>
+#include <age/rhi/Descs.h>
 
-#include "tge/texture/Texture.h"
+#include "age/texture/Texture.h"
 
-namespace Tga
+namespace Ag
 {
 	class Model;
 	class EditorViewport;
@@ -87,6 +87,6 @@ namespace Tga
 	void DrawSceneObject(const SceneObject& sceneObject, DrawParameters& drawParameters);
 	void DrawScene(const Scene& scene, DrawParameters& drawParameters);
 
-	bool CheckBounds(const Frustum& frustum, Tga::Matrix4x4f matrix, float maxScale, Model& model);
+	bool CheckBounds(const Frustum& frustum, Ag::Matrix4x4f matrix, float maxScale, Model& model);
 
 }

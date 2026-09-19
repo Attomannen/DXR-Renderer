@@ -6,11 +6,11 @@
 #include <string>
 #include <array>
 #include <functional>
-#include <tge/graphics/TextureResource.h>
-#include <tge/Math/Vector.h>
-#include <tge/Math/Matrix.h>
-#include <tge/rhi/ConstantBuffer.h>
-#include <tge/rhi/MigrationView.h>
+#include <age/graphics/TextureResource.h>
+#include <age/Math/Vector.h>
+#include <age/Math/Matrix.h>
+#include <age/rhi/ConstantBuffer.h>
+#include <age/rhi/MigrationView.h>
 
 using Microsoft::WRL::ComPtr;
 
@@ -19,7 +19,7 @@ namespace DirectX
     class ScratchImage;
 }
 
-namespace Tga
+namespace Ag
 {
     class RenderTarget;
     class DepthBuffer;

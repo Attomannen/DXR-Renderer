@@ -4,11 +4,11 @@
 
 #include "GameWorldImpl.h"
 #include "BenchConfig.h"
-#include <tge/physics/PhysicsWorld.h>
-#include <tge/script/Nodes/CommonNodes.h>
-#include <tge/script/Nodes/CommonMathNodes.h>
-#include <tge/script/Nodes/GameObjectNodes.h>
-#include <tge/script/Nodes/MathExtraNodes.h>
+#include <age/physics/PhysicsWorld.h>
+#include <age/script/Nodes/CommonNodes.h>
+#include <age/script/Nodes/CommonMathNodes.h>
+#include <age/script/Nodes/GameObjectNodes.h>
+#include <age/script/Nodes/MathExtraNodes.h>
 #include <DirectXTex/ScreenGrab/ScreenGrab11.h>
 #pragma comment(lib, "windowscodecs.lib")
 
@@ -29,11 +29,11 @@ void GameWorld::Init()
 
 	BenchConfig::ApplyStartupOverrides(s);
 	// Node types must exist before any script is loaded (the editor does the same at startup).
-	Tga::RegisterCommonNodes();
-	Tga::RegisterCommonMathNodes();
-	Tga::RegisterMathExtraNodes();
-	Tga::RegisterGameObjectNodes();
-	INFO_PRINT("physics: Jolt %s, smoke test %s", Tga::GetPhysicsVersion(), Tga::PhysicsSmokeTest() ? "ok" : "FAILED");
+	Ag::RegisterCommonNodes();
+	Ag::RegisterCommonMathNodes();
+	Ag::RegisterMathExtraNodes();
+	Ag::RegisterGameObjectNodes();
+	INFO_PRINT("physics: Jolt %s, smoke test %s", Ag::GetPhysicsVersion(), Ag::PhysicsSmokeTest() ? "ok" : "FAILED");
 
 	// Materials rendered in the forward transparent pass (substring match, after
 	// lowercasing + stripping a Blender ".003" suffix). BENCH_TRANSPARENT_MATS
@@ -82,7 +82,7 @@ void GameWorld::Init()
 		INFO_PRINT("bench: BENCH_SCENE not set; loading first scene '%s'", s.currentScene.c_str());
 	}
 	{
-		TGA_CPU_SCOPE("Load scene content");
+		AG_CPU_SCOPE("Load scene content");
 		if (!s.LoadSceneContent(s.currentScene, true))
 			return;
 	}
@@ -91,7 +91,7 @@ void GameWorld::Init()
 		s.input = std::make_unique<InputManager>(*hwnd);
 
 	{
-		TGA_CPU_SCOPE("GPU profiler init");
+		AG_CPU_SCOPE("GPU profiler init");
 		s.gpu.Init();
 	}
 
@@ -279,7 +279,7 @@ void GameWorld::Render()
 	// Interactive tuning panel (free-fly runs only) — updates s.* live.
 	if (s.benchFrames == 0 || s.bench.debugUi)
 	{
-		TGA_CPU_SCOPE("Debug UI");
+		AG_CPU_SCOPE("Debug UI");
 		DrawDebugUI();
 		s.DrawPerfOverlayImpl();
 #ifndef _RETAIL
@@ -664,7 +664,7 @@ void GameWorld::Render()
 			addInstance(s.debugBall, debugMaterial);
 
 		{
-			TGA_PROFILE_SCOPE(&s.gpu, "TLAS build");
+			AG_PROFILE_SCOPE(&s.gpu, "TLAS build");
 			dxr->BuildRaytracingTlas(rayInstances.data(), (uint32_t)rayInstances.size());
 		}
 		if (s.deferred) s.deferred->SetRaySceneStationary(raySceneStationary && nextRayTransforms.size() == s.previousRayTransforms.size());
@@ -676,7 +676,7 @@ void GameWorld::Render()
 	if (s.giRtCapturePending)
 	{
 		s.giRtCapturePending = false;
-		TGA_PROFILE_SCOPE(&s.gpu, "GI probe update");
+		AG_PROFILE_SCOPE(&s.gpu, "GI probe update");
 		s.CaptureGiProbesImpl(ge);
 	}
 

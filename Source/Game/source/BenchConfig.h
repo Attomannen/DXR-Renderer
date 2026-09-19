@@ -6,7 +6,7 @@
 // BENCH_FRAMES / BENCH_NOVSYNC itself, before the engine starts.)
 
 #include "GameWorld.h"
-#include <tge/render/DeferredRenderer.h>
+#include <age/render/DeferredRenderer.h>
 #include <optional>
 #include <string>
 
@@ -57,5 +57,5 @@ namespace BenchConfig
 
 	// Renderer tunables. Call once the deferred renderer is ready; the caller
 	// recreates the DXR targets afterwards if dlssMode changed.
-	void ApplyRendererOverrides(Tga::DeferredRenderer::Tunables& tun);
+	void ApplyRendererOverrides(Ag::DeferredRenderer::Tunables& tun);
 }

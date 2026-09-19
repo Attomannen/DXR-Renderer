@@ -113,7 +113,7 @@ struct ModelVertexInput
 	float4 weights      :   WEIGHTS;
 };
 
-// Compact vertex of static meshes (Tga::MeshVertex, 40 bytes).
+// Compact vertex of static meshes (Ag::MeshVertex, 40 bytes).
 struct MeshVertexInput
 {
 	float4 position      : POSITION;   // xyz, w = bitangent sign

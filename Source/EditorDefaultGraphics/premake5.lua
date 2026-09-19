@@ -73,7 +73,7 @@ project "EditorDefaultGraphics"
 		defines {
 			"WIN32",
 			"_LIB", 
-			"TGE_SYSTEM_WINDOWS",
+			"AGE_SYSTEM_WINDOWS",
 			"NOMINMAX",
 		}
 	-- Options to support Live++ editing of code
