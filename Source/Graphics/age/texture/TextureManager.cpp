@@ -92,6 +92,19 @@ bool IsTarga(const char* path)
 	return ext && lstrcmpA(ext + 1, "tga") == 0;
 }
 
+// Radiance .hdr (RGBE), as exported by Blender and Poly Haven.
+//
+// WIC has no codec for it, so an .hdr fell past the DDS and WIC attempts and
+// out of the loader as "image format is forbidden" -- which is how the Bistro
+// scene ended up with no environment map and a sky averaging 0 cd/m2.
+// DirectXTex decodes it, and CubemapPrefilter already relied on that; this
+// just wires the same call into the runtime loader.
+bool IsHdr(const char* path)
+{
+	const char* ext = strrchr(path, '.');
+	return ext && lstrcmpA(ext + 1, "hdr") == 0;
+}
+
 // Forward declaration: defined further down, next to the procedural fallback
 // textures that were its original (only) callers; GetTexture()'s failure
 // path above needs it too.
@@ -286,6 +299,17 @@ Texture* TextureManager::TryGetTexture(const char* aTexturePath, TextureSrgbMode
 				nullptr, 
 				resource.ReleaseAndGetAddressOf());
 
+			if (FAILED(hr) && IsHdr(asset_path.GetData()))
+			{
+				DirectX::TexMetadata hdrMetadata = {};
+				DirectX::ScratchImage hdrImage;
+				if (SUCCEEDED(DirectX::LoadFromHDRFile(asset_path_w.c_str(), &hdrMetadata, hdrImage)))
+				{
+					hr = DirectX::CreateShaderResourceView(DX11::Device, hdrImage.GetImages(),
+						hdrImage.GetImageCount(), hdrMetadata, resource.ReleaseAndGetAddressOf());
+				}
+			}
+
 			if (FAILED(hr))
 			{
 				if (IsTarga(asset_path.GetData()))
@@ -314,7 +338,7 @@ Texture* TextureManager::TryGetTexture(const char* aTexturePath, TextureSrgbMode
 					}
 					else
 					{
-						ERROR_PRINT("%s %s", "This image format is forbidden! Use .dds, png, tga! ", asset_path.GetData());
+						ERROR_PRINT("%s %s", "This image format is forbidden! Use .dds, png, tga, hdr! ", asset_path.GetData());
 					}
 				}
 				
@@ -477,6 +501,14 @@ Texture* TextureManager::LoadTextureDx12(rhi::IDevice& aDevice, const char* aRes
 		}
 
 		hr = DirectX::LoadFromWICFile(aResolvedPathW.c_str(), DirectX::WIC_FLAGS_NONE, &metadata, image);
+		if (FAILED(hr) && IsHdr(aResolvedPathUtf8))
+		{
+			// Decodes to R32G32B32A32_FLOAT, already linear. Everything below
+			// this point is format-agnostic, and MakeSRGB/MakeLinear leave a
+			// float format alone, so an HDR needs no special handling past here.
+			AG_CPU_SCOPE("HDR read");
+			hr = DirectX::LoadFromHDRFile(aResolvedPathW.c_str(), &metadata, image);
+		}
 		if (FAILED(hr))
 		{
 			if (IsTarga(aResolvedPathUtf8))
@@ -494,7 +526,7 @@ Texture* TextureManager::LoadTextureDx12(rhi::IDevice& aDevice, const char* aRes
 			}
 			else
 			{
-				ERROR_PRINT("%s %s", "This image format is forbidden! Use .dds, png, tga! ", aResolvedPathUtf8);
+				ERROR_PRINT("%s %s", "This image format is forbidden! Use .dds, png, tga, hdr! ", aResolvedPathUtf8);
 			}
 			return nullptr;
 		}
