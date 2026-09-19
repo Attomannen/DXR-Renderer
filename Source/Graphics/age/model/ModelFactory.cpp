@@ -1649,6 +1649,19 @@ std::shared_ptr<Model> ModelFactory::LoadModel(StringId someFilePath)
 	if (!Ag::Settings::ResolveAssetPath(someFilePath, resolved_path))
 		return nullptr;
 
+	// Drop this model when its .fbx is overwritten, so a re-export shows up
+	// without restarting the editor. OnModelChanged only erases the in-memory
+	// entry; the on-disk cache below keys on the source's write time and size,
+	// so the next Get re-cooks it. This registration existed only on the
+	// non-ufbx branch (#else, below), which AG_USE_UFBX means is never built --
+	// so nothing was watching the models actually being loaded.
+	if (myWatchedPaths.insert(someFilePath).second)
+	{
+		if (FileWatcher* watcher = Application::GetInstance() ? Application::GetInstance()->GetFileWatcher() : nullptr)
+			watcher->WatchFileChange(resolved_path.GetStringView(),
+				std::bind(&Ag::ModelFactory::OnModelChanged, this, someFilePath));
+	}
+
 	// A large .fbx (e.g. Bistro) takes seconds to re-parse through ufbx every
 	// single time its .tgo/.tgs is opened -- there was no persistent cache on
 	// this path at all. Try the same on-disk cache the (currently unreachable)
@@ -2562,6 +2575,7 @@ std::shared_ptr<Model> ModelFactory::GetModel(StringId someFilePath)
 
 void ModelFactory::OnModelChanged(StringId aUnresolvedPath)
 {
+	INFO_PRINT("model: source changed, dropping '%s' (reloads on next use)", aUnresolvedPath.GetString());
 	myLoadedModels.erase(aUnresolvedPath);
 }
 std::shared_ptr<Model> ModelFactory::GetModel(std::string_view aFilePath) { return GetModel(StringRegistry::RegisterOrGetString(aFilePath)); }
