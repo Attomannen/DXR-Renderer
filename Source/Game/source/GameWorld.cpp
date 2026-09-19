@@ -13,6 +13,7 @@
 #include <age/script/Nodes/MathMoreNodes.h>
 #include <age/script/Nodes/FlowNodes.h>
 #include <age/script/Nodes/StringNodes.h>
+#include <age/script/Nodes/ArrayNodes.h>
 #include <DirectXTex/ScreenGrab/ScreenGrab11.h>
 #pragma comment(lib, "windowscodecs.lib")
 
@@ -40,6 +41,7 @@ void GameWorld::Init()
 	Ag::RegisterMathMoreNodes();
 	Ag::RegisterFlowNodes();
 	Ag::RegisterStringNodes();
+	Ag::RegisterArrayNodes();
 	Ag::RegisterGameObjectNodes();
 	INFO_PRINT("physics: Jolt %s, smoke test %s", Ag::GetPhysicsVersion(), Ag::PhysicsSmokeTest() ? "ok" : "FAILED");
 

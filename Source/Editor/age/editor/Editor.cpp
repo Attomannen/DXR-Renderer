@@ -51,6 +51,7 @@
 #include <age/script/Nodes/MathMoreNodes.h>
 #include <age/script/Nodes/FlowNodes.h>
 #include <age/script/Nodes/StringNodes.h>
+#include <age/script/Nodes/ArrayNodes.h>
 #include <age/script/Nodes/SceneObjectNodes.h>
 #include <age/scene/ScenePropertyTypes.h>
 
@@ -145,6 +146,7 @@ void Ag::Editor::Init(const EditorConfiguration& aEditorConfiguration, std::uniq
 	Ag::RegisterMathMoreNodes();
 	Ag::RegisterFlowNodes();
 	Ag::RegisterStringNodes();
+	Ag::RegisterArrayNodes();
 	Ag::RegisterGameObjectNodes();
 	Ag::RegisterAnimationNodes();
 
