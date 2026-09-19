@@ -21,10 +21,9 @@ extern "C" {
 
 int main(const int argc, const char* argv[])
 {
-	if (argc > 1)
-		printf("argv[1] => %s", argv[1]);
-	else
-		printf("argc => %d", argc);
-	Go();
+	// argv[1] is the scene the editor's Play button wants opened. This used to
+	// be printed and then dropped on the floor, which is why Play always came
+	// up in whichever scene the game found first.
+	Go(argc > 1 ? argv[1] : nullptr);
 	return 0;
 }

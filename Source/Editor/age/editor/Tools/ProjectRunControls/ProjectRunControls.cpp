@@ -1,6 +1,7 @@
 #include <age/editor/Tools/ProjectRunControls/ProjectRunControls.h>
 
 #include <age/editor/Editor.h>
+#include <age/log/Log.h>
 #include <age/editor/Document/Document.h>
 
 #include <age/settings/settings.h>
@@ -61,6 +62,13 @@ void Ag::ProjectRunControls::ExecuteRun(Ag::Document &aDocument)
 			if (createResult)
 			{
 				hasLaunchedGame = true;
+			}
+			else
+			{
+				// Play used to fail in complete silence, which is how a stale
+				// executable path survived a directory rename unnoticed.
+				ERROR_PRINT("Play: cannot launch '%s' (error %lu). Is it built?",
+					exe.c_str(), (unsigned long)GetLastError());
 			}
 		}
 	}

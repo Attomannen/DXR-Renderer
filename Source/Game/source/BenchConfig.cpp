@@ -3,6 +3,7 @@
 #define WIN32_LEAN_AND_MEAN
 
 #include "GameWorldImpl.h"
+#include "Go.h"
 #include "BenchConfig.h"
 
 namespace
@@ -56,7 +57,10 @@ void ApplyStartupOverrides(GameWorld::Impl& s)
 	if (s.bench.modelRotX) s.modelRotX = *s.bench.modelRotX;
 	s.sealScene    = EnvInt("BENCH_SEAL", 0) != 0;
 	s.autoSeal = std::clamp(EnvFloat("BENCH_AUTOSEAL", s.autoSeal), 0.f, 1.f);
+	// BENCH_SCENE wins so scripted runs stay reproducible; otherwise take the
+	// scene the editor asked for.
 	s.currentScene = EnvStr("BENCH_SCENE", "");
+	if (s.currentScene.empty()) s.currentScene = StartupScene();
 }
 
 void ApplyContentOverrides(GameWorld::Impl& s)

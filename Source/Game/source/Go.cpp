@@ -1,6 +1,8 @@
 #define _CRT_SECURE_NO_WARNINGS
 
 #include "GameWorld.h"
+#include <algorithm>
+#include <string>
 #include <age/debugging/CpuProfiler.h>
 #include <chrono>
 #include <cstdio>
@@ -50,9 +52,26 @@ namespace Ag
 }
 
 
-void Go()
+// Set by Go from argv[1]; read by BenchConfig when BENCH_SCENE is unset.
+std::string locStartupScene;
+
+const std::string& StartupScene() { return locStartupScene; }
+
+void Go(const char* aStartupScene)
 {
 	Ag::InstallCrashHandler();
+
+	// The editor hands over a document path like "Scenes\TEST.tgs"; the scene
+	// loader wants "Scenes/TEST". Normalise once, here, rather than teaching
+	// the loader about editor path spelling.
+	if (aStartupScene && *aStartupScene)
+	{
+		locStartupScene = aStartupScene;
+		std::replace(locStartupScene.begin(), locStartupScene.end(), '\\', '/');
+		if (locStartupScene.size() > 4 &&
+			locStartupScene.compare(locStartupScene.size() - 4, 4, ".tgs") == 0)
+			locStartupScene.resize(locStartupScene.size() - 4);
+	}
 
 	// DX12 is the engine's default backend. Only set it when a scripted/bench
 	// run hasn't already picked one itself (BENCH_* env vars, CI, etc.) --
