@@ -255,6 +255,10 @@ void SceneDocument::Update(float aTimeDelta, InputManager& inputManager)
 		ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Instances].c_str(), right);
 		ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Properties].c_str(), rightBottom);
 
+		// The viewport is the level; a tab header above it is just lost space.
+		if (ImGuiDockNode* viewportNode = ImGui::DockBuilderGetNode(center))
+			viewportNode->SetLocalFlags(viewportNode->LocalFlags | ImGuiDockNodeFlags_AutoHideTabBar);
+
 		ImGui::DockBuilderFinish(dockSpaceId);
 
 		myIsDockingInitialized = true;
