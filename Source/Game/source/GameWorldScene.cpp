@@ -114,6 +114,156 @@ void GameWorld::Impl::ApplySunOverrides()
 	if (sunKelvinOverridden) { sunTemperatureK = benchSunKelvin; sunUseTemperature = true; }
 }
 
+// Makes one placed object out of an entry: its mesh, material, physics, script, camera, particles and character.
+// False when its mesh could not be loaded, in which case nothing was added.
+bool GameWorld::Impl::InstantiateEntry(const SceneEntry& e, bool tileCopies)
+{
+	ModelFactory& mf = ModelFactory::GetInstance();
+	const int side = (int)std::ceil(std::sqrt((double)sponzaCopies));
+
+	if (e.fbx.empty())
+	{
+		// An object without a mesh still has a place in the world and can carry a camera, particles or a script.
+		const size_t objectIndex = AddSceneInstance(e, -1, e.transform);
+		RegisterSceneScripts(e, objectIndex);
+		RegisterSceneCamera(e, objectIndex);
+		RegisterSceneParticles(e, objectIndex);
+		return true;
+	}
+
+	std::shared_ptr<Model> model = mf.GetModel(e.fbx.c_str());
+	if (!model) { ERROR_PRINT("bench: failed to load '%s'", e.fbx.c_str()); return false; }
+	const int meshCount = std::min((int)model->GetMeshCount(), MAX_MESHES_PER_MODEL);
+	// Surface type is authored per scene material.  Keep the legacy name
+	// override as a fallback for old scenes, but never let it be the only
+	// route by which a .tgmat becomes transparent in raster or DXR.
+	std::vector<bool> authoredTransparent(meshCount, false);
+	// Masked (real alpha cutout, e.g. foliage/fences) is distinct from
+	// Opaque so AcceptRayTriangle can skip the texture sample entirely
+	// for ordinary opaque geometry -- see RayTracingMaterialTable::kRayOpaque.
+	std::vector<bool> authoredMasked(meshCount, false);
+	std::vector<bool> authoredMaterial(meshCount, false);
+	std::vector<MaterialDef> materials(meshCount);
+	// Which entry of e.materials each mesh actually resolved to. The
+	// positional index is only a fallback; see the name match below.
+	std::vector<int> resolvedSlot(meshCount, -1);
+	// Resolve each mesh's material by NAME, not by slot order.
+	//
+	// A .tgo is a positional list, which silently assumed the exporter's
+	// material order and the importer's mesh order agree. They do not: on a
+	// reimported Bistro, mesh 1 carried the material the .tgo listed at slot
+	// 0, and the drift changed again further down the list -- so every mesh
+	// wore some other mesh's material. Match on the name the mesh actually
+	// reports instead, and keep the positional entry only as a fallback for
+	// meshes whose name is missing from the list.
+	//
+	// Names carry suffixes the material assets do not: Blender's ".001" dedup
+	// and tags like ".DoubleSided". Try the full name first, then drop
+	// dotted suffixes one at a time.
+	std::unordered_map<std::string, int> tgmatByName;
+	auto lower = [](std::string v) { for (char& c : v) c = (char)std::tolower((unsigned char)c); return v; };
+	for (int i = 0; i < (int)e.materials.size(); ++i)
+	{
+		if (e.materials[i].empty()) continue;
+		std::string n = e.materials[i];
+		if (const size_t slash = n.find_last_of("/\\"); slash != std::string::npos) n = n.substr(slash + 1);
+		if (n.size() > 6) n = n.substr(0, n.size() - 6);   // ".tgmat"
+		tgmatByName.emplace(lower(n), i);
+	}
+	for (int m = 0; m < meshCount; ++m)
+	{
+		int slot = m < (int)e.materials.size() ? m : -1;
+		if (const char* meshMat = model->GetMaterialName(m).GetString(); meshMat && *meshMat)
+		{
+			for (std::string n = lower(meshMat);;)
+			{
+				if (auto it = tgmatByName.find(n); it != tgmatByName.end()) { slot = it->second; break; }
+				const size_t dot = n.rfind('.');
+				if (dot == std::string::npos) break;
+				n = n.substr(0, dot);
+			}
+		}
+		if (slot < 0 || slot >= (int)e.materials.size() || e.materials[slot].empty()) continue;
+		if (!LoadTgmat(fs::path(Settings::GameAssetRoot()) / e.materials[slot], materials[m])) continue;
+		resolvedSlot[m] = slot;
+		authoredMaterial[m] = true;
+		authoredTransparent[m] = materials[m].IsTransparent();
+		authoredMasked[m] = materials[m].IsMasked();
+	}
+
+	const int copies = tileCopies ? sponzaCopies : 1;
+	const float sizeXZ0 = std::max(sceneExtents.x, sceneExtents.z) * 2.f;
+	const float step = sizeXZ0 * 1.15f;
+
+	for (int i = 0; i < copies; ++i)
+	{
+		ModelInstance mi;
+		mi.Init(model);
+
+		// Bounded by meshCount alone. It used to also stop at
+		// e.materials.size(), which silently left every mesh past the end of
+		// the list untextured even though the name match above had already
+		// resolved it -- the list is a pool to match names against, not a
+		// per-mesh array.
+		for (int m = 0; m < meshCount; ++m)
+		{
+			if (!authoredMaterial[m]) continue;
+			// The RESOLVED entry, not the positional one. ApplySceneMaterial
+			// uses this path as the key it registers the material under, so
+			// passing e.materials[m] here named each mesh's material after
+			// whatever happened to sit at its own index: two meshes sharing a
+			// material got two records, and two meshes whose indices collided
+			// on one path shared a record built from the first one's textures.
+			ApplySceneMaterial(mi, m, e.materials[resolvedSlot[m]], materials[m]);
+		}
+
+		const int gx = i % side, gz = i / side;
+		const float ox = tileCopies ? (gx - (side - 1) * 0.5f) * step : 0.f;
+		const float oz = tileCopies ? (gz - (side - 1) * 0.5f) * step : 0.f;
+		Matrix4x4f xf = Matrix4x4f::CreateFromRollPitchYaw(Vector3f{ modelRotX, 0.f, 0.f }) * e.transform;
+		xf.SetPosition(xf.GetPosition() + Vector3f{ ox, 0.f, oz });
+		mi.SetTransform(xf);
+		models.push_back(mi);
+		instanceOffsets.push_back(Vector3f{ ox, 0.f, oz });
+		const size_t instanceIndex = AddSceneInstance(e, (int)models.size() - 1, xf);
+		RegisterScenePhysics(e, model, xf, instanceIndex);
+		RegisterSceneScripts(e, instanceIndex);
+		RegisterSceneCamera(e, instanceIndex);
+		RegisterSceneParticles(e, instanceIndex);
+		RegisterSceneCharacter(e, xf, instanceIndex);
+
+		std::vector<int> op, tr;
+		for (int m = 0; m < meshCount; ++m)
+		{
+			const char* mat = model->GetMaterialName(m).GetString();
+			const bool transparent = authoredTransparent[m] || MatchesAny(mat ? mat : "", transparentMatKeys);
+			// The same classification controls the raster forward pass and
+			// the material record consulted by every inline RayQuery.  Forward
+			// alpha blend cannot provide a reliable hit distance/transmittance,
+			// so let it composite after DXR instead of treating glass as opaque.
+			// Authored .tgmat instances were classified by ApplySceneMaterial;
+			// this covers the mesh's own material (legacy name keys).
+			if (!authoredMaterial[m])
+			{
+				using Table = RayTracingMaterialTable;
+				const uint32_t meshMaterial = model->GetMeshData(m).rayGeometry.materialIndex;
+				Table::SetRayVisibility(meshMaterial, transparent ? Table::kRayTransparent : Table::kRayOpaque);
+				if (transparent)
+				{
+					MaterialParams params = Table::GetMaterialParams(meshMaterial);
+					params.shadingModel = (uint32_t)ShadingModel::Glass;
+					Table::SetMaterialParams(meshMaterial, params);
+				}
+			}
+			(transparent ? tr : op).push_back(m);
+		}
+		if (!tr.empty()) anyTransparent = true;
+		opaqueMeshes.push_back(std::move(op));
+		transparentMeshes.push_back(std::move(tr));
+	}
+	return true;
+}
+
 bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 {
 	// Every mesh/texture upload below shares GPU submissions.
@@ -181,6 +331,8 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 	sceneCharacters.clear();
 	sceneCameras.clear();
 	sceneInstances.clear();
+	pendingSpawns.clear();
+	pendingDestroys.clear();
 	playerPawn = -1;
 	ClearSceneParticles();
 
@@ -219,152 +371,10 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 	struct PrefetchCleanup { TextureManager& t; ~PrefetchCleanup() { t.ClearPrefetchedTextures(); } } prefetchCleanup{ texMgr };
 
 	const auto tLoad0 = std::chrono::high_resolution_clock::now();
-	const int side = (int)std::ceil(std::sqrt((double)sponzaCopies));
 	const bool tileCopies = (entries.size() == 1);
 
 	for (const SceneEntry& e : entries)
-	{
-		if (e.fbx.empty())
-		{
-			// An object without a mesh still has a place in the world and can carry a camera, particles or a script.
-			const size_t objectIndex = AddSceneInstance(e, -1, e.transform);
-			RegisterSceneScripts(e, objectIndex);
-			RegisterSceneCamera(e, objectIndex);
-			RegisterSceneParticles(e, objectIndex);
-			continue;
-		}
-
-		std::shared_ptr<Model> model = mf.GetModel(e.fbx.c_str());
-		if (!model) { ERROR_PRINT("bench: failed to load '%s'", e.fbx.c_str()); continue; }
-		const int meshCount = std::min((int)model->GetMeshCount(), MAX_MESHES_PER_MODEL);
-		// Surface type is authored per scene material.  Keep the legacy name
-		// override as a fallback for old scenes, but never let it be the only
-		// route by which a .tgmat becomes transparent in raster or DXR.
-		std::vector<bool> authoredTransparent(meshCount, false);
-		// Masked (real alpha cutout, e.g. foliage/fences) is distinct from
-		// Opaque so AcceptRayTriangle can skip the texture sample entirely
-		// for ordinary opaque geometry -- see RayTracingMaterialTable::kRayOpaque.
-		std::vector<bool> authoredMasked(meshCount, false);
-		std::vector<bool> authoredMaterial(meshCount, false);
-		std::vector<MaterialDef> materials(meshCount);
-		// Which entry of e.materials each mesh actually resolved to. The
-		// positional index is only a fallback; see the name match below.
-		std::vector<int> resolvedSlot(meshCount, -1);
-		// Resolve each mesh's material by NAME, not by slot order.
-		//
-		// A .tgo is a positional list, which silently assumed the exporter's
-		// material order and the importer's mesh order agree. They do not: on a
-		// reimported Bistro, mesh 1 carried the material the .tgo listed at slot
-		// 0, and the drift changed again further down the list -- so every mesh
-		// wore some other mesh's material. Match on the name the mesh actually
-		// reports instead, and keep the positional entry only as a fallback for
-		// meshes whose name is missing from the list.
-		//
-		// Names carry suffixes the material assets do not: Blender's ".001" dedup
-		// and tags like ".DoubleSided". Try the full name first, then drop
-		// dotted suffixes one at a time.
-		std::unordered_map<std::string, int> tgmatByName;
-		auto lower = [](std::string v) { for (char& c : v) c = (char)std::tolower((unsigned char)c); return v; };
-		for (int i = 0; i < (int)e.materials.size(); ++i)
-		{
-			if (e.materials[i].empty()) continue;
-			std::string n = e.materials[i];
-			if (const size_t slash = n.find_last_of("/\\"); slash != std::string::npos) n = n.substr(slash + 1);
-			if (n.size() > 6) n = n.substr(0, n.size() - 6);   // ".tgmat"
-			tgmatByName.emplace(lower(n), i);
-		}
-		for (int m = 0; m < meshCount; ++m)
-		{
-			int slot = m < (int)e.materials.size() ? m : -1;
-			if (const char* meshMat = model->GetMaterialName(m).GetString(); meshMat && *meshMat)
-			{
-				for (std::string n = lower(meshMat);;)
-				{
-					if (auto it = tgmatByName.find(n); it != tgmatByName.end()) { slot = it->second; break; }
-					const size_t dot = n.rfind('.');
-					if (dot == std::string::npos) break;
-					n = n.substr(0, dot);
-				}
-			}
-			if (slot < 0 || slot >= (int)e.materials.size() || e.materials[slot].empty()) continue;
-			if (!LoadTgmat(fs::path(Settings::GameAssetRoot()) / e.materials[slot], materials[m])) continue;
-			resolvedSlot[m] = slot;
-			authoredMaterial[m] = true;
-			authoredTransparent[m] = materials[m].IsTransparent();
-			authoredMasked[m] = materials[m].IsMasked();
-		}
-
-		const int copies = tileCopies ? sponzaCopies : 1;
-		const float sizeXZ0 = std::max(sceneExtents.x, sceneExtents.z) * 2.f;
-		const float step = sizeXZ0 * 1.15f;
-
-		for (int i = 0; i < copies; ++i)
-		{
-			ModelInstance mi;
-			mi.Init(model);
-
-			// Bounded by meshCount alone. It used to also stop at
-			// e.materials.size(), which silently left every mesh past the end of
-			// the list untextured even though the name match above had already
-			// resolved it -- the list is a pool to match names against, not a
-			// per-mesh array.
-			for (int m = 0; m < meshCount; ++m)
-			{
-				if (!authoredMaterial[m]) continue;
-				// The RESOLVED entry, not the positional one. ApplySceneMaterial
-				// uses this path as the key it registers the material under, so
-				// passing e.materials[m] here named each mesh's material after
-				// whatever happened to sit at its own index: two meshes sharing a
-				// material got two records, and two meshes whose indices collided
-				// on one path shared a record built from the first one's textures.
-				ApplySceneMaterial(mi, m, e.materials[resolvedSlot[m]], materials[m]);
-			}
-
-			const int gx = i % side, gz = i / side;
-			const float ox = tileCopies ? (gx - (side - 1) * 0.5f) * step : 0.f;
-			const float oz = tileCopies ? (gz - (side - 1) * 0.5f) * step : 0.f;
-			Matrix4x4f xf = Matrix4x4f::CreateFromRollPitchYaw(Vector3f{ modelRotX, 0.f, 0.f }) * e.transform;
-			xf.SetPosition(xf.GetPosition() + Vector3f{ ox, 0.f, oz });
-			mi.SetTransform(xf);
-			models.push_back(mi);
-			instanceOffsets.push_back(Vector3f{ ox, 0.f, oz });
-			const size_t instanceIndex = AddSceneInstance(e, (int)models.size() - 1, xf);
-			RegisterScenePhysics(e, model, xf, instanceIndex);
-			RegisterSceneScripts(e, instanceIndex);
-			RegisterSceneCamera(e, instanceIndex);
-			RegisterSceneParticles(e, instanceIndex);
-			RegisterSceneCharacter(e, xf, instanceIndex);
-
-			std::vector<int> op, tr;
-			for (int m = 0; m < meshCount; ++m)
-			{
-				const char* mat = model->GetMaterialName(m).GetString();
-				const bool transparent = authoredTransparent[m] || MatchesAny(mat ? mat : "", transparentMatKeys);
-				// The same classification controls the raster forward pass and
-				// the material record consulted by every inline RayQuery.  Forward
-				// alpha blend cannot provide a reliable hit distance/transmittance,
-				// so let it composite after DXR instead of treating glass as opaque.
-				// Authored .tgmat instances were classified by ApplySceneMaterial;
-				// this covers the mesh's own material (legacy name keys).
-				if (!authoredMaterial[m])
-				{
-					using Table = RayTracingMaterialTable;
-					const uint32_t meshMaterial = model->GetMeshData(m).rayGeometry.materialIndex;
-					Table::SetRayVisibility(meshMaterial, transparent ? Table::kRayTransparent : Table::kRayOpaque);
-					if (transparent)
-					{
-						MaterialParams params = Table::GetMaterialParams(meshMaterial);
-						params.shadingModel = (uint32_t)ShadingModel::Glass;
-						Table::SetMaterialParams(meshMaterial, params);
-					}
-				}
-				(transparent ? tr : op).push_back(m);
-			}
-			if (!tr.empty()) anyTransparent = true;
-			opaqueMeshes.push_back(std::move(op));
-			transparentMeshes.push_back(std::move(tr));
-		}
-	}
+		InstantiateEntry(e, tileCopies);
 	modelLoadMs = std::chrono::duration<double, std::milli>(
 		std::chrono::high_resolution_clock::now() - tLoad0).count();
 	if (physics.IsInitialized()) physics.OptimizeBroadPhase();
@@ -423,7 +433,12 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 	const float sizeXZ = std::max(sceneExtents.x, sceneExtents.z) * 2.f;
 	orbitRadius = std::clamp(std::max(sceneExtents.x, sceneExtents.z) * 0.42f, 150.f, 6000.f);
 	if (aEnv && bench.orbitRadius) orbitRadius = std::max(1.f, *bench.orbitRadius);
-	flySpeed = std::clamp(sizeXZ * 0.35f, 400.f, 6000.f);
+	// Metres. This line was missed by the centimetre-to-metre conversion: the
+	// old floor of 400 meant the slowest the camera could ever go was 400 u/s,
+	// which as metres is 160 m/s before the Shift multiplier. The header's
+	// default (6) was converted; this override was not, and it overwrites it on
+	// every scene load.
+	flySpeed = std::clamp(sizeXZ * 0.06f, 6.f, 20.f);
 	camPos   = sceneCenter + Vector3f{ 0, sceneExtents.y * 0.1f, -orbitRadius };
 
 	const float sceneRadius = std::sqrt(sceneExtents.x * sceneExtents.x

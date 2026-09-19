@@ -97,3 +97,126 @@ void GameWorld::Impl::ProcessLevelRequest()
 	LoadSceneContent(level, false);
 	frame = 0;
 }
+
+int GameWorld::Impl::RequestSpawn(const std::string& definition, const Matrix4x4f& transform, const std::string& name)
+{
+	if (definition.empty())
+		return -1;
+	std::string relative = definition;
+	std::replace(relative.begin(), relative.end(), '\\', '/');
+	if (fs::path(relative).extension() != ".tgo")
+		relative += ".tgo";
+
+	std::optional<SceneEntry> entry = LoadTgo(fs::path(Settings::GameAssetRoot()) / relative);
+	if (!entry)
+	{
+		ERROR_PRINT("spawn: cannot read '%s'", relative.c_str());
+		return -1;
+	}
+	entry->transform = transform;
+	entry->name = name;
+
+	// Every request adds exactly one object, so its handle is known before it exists.
+	const int handle = (int)(sceneInstances.size() + pendingSpawns.size());
+	pendingSpawns.push_back(std::move(*entry));
+	return handle;
+}
+
+void GameWorld::Impl::ProcessSpawnRequests()
+{
+	if (!pendingSpawns.empty())
+	{
+		std::vector<SceneEntry> spawns = std::move(pendingSpawns);
+		pendingSpawns.clear();
+		for (SceneEntry& entry : spawns)
+		{
+			const size_t before = sceneInstances.size();
+			if (!InstantiateEntry(entry, false))
+			{
+				// Keep the handle the script was given: the object exists, without its mesh.
+				entry.fbx.clear();
+				InstantiateEntry(entry, false);
+			}
+			if (sceneInstances.size() > before)
+				INFO_PRINT("spawn: '%s' is object %zu", entry.tgoPath.c_str(), before);
+		}
+		if (physics.IsInitialized())
+			physics.OptimizeBroadPhase();
+	}
+
+	if (!pendingDestroys.empty())
+	{
+		std::vector<size_t> destroys = std::move(pendingDestroys);
+		pendingDestroys.clear();
+		for (const size_t index : destroys)
+			DestroyInstance(index);
+	}
+}
+
+void GameWorld::Impl::DestroyInstance(size_t index)
+{
+	if (index >= sceneInstances.size() || !sceneInstances[index].alive)
+		return;
+	SceneInstance& instance = sceneInstances[index];
+	instance.alive = false;
+	instance.name.clear();
+	instance.definition.clear();
+	if (playerPawn == (int)index)
+		playerPawn = -1;
+
+	std::erase_if(sceneScripts, [index](const SceneScriptObject& object) { return object.instance == index; });
+	std::erase_if(sceneParticles, [index](const SceneParticleObject& object) { return object.instance == index; });
+
+	for (size_t i = 0; i < scenePhysicsObjects.size();)
+	{
+		if (scenePhysicsObjects[i].instance != index)
+		{
+			++i;
+			continue;
+		}
+		if (scenePhysicsObjects[i].body.IsValid())
+			physics.DestroyBody(scenePhysicsObjects[i].body);
+		if (!scenePhysicsObjects[i].dynamic)
+			--scenePhysicsStaticCount;
+		scenePhysicsObjects.erase(scenePhysicsObjects.begin() + (ptrdiff_t)i);
+	}
+	for (size_t i = 0; i < sceneCharacters.size();)
+	{
+		if (sceneCharacters[i].instance != index)
+		{
+			++i;
+			continue;
+		}
+		if (sceneCharacters[i].id.IsValid())
+			physics.DestroyCharacter(sceneCharacters[i].id);
+		sceneCharacters.erase(sceneCharacters.begin() + (ptrdiff_t)i);
+	}
+	for (int i = 0; i < (int)sceneCameras.size();)
+	{
+		if (sceneCameras[(size_t)i].instance != index)
+		{
+			++i;
+			continue;
+		}
+		if (activeSceneCamera == i)
+			SetSceneCameraActive(-1);
+		else if (activeSceneCamera > i)
+			--activeSceneCamera;
+		sceneCameras.erase(sceneCameras.begin() + i);
+	}
+
+	// The mesh goes; the meshes after it move up one place.
+	if (instance.model >= 0)
+	{
+		const size_t slot = (size_t)instance.model;
+		models.erase(models.begin() + (ptrdiff_t)slot);
+		opaqueMeshes.erase(opaqueMeshes.begin() + (ptrdiff_t)slot);
+		transparentMeshes.erase(transparentMeshes.begin() + (ptrdiff_t)slot);
+		if (slot < instanceOffsets.size())
+			instanceOffsets.erase(instanceOffsets.begin() + (ptrdiff_t)slot);
+		for (SceneInstance& other : sceneInstances)
+			if (other.model > (int)slot)
+				--other.model;
+		instance.model = -1;
+	}
+}

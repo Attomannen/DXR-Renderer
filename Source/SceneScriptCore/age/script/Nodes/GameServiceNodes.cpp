@@ -157,6 +157,64 @@ namespace
 		}
 	};
 
+	struct SpawnData
+	{
+		int object = -1;
+	};
+
+	class SpawnObjectNode : public ScriptNodeWithRuntimeData<SpawnData>
+	{
+		ScriptPinId myDefinition, myLocation, myRotation, myScale, myName, myOut, mySuccess;
+	public:
+		void Init(const ScriptCreationContext& context) override
+		{
+			FlowIn(context, "Spawn");
+			myDefinition = In<StringId>(context, "Definition");
+			myLocation = In<Vector3f>(context, "Location", Vector3f(0.f, 0.f, 0.f));
+			myRotation = In<Vector3f>(context, "Rotation", Vector3f(0.f, 0.f, 0.f));
+			myScale = In<Vector3f>(context, "Scale", Vector3f(1.f, 1.f, 1.f));
+			myName = In<StringId>(context, "Name");
+			myOut = FlowOut(context, "");
+			Out<int>(context, "Object");
+			mySuccess = Out<bool>(context, "Success");
+		}
+		Property ReadPin(ScriptExecutionContext& context, ScriptPinId pin) const override
+		{
+			const int object = GetRuntimeData(context).object;
+			if (pin == mySuccess) return Make<bool>(object >= 0);
+			return Make<int>(object);
+		}
+		ScriptNodeResult Execute(ScriptExecutionContext& context, ScriptPinId) const override
+		{
+			int object = -1;
+			if (GameScriptContext* game = GetGame(context))
+				object = game->SpawnObject(Read<StringId>(context, myDefinition).GetString(), Read<Vector3f>(context, myLocation),
+					Read<Vector3f>(context, myRotation), Read<Vector3f>(context, myScale), Read<StringId>(context, myName).GetString());
+			GetRuntimeData(context).object = object;
+			context.TriggerOutputPin(myOut);
+			return ScriptNodeResult::Finished;
+		}
+	};
+
+	class DestroyObjectNode : public ScriptNodeBase
+	{
+		ScriptPinId myObject, myOut;
+	public:
+		void Init(const ScriptCreationContext& context) override
+		{
+			FlowIn(context, "Destroy");
+			myObject = In<int>(context, "Object", -1);
+			myOut = FlowOut(context, "");
+		}
+		ScriptNodeResult Execute(ScriptExecutionContext& context, ScriptPinId) const override
+		{
+			if (GameScriptContext* game = GetGame(context))
+				game->DestroyObject(Read<int>(context, myObject));
+			context.TriggerOutputPin(myOut);
+			return ScriptNodeResult::Finished;
+		}
+	};
+
 	class DistanceBetweenNode : public ScriptNodeBase
 	{
 		ScriptPinId myA, myB;
@@ -326,6 +384,8 @@ void Ag::RegisterGameServiceNodes()
 	R::RegisterType<GetLocationOfNode>("Object/Get Location Of", "Where an object is. Object -1 is this object");
 	R::RegisterType<SetLocationOfNode>("Object/Set Location Of", "Moves an object. Object -1 is this object");
 	R::RegisterType<GetForwardOfNode>("Object/Get Forward Of", "The direction an object faces");
+	R::RegisterType<SpawnObjectNode>("Object/Spawn Object", "Adds an object to the level from a .tgo, e.g. Framework/Bullet. It appears at the end of the frame. Leave Name empty for none");
+	R::RegisterType<DestroyObjectNode>("Object/Destroy Object", "Removes an object from the level at the end of the frame. Object -1 is this object");
 	R::RegisterType<DistanceBetweenNode>("Object/Distance Between Objects", "How far apart two objects are");
 
 	R::RegisterType<ParticleControlNode<ParticleAction::Activate>>("Particles/Activate Particles", "Starts an object's Particle System. Object -1 is this object");

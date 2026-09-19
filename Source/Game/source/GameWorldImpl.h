@@ -94,10 +94,24 @@ struct GameWorld::Impl
 		Matrix4x4f transform;   // only used while the object has no mesh
 		std::string name;       // the name it has in the level
 		std::string definition; // the .tgo it was made from, without folder and extension
+		bool alive = true;      // false once destroyed; the index stays taken so handles never point at another object
 	};
 	std::vector<SceneInstance> sceneInstances;
 	int playerPawn = -1;        // the object the Game Mode spawned for the player
 	size_t AddSceneInstance(const GameScene::SceneEntry& entry, int modelIndex, const Matrix4x4f& transform);
+	// Makes one object of the level out of an entry, with everything it carries. False (and nothing added) when its mesh will not load.
+	bool InstantiateEntry(const GameScene::SceneEntry& entry, bool tileCopies);
+	bool IsInstanceAlive(int index) const { return index >= 0 && (size_t)index < sceneInstances.size() && sceneInstances[(size_t)index].alive; }
+
+	// Spawning and destroying while the game runs (GameWorldFramework.cpp). Scripts only ask; the requests are carried out
+	// once every script has run, so nothing they iterate over changes underneath them.
+	std::vector<GameScene::SceneEntry> pendingSpawns;
+	std::vector<size_t> pendingDestroys;
+	// Returns the handle the object will have, or -1 when the .tgo cannot be read.
+	int RequestSpawn(const std::string& definition, const Matrix4x4f& transform, const std::string& name);
+	void RequestDestroy(size_t instance) { pendingDestroys.push_back(instance); }
+	void ProcessSpawnRequests();
+	void DestroyInstance(size_t index);
 	Matrix4x4f GetInstanceTransform(size_t index)
 	{
 		const SceneInstance& instance = sceneInstances[index];

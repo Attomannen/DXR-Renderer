@@ -229,6 +229,7 @@ void GameWorld::Update(float aDeltaTime)
 
 	s.animTime += aDeltaTime;
 	s.UpdateSceneScripts(aDeltaTime);
+	s.ProcessSpawnRequests();
 	s.UpdateSceneParticles(aDeltaTime);
 	s.UpdatePhysicsTest(aDeltaTime);
 	s.UpdateSceneCamera();

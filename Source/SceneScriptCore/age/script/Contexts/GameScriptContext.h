@@ -60,6 +60,13 @@ namespace Ag
 		virtual void SetObjectLocation(int object, const Vector3f& location) = 0;
 		virtual Vector3f GetObjectForward(int object) const = 0;
 
+		// Spawns an object from a .tgo asset, e.g. "Framework/Bullet". It joins the level at the end of the frame
+		// and its script starts on the next one; the handle is good from then on. -1 when the asset cannot be read.
+		// Rotation is Euler degrees, the same values a scene file stores.
+		virtual int SpawnObject(const char* definition, const Vector3f& location, const Vector3f& rotationDegrees, const Vector3f& scale, const char* name) = 0;
+		// Removes an object (-1 is this one) at the end of the frame, with its mesh, physics, script and particles.
+		virtual void DestroyObject(int object) = 0;
+
 		// An object's Particle System component (object -1 is this object).
 		virtual bool HasParticles(int object) const = 0;
 		virtual void SetParticlesActive(int object, bool active) = 0;

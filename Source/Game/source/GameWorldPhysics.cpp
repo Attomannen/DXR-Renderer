@@ -222,6 +222,11 @@ void GameWorld::Impl::RegisterScenePhysics(const GameScene::SceneEntry& entry, c
 		object.body = physics.CreateBody(body);
 		++scenePhysicsStaticCount;
 	}
+	else if (physicsActive)
+	{
+		// Spawned while the world is running: it falls at once instead of waiting for Start.
+		object.body = physics.CreateBody(body);
+	}
 	scenePhysicsObjects.push_back(object);
 }
 

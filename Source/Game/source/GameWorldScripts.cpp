@@ -23,7 +23,7 @@ namespace Ag
 // are read and written by scripts (and per-instance values from the scene file override the
 // .tgo's defaults), the rest are read-only. A parent object definition is not followed yet.
 //
-// Not yet: collision events, spawning.
+// Objects can be spawned and destroyed by scripts; both happen once every script has run.
 
 namespace
 {
@@ -208,12 +208,12 @@ namespace
 		// ---- objects
 		int GetSelfObject() const override { return (int)myInstance; }
 		int GetPlayerPawn() const override { return myWorld.playerPawn; }
-		bool IsObjectValid(int object) const override { return object >= 0 && (size_t)object < myWorld.sceneInstances.size(); }
+		bool IsObjectValid(int object) const override { return myWorld.IsInstanceAlive(object); }
 
 		int FindObject(const char* name) const override
 		{
 			for (size_t i = 0; i < myWorld.sceneInstances.size(); ++i)
-				if (myWorld.sceneInstances[i].name == name)
+				if (myWorld.sceneInstances[i].alive && myWorld.sceneInstances[i].name == name)
 					return (int)i;
 			return -1;
 		}
@@ -222,7 +222,7 @@ namespace
 		{
 			int seen = 0;
 			for (size_t i = 0; i < myWorld.sceneInstances.size(); ++i)
-				if (myWorld.sceneInstances[i].definition == definition && seen++ == nth)
+				if (myWorld.sceneInstances[i].alive && myWorld.sceneInstances[i].definition == definition && seen++ == nth)
 					return (int)i;
 			return -1;
 		}
@@ -231,7 +231,7 @@ namespace
 		{
 			int count = 0;
 			for (const GameWorld::Impl::SceneInstance& instance : myWorld.sceneInstances)
-				if (instance.definition == definition)
+				if (instance.alive && instance.definition == definition)
 					++count;
 			return count;
 		}
@@ -253,6 +253,20 @@ namespace
 		Vector3f GetObjectForward(int object) const override
 		{
 			return IsObjectValid(object) ? myWorld.GetInstanceTransform((size_t)object).GetForward() : Vector3f(0.f, 0.f, 1.f);
+		}
+
+		int SpawnObject(const char* definition, const Vector3f& location, const Vector3f& rotationDegrees, const Vector3f& scale, const char* name) override
+		{
+			Matrix4x4f transform = Matrix4x4f::CreateFromScale(scale) * Matrix4x4f::CreateFromRollPitchYaw(rotationDegrees);
+			transform.SetPosition(location);
+			return myWorld.RequestSpawn(definition ? definition : "", transform, name ? name : "");
+		}
+
+		void DestroyObject(int object) override
+		{
+			const int target = object < 0 ? (int)myInstance : object;
+			if (IsObjectValid(target))
+				myWorld.RequestDestroy((size_t)target);
 		}
 
 		// ---- particles
@@ -601,6 +615,13 @@ void GameWorld::Impl::RegisterSceneCharacter(const GameScene::SceneEntry& entry,
 	object.desc.maxSlopeDegrees = entry.character.maxSlope;
 	object.desc.mass = entry.character.mass;
 	object.desc.userData = instanceIndex + 1; // 0 means "none" in contact events
+	if (physicsActive)
+	{
+		// Spawned while the world is running.
+		sceneCharacters.push_back(object);
+		sceneCharacters.back().id = physics.CreateCharacter(object.desc);
+		return;
+	}
 	sceneCharacters.push_back(object);
 
 	// A scene with a character is a game: the world runs from the start instead of waiting
