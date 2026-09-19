@@ -55,6 +55,8 @@ public:
 	bool IsKeyReleased(const int aKeyCode) const;
 
 	Vector2f GetMouseDelta() const;
+	// -1, 0 or +1: which way the wheel turned this frame, not how far.
+	float GetMouseWheelDelta() const;
 	Vector2f GetMousePosition() const;
 
 	void ShowMouse() const;

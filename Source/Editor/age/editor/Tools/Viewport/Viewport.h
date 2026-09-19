@@ -6,6 +6,7 @@
 #include <age/graphics/DepthBuffer.h>
 #include <age/graphics/RenderTarget.h>
 #include <age/graphics/Camera.h>
+#include <age/graphics/FlyCameraTuning.h>
 
 namespace Ag
 {
@@ -85,7 +86,11 @@ namespace Ag
 		// hovering -- releasing the button ends it, not leaving the rectangle.
 		bool myCameraDragActive = false;
 
-		float myFreeFlyMovementSpeed = 1.f;
+		// Metres per second, shared with the game's flight camera so a level
+		// handles the same before and after pressing Play -- see
+		// age/graphics/FlyCameraTuning.h.
+		float myFreeFlyMovementSpeed = Ag::FlyCamera::kDefaultSpeed;
+		Vector3f myFreeFlyVelocity{ 0, 0, 0 };
 		Gizmos myGizmos;
 
 		Camera myCamera;

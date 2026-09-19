@@ -12,6 +12,7 @@
 #include <age/render/RenderGraph.h>
 #include <age/render/RenderResourcePool.h>
 #include <age/graphics/GraphicsEngine.h>
+#include <age/graphics/FlyCameraTuning.h>
 #include <age/graphics/GraphicsStateStack.h>
 #include <age/graphics/DX11.h>
 #include <age/graphics/Camera.h>
@@ -179,7 +180,9 @@ struct GameWorld::Impl
 	Vector3f camPos{ 0, 200, -800 };
 	Vector3f camRot{ 10, 0, 0 };          // pitch, yaw, roll (deg)
 	bool     mouseTrapped = false;
-	float    flySpeed = 6.f;
+	float    flySpeed = Ag::FlyCamera::kDefaultSpeed;
+	// Eased rather than applied directly; see FlyCameraTuning.h.
+	Vector3f flyVelocity{ 0, 0, 0 };
 
 	// ---- bench state
 	int   frame = 0;

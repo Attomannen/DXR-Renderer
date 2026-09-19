@@ -361,17 +361,29 @@ void EditorViewport::DrawAndUpdateViewportWindow(float aDeltaTime, ViewportInter
 					}
 					if (ImGui::IsKeyPressed(ImGuiKey_MouseWheelY))
 					{
-						float wheel = io.MouseWheel > 0.f ? 0.1f : -0.1f;
-						myFreeFlyMovementSpeed = std::clamp(myFreeFlyMovementSpeed + wheel, .1f, 10.f);
+						// Multiplicative, like Unreal's: a fixed increment is
+						// either unusably coarse in a room or takes dozens of
+						// clicks to cross a city block.
+						myFreeFlyMovementSpeed = FlyCamera::StepSpeed(myFreeFlyMovementSpeed, io.MouseWheel);
 					}
-					activeCamera.GetTransform().SetPosition(activeCamera.GetTransform().GetPosition() + camMovement * (10.f * myFreeFlyMovementSpeed * (io.KeyShift ? 3.f : 1.f)) * aDeltaTime);
 
+					// Normalised so diagonal movement is not faster, and eased
+					// in and out rather than snapping to full speed.
+					const float speed = myFreeFlyMovementSpeed * (io.KeyShift ? FlyCamera::kBoost : 1.f);
+					myFreeFlyVelocity = FlyCamera::Smooth(myFreeFlyVelocity, camMovement.GetNormalized() * speed, aDeltaTime);
+					activeCamera.GetTransform().SetPosition(activeCamera.GetTransform().GetPosition() + myFreeFlyVelocity * aDeltaTime);
 				}
 				
 				////////////////////////////////////
 				// Camera controls - Blender like
 				else
 				{
+					// Let the flight camera settle rather than stop dead the
+					// instant the look button comes up.
+					myFreeFlyVelocity = FlyCamera::Smooth(myFreeFlyVelocity, { 0, 0, 0 }, aDeltaTime);
+					if (myFreeFlyVelocity.Length() > 0.001f)
+						myCamera.GetTransform().SetPosition(myCamera.GetTransform().GetPosition() + myFreeFlyVelocity * aDeltaTime);
+
 					// Middle mouse pans like Unreal; Shift pans in the ground plane.
 					if (ImGui::IsMouseDown(ImGuiMouseButton_Middle))
 					{

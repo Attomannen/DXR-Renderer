@@ -52,6 +52,11 @@ Vector2f InputManager::GetMouseDelta() const
 	return Vector2f((float)myMouseDelta.x, (float)myMouseDelta.y);
 }
 
+float InputManager::GetMouseWheelDelta() const
+{
+	return myMouseWheelDelta;
+}
+
 Vector2f InputManager::GetMousePosition() const
 {
 	return Vector2f((float)myCurrentMousePosition.x, (float)myCurrentMousePosition.y);
@@ -227,7 +232,10 @@ void InputManager::Update()
 	myMouseDelta = myTentativeMouseDelta;
 	myTentativeMouseDelta = { 0, 0};
 
-	myMouseWheelDelta = myTentativeMouseWheelDelta / abs(myTentativeMouseWheelDelta);
+	// Sign only, but 0 / abs(0) is NaN -- which is what this produced on every
+	// frame the wheel was still. Nothing read it yet, so it never showed.
+	myMouseWheelDelta = myTentativeMouseWheelDelta > 0.f ? 1.f
+		: (myTentativeMouseWheelDelta < 0.f ? -1.f : 0.f);
 	myTentativeMouseWheelDelta = 0;
 	
 	myPreviousState = myCurrentState;

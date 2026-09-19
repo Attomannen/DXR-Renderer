@@ -121,8 +121,17 @@ void GameWorld::Impl::UpdateFreeFly(float dt)
 	if (input->IsKeyHeld('A')) move = move - right;
 	if (input->IsKeyHeld('E')) move.y += 1.f;
 	if (input->IsKeyHeld('Q')) move.y -= 1.f;
-	const float speed = flySpeed * (input->IsKeyHeld(VK_SHIFT) ? 4.f : .4f);
-	if (freeFly) camPos = camPos + move * speed * dt;
+	// Normalised so moving diagonally is not faster than moving straight, and
+	// eased in and out rather than snapping to full speed. See FlyCameraTuning.h.
+	const float speed = flySpeed * (input->IsKeyHeld(VK_SHIFT) ? FlyCamera::kBoost : 1.f);
+	const Vector3f targetVelocity = freeFly ? move.GetNormalized() * speed : Vector3f{ 0, 0, 0 };
+	flyVelocity = FlyCamera::Smooth(flyVelocity, targetVelocity, dt);
+	if (freeFly) camPos = camPos + flyVelocity * dt;
+
+	// Wheel tunes the speed while looking around, as Unreal's viewport does --
+	// no one scene-derived default suits both a room and a city block.
+	if (mouseTrapped)
+		flySpeed = FlyCamera::StepSpeed(flySpeed, input->GetMouseWheelDelta());
 
 	if (freeFly && mouseTrapped && !uiMouse)
 	{

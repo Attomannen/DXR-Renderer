@@ -427,18 +427,21 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 
 	// Auto-size the orbit path / sphere radius to whatever scene just loaded.
 	orbitPathRadius = std::max(sceneExtents.x, sceneExtents.z) * 0.55f;
-	orbitBallRadius = std::clamp(orbitPathRadius * 0.10f, 8.f, 400.f);
+	orbitBallRadius = std::clamp(orbitPathRadius * 0.10f, 0.08f, 4.f);
 	orbitHeight = 0.f;
 
 	const float sizeXZ = std::max(sceneExtents.x, sceneExtents.z) * 2.f;
-	orbitRadius = std::clamp(std::max(sceneExtents.x, sceneExtents.z) * 0.42f, 150.f, 6000.f);
+	// Metres. The old floor of 150 was centimetres (1.5 m); as metres it put
+	// the camera 150 m out for any scene, however small -- and this also seeds
+	// camPos below, so every level started that far from what it was framing.
+	orbitRadius = std::clamp(std::max(sceneExtents.x, sceneExtents.z) * 0.42f, 1.5f, 60.f);
 	if (aEnv && bench.orbitRadius) orbitRadius = std::max(1.f, *bench.orbitRadius);
 	// Metres. This line was missed by the centimetre-to-metre conversion: the
 	// old floor of 400 meant the slowest the camera could ever go was 400 u/s,
 	// which as metres is 160 m/s before the Shift multiplier. The header's
 	// default (6) was converted; this override was not, and it overwrites it on
 	// every scene load.
-	flySpeed = std::clamp(sizeXZ * 0.06f, 6.f, 20.f);
+	flySpeed = std::clamp(sizeXZ * 0.03f, FlyCamera::kMinSpeed, 12.f);
 	camPos   = sceneCenter + Vector3f{ 0, sceneExtents.y * 0.1f, -orbitRadius };
 
 	const float sceneRadius = std::sqrt(sceneExtents.x * sceneExtents.x
