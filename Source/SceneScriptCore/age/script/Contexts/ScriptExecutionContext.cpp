@@ -22,40 +22,41 @@ ScriptExecutionContext::ScriptExecutionContext(ScriptRuntimeInstance& scriptRunt
 
 ScriptExecutionContext::~ScriptExecutionContext()
 {
+	for (int i = 0; i < myTriggeredOutputCount; i++)
+		RunOutputPin(myTriggeredOutputQueue[i]);
+}
+
+void ScriptExecutionContext::RunOutputPin(ScriptPinId pinId)
+{
 	const Script& script = myScriptRuntimeInstance.GetScript();
 
-	for (int i = 0; i < myTriggeredOutputCount; i++)
+	size_t count;
+	const ScriptLinkId* linkIds = script.GetConnectedLinks(pinId, count);
+
+	assert("Trying to trigger an output pin that isn't of type flow" && script.GetPin(pinId).type == ScriptLinkType::Flow);
+	assert("Only one link allowed on Flow out pins" && count <= 1);
+
+	if (count == 0)
+		return;
+
+	const ScriptLink& link = script.GetLink(linkIds[0]);
+	ScriptPinId targetPinId = link.targetPinId;
+	const ScriptPin& targetPin = script.GetPin(targetPinId);
+
+	ScriptNodeId nodeId = targetPin.node;
+
+	ScriptExecutionContext executionContext(myScriptRuntimeInstance, myUpdateContext, nodeId, myScriptRuntimeInstance.GetRuntimeInstance(nodeId));
+
+	const ScriptNodeBase& node = script.GetNode(nodeId);
+
+	ScriptNodeResult result = node.Execute(executionContext, targetPinId);
+	if (result == ScriptNodeResult::KeepRunning)
 	{
-		ScriptPinId pinId = myTriggeredOutputQueue[i];
-
-		size_t count;
-		const ScriptLinkId* linkIds = script.GetConnectedLinks(pinId, count);
-
-		assert("Trying to trigger an output pin that isn't of type flow" && script.GetPin(pinId).type == ScriptLinkType::Flow);
-		assert("Only one link allowed on Flow out pins" && count <= 1);
-
-		if (count == 0)
-			return;
-
-		const ScriptLink& link = script.GetLink(linkIds[0]);
-		ScriptPinId targetPinId = link.targetPinId;
-		const ScriptPin& targetPin = script.GetPin(targetPinId);
-
-		ScriptNodeId nodeId = targetPin.node;
-
-		ScriptExecutionContext executionContext(myScriptRuntimeInstance, myUpdateContext, nodeId, myScriptRuntimeInstance.GetRuntimeInstance(nodeId));
-
-		const ScriptNodeBase& node = script.GetNode(nodeId);
-
-		ScriptNodeResult result = node.Execute(executionContext, targetPinId);
-		if (result == ScriptNodeResult::KeepRunning)
-		{
-			myScriptRuntimeInstance.ActivateNode(nodeId);
-		}
-		else
-		{
-			myScriptRuntimeInstance.DeactivateNode(nodeId);
-		}
+		myScriptRuntimeInstance.ActivateNode(nodeId);
+	}
+	else
+	{
+		myScriptRuntimeInstance.DeactivateNode(nodeId);
 	}
 }
 
@@ -92,6 +93,8 @@ Property ScriptExecutionContext::ReadInputPin(ScriptPinId pinId)
 		ScriptNodeId nodeId = sourcePin.node;
 
 		ScriptExecutionContext executionContext(*this);
+		// The copy must not run the outputs this node has already queued when it goes out of scope.
+		executionContext.myTriggeredOutputCount = 0;
 		executionContext.myNodeId = nodeId;
 		executionContext.myNodeRuntimeInstance = myScriptRuntimeInstance.GetRuntimeInstance(nodeId);
 

@@ -8,7 +8,11 @@
 #include <age/script/Nodes/CommonNodes.h>
 #include <age/script/Nodes/CommonMathNodes.h>
 #include <age/script/Nodes/GameObjectNodes.h>
+#include <age/script/Nodes/ExampleNodes.h>
 #include <age/script/Nodes/MathExtraNodes.h>
+#include <age/script/Nodes/MathMoreNodes.h>
+#include <age/script/Nodes/FlowNodes.h>
+#include <age/script/Nodes/StringNodes.h>
 #include <DirectXTex/ScreenGrab/ScreenGrab11.h>
 #pragma comment(lib, "windowscodecs.lib")
 
@@ -31,7 +35,11 @@ void GameWorld::Init()
 	// Node types must exist before any script is loaded (the editor does the same at startup).
 	Ag::RegisterCommonNodes();
 	Ag::RegisterCommonMathNodes();
+	RegisterExampleNodes();   // the Print nodes
 	Ag::RegisterMathExtraNodes();
+	Ag::RegisterMathMoreNodes();
+	Ag::RegisterFlowNodes();
+	Ag::RegisterStringNodes();
 	Ag::RegisterGameObjectNodes();
 	INFO_PRINT("physics: Jolt %s, smoke test %s", Ag::GetPhysicsVersion(), Ag::PhysicsSmokeTest() ? "ok" : "FAILED");
 

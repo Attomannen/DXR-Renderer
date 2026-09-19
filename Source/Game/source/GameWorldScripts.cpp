@@ -352,6 +352,7 @@ void GameWorld::Impl::UpdateSceneScripts(float deltaSeconds)
 
 		ObjectScriptContext context(*this, object.instance);
 		context.deltaTime = deltaSeconds;
+		context.timeSeconds = animTime;
 		context.frameNumber = scriptFrame;
 		context.dynamicProperties = &object.dynamicProperties;
 		context.staticProperties = &object.staticProperties;

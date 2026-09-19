@@ -48,6 +48,9 @@
 #include <age/script/Nodes/CommonMathNodes.h>
 #include <age/script/Nodes/GameObjectNodes.h>
 #include <age/script/Nodes/MathExtraNodes.h>
+#include <age/script/Nodes/MathMoreNodes.h>
+#include <age/script/Nodes/FlowNodes.h>
+#include <age/script/Nodes/StringNodes.h>
 #include <age/script/Nodes/SceneObjectNodes.h>
 #include <age/scene/ScenePropertyTypes.h>
 
@@ -139,6 +142,9 @@ void Ag::Editor::Init(const EditorConfiguration& aEditorConfiguration, std::uniq
 	Ag::RegisterCommonNodes();
 	Ag::RegisterCommonMathNodes();
 	Ag::RegisterMathExtraNodes();
+	Ag::RegisterMathMoreNodes();
+	Ag::RegisterFlowNodes();
+	Ag::RegisterStringNodes();
 	Ag::RegisterGameObjectNodes();
 	Ag::RegisterAnimationNodes();
 

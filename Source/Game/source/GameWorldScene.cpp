@@ -364,7 +364,7 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 	modelLoadMs = std::chrono::duration<double, std::milli>(
 		std::chrono::high_resolution_clock::now() - tLoad0).count();
 	if (physics.IsInitialized()) physics.OptimizeBroadPhase();
-	if (models.empty()) { ERROR_PRINT("bench: no instances created"); return false; }
+	if (sceneInstances.empty()) { ERROR_PRINT("bench: no instances created"); return false; }
 
 	// Scene bounds = union of every instance's world-space AABB.
 	{

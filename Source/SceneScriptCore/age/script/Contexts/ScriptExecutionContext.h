@@ -11,7 +11,7 @@ class ScriptExecutionContext
 	// use to color edges and nodes somehow
 	// also, could implement breakpoints in a debug service
 
-	static constexpr int MAX_TRIGGERED_OUTPUTS = 8;
+	static constexpr int MAX_TRIGGERED_OUTPUTS = 16;
 
 	ScriptRuntimeInstance& myScriptRuntimeInstance;
 	ScriptUpdateContext& myUpdateContext;
@@ -19,7 +19,7 @@ class ScriptExecutionContext
 	char* myNodeRuntimeInstance;
 
 	ScriptPinId myTriggeredOutputQueue[MAX_TRIGGERED_OUTPUTS];
-	int myTriggeredOutputCount;
+	int myTriggeredOutputCount = 0;
 
 public:
 	ScriptExecutionContext(ScriptRuntimeInstance& scriptRuntimeInstance, ScriptUpdateContext& updateContext, ScriptNodeId nodeId, char* nodeRuntimeInstance);
@@ -32,6 +32,12 @@ public:
 	/// </summary>
 	/// <param name="outputPin"></param>
 	void TriggerOutputPin(ScriptPinId outputPin);
+
+	/// <summary>
+	/// Runs whatever an output pin leads to right now, to completion, before returning. A loop node uses this to run its
+	/// body once per iteration; TriggerOutputPin defers the run until the node has finished.
+	/// </summary>
+	void RunOutputPin(ScriptPinId outputPin);
 
 	/// <summary>
 	/// Reads an input pin. This reading functions to be called on the corresponding node immediately. 
