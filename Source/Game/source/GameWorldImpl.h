@@ -3,7 +3,7 @@
 // GameWorld internals, shared by GameWorld*.cpp. Not part of the public API.
 
 #include "GameWorld.h"
-#include "CubemapPrefilter.h"
+#include <age/render/CubemapPrefilter.h>
 #include <cstdio>
 #include <age/render/DeferredRenderer.h>
 #include <age/render/RayTracingMaterialTable.h>

@@ -86,6 +86,19 @@ bool IsDDS(const std::wstring& aPath)
 	}
 }
 
+bool TextureManager::IsCubemapAsset(const char* aTexturePath)
+{
+	if (!aTexturePath || !*aTexturePath) return false;
+	FilePathStream asset_path;
+	if (!Settings::ResolveAssetPath(aTexturePath, asset_path)) return false;
+	const std::wstring pathW = string_cast<std::wstring>(std::string(asset_path.GetStringView()));
+	DirectX::TexMetadata probeMeta;
+	// Metadata only, no pixel data -- cheap enough to call per environment change.
+	if (FAILED(DirectX::GetMetadataFromDDSFile(pathW.c_str(), DirectX::DDS_FLAGS_NONE, probeMeta)))
+		return false;
+	return probeMeta.IsCubemap();
+}
+
 bool IsTarga(const char* path)
 {
 	const char* ext = strrchr(path, '.');

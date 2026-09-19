@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "DefaultEditorGraphics.h"
+#include <age/render/CubemapPrefilter.h>
 
 #include <filesystem>
 #include <imgui.h>
@@ -124,6 +125,13 @@ namespace Ag
 		// panel's Sun/Ambient pseudo-entries (SceneLightSelection) can expose
 		// and edit the same state this reads.
 		Vector2ui myDeferredResolution{ 0, 0 };
+		// Authored equirectangular environments (.hdr panoramas) converted to a
+		// prefiltered cubemap, keyed by the path they came from so the
+		// conversion happens on change rather than per frame.
+		std::unique_ptr<CubemapPrefilter> myEnvPrefilter;
+		CubemapData myEnvPrefiltered;
+		std::string myEnvPrefilteredPath;
+		bool myEnvPrefilterFailed = false;
 		// TLAS instances, rebuilt only when the scene's geometry changes.
 		std::vector<rhi::RaytracingInstanceDesc> myRayInstances;
 		uint64_t mySceneStamp = 0;
@@ -588,9 +596,59 @@ bool DefaultSceneEditorGraphics::DrawDeferredColorPass(const SceneDrawParameters
 	// default as before, so every existing scene's look is unchanged; only
 	// scenes that actually pick something now see it take effect.
 	const std::string& envPath = scene->GetEnvironmentTexturePath();
-	ambient.cubemap = ge.GetTextureManager().GetTexture(
-		envPath.empty() ? "Textures/horizonCubeMap.dds" : envPath.c_str(), TextureSrgbMode::None);
+	const char* envAsset = envPath.empty() ? "Textures/horizonCubeMap.dds" : envPath.c_str();
+	ambient.cubemap = ge.GetTextureManager().GetTexture(envAsset, TextureSrgbMode::None);
 	if (!ambient.cubemap) ambient.type = AmbientLightType::Uniform;
+
+	// An authored .hdr is an equirectangular panorama, not a cube. Everything
+	// that consumes the environment declares it as TextureCube, and binding a
+	// 2D view to a cube register is undefined behaviour -- on this GPU it has
+	// been seen to remove the device outright, and at best it samples as black
+	// (which is what "environment sky averages 1e-08" was reporting).
+	//
+	// So convert it once, through the same prefilter the game uses, and cache
+	// the result against the path that produced it.
+	rhi::SrvHandle environmentSrv = ambient.cubemap ? ambient.cubemap->GetSrv() : rhi::SrvHandle{};
+	if (ambient.cubemap && !TextureManager::IsCubemapAsset(envAsset))
+	{
+		if (myEnvPrefilteredPath != envAsset)
+		{
+			myEnvPrefilteredPath = envAsset;
+			myEnvPrefilterFailed = false;
+			myEnvPrefiltered.Reset();
+			if (!myEnvPrefilter)
+			{
+				myEnvPrefilter = std::make_unique<CubemapPrefilter>();
+				if (!myEnvPrefilter->Init()) myEnvPrefilter.reset();
+			}
+			CubemapData baseCube;
+			if (myEnvPrefilter &&
+				myEnvPrefilter->BuildCubemapFromEquirectangular(ambient.cubemap->GetSrv(), 512, baseCube) &&
+				myEnvPrefilter->GeneratePrefilteredCubemap(baseCube.GetSrv(), 512, 256, 128, myEnvPrefiltered))
+			{
+				INFO_PRINT("editor: environment '%s' converted from equirectangular to a prefiltered cubemap", envAsset);
+			}
+			else
+			{
+				// The guard. Falling back to a known cubemap keeps the viewport
+				// lit and, more importantly, keeps a 2D view out of a cube slot.
+				myEnvPrefiltered.Reset();
+				myEnvPrefilterFailed = true;
+				ERROR_PRINT("editor: environment '%s' is not a cubemap and could not be converted; falling back to Textures/horizonCubeMap.dds", envAsset);
+			}
+		}
+
+		if (myEnvPrefiltered.IsValid())
+		{
+			environmentSrv = myEnvPrefiltered.GetSrv();
+		}
+		else
+		{
+			Texture* fallback = ge.GetTextureManager().GetTexture("Textures/horizonCubeMap.dds", TextureSrgbMode::None);
+			environmentSrv = fallback ? fallback->GetSrv() : rhi::SrvHandle{};
+			if (fallback) ambient.cubemap = fallback;
+		}
+	}
 	gss.SetAmbientLight(ambient);
 
 	// Scene point / spot lights. Authored as ordinary scene objects, so one
@@ -600,8 +658,8 @@ bool DefaultSceneEditorGraphics::DrawDeferredColorPass(const SceneDrawParameters
 	dr.UploadLights(lights.data(), (int)lights.size());
 
 	// The ray-traced path samples this cube for sky and ambient light.
-	if (ambient.cubemap)
-		dr.SetGiEnvironment(ambient.cubemap->GetSrv(), { ambientColor[0], ambientColor[1], ambientColor[2] }, true);
+	if (environmentSrv.IsValid())
+		dr.SetGiEnvironment(environmentSrv, { ambientColor[0], ambientColor[1], ambientColor[2] }, true);
 	else
 		dr.SetGiEnvironment({}, { 0.f, 0.f, 0.f }, false);
 	// No irradiance probe volume in the editor yet.

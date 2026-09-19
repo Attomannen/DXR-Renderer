@@ -1,7 +1,8 @@
-#define _CRT_SECURE_NO_WARNINGS
-#define NOMINMAX
-#define WIN32_LEAN_AND_MEAN
-#include "CubemapPrefilter.h"
+#include "stdafx.h"
+// _CRT_SECURE_NO_WARNINGS / NOMINMAX / WIN32_LEAN_AND_MEAN used to be defined
+// here; the Graphics precompiled header already sets all three, and repeating
+// them is a C4005 redefinition, which this project treats as an error.
+#include <age/render/CubemapPrefilter.h>
 #include <age/graphics/DepthBuffer.h>
 
 #include <age/graphics/DX11.h>
@@ -17,6 +18,7 @@
 #include <DirectXTex/WICTextureLoader/WICTextureLoader11.h>
 #include <DirectXTex/DirectXTex/DirectXTex.h>
 
+#include <memory>
 #include <cmath>
 #include <algorithm>
 #include <filesystem>
@@ -119,10 +121,11 @@ namespace Ag
 
             if (outMip0UAV && (bindFlags & D3D11_BIND_UNORDERED_ACCESS))
             {
-                // Only reachable from LoadBaseFromEquirectangular/LoadBaseFromCubeCross,
-                // both confirmed dead code (zero callers) -- not implemented rather
-                // than guessed at. CaptureSceneToCubemap/GeneratePrefilteredCubemap
-                // (the two real call sites) never pass outMip0UAV.
+                // Only reachable from the DX11-only LoadBaseFromEquirectangular/
+                // LoadBaseFromCubeCross, which have no callers -- not implemented
+                // rather than guessed at. CaptureSceneToCubemap,
+                // GeneratePrefilteredCubemap and BuildCubemapFromEquirectangular
+                // (the real call sites) never ask for outMip0UAV on DX12.
                 assert(false && "CubemapPrefilter (DX12): outMip0UAV path is unreachable dead code");
                 return false;
             }
@@ -488,6 +491,114 @@ namespace Ag
         DX11::Context->GenerateMips(outCubemap.srv.Get());
 
         INFO_PRINT("CubemapPrefilter: Converted equirectangular panorama to cubemap (%ux%u, %u mips)", targetResolution, targetResolution, mipCount);
+        return true;
+    }
+
+    bool CubemapPrefilter::BuildCubemapFromEquirectangular(rhi::SrvHandle aPanoramaSrv, uint32_t aTargetResolution,
+                                                           CubemapData& outCubemap)
+    {
+        outCubemap.Reset();
+        if (!aPanoramaSrv.IsValid() || aTargetResolution == 0) return false;
+
+        rhi::IDevice* dev = DX11::Rhi();
+        if (!dev) return false;
+        const bool isDx12 = dev->GetBackend() == rhi::Backend::DX12;
+
+        const uint32_t mipCount = CalculateMipCount(aTargetResolution, aTargetResolution);
+        ComPtr<ID3D11UnorderedAccessView> mip0Uav11;
+        // std::addressof, not &mip0Uav11: ComPtr overloads operator& to return a
+        // ComPtrRef, and forcing that through a ternary against nullptr invokes
+        // its conversion operator, which faults. The raw address is what
+        // CreateCubemapTexture actually wants.
+        ComPtr<ID3D11UnorderedAccessView>* mip0UavOut = isDx12 ? nullptr : std::addressof(mip0Uav11);
+        if (!CreateCubemapTexture(
+            aTargetResolution, mipCount, DXGI_FORMAT_R16G16B16A16_FLOAT,
+            D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_RENDER_TARGET,
+            D3D11_RESOURCE_MISC_GENERATE_MIPS,
+            // DX12 builds its mip-0 UAV through the RHI below; asking
+            // CreateCubemapTexture for a raw D3D11 one there is the path it
+            // explicitly refuses to implement.
+            outCubemap, mip0UavOut))
+        {
+            return false;
+        }
+
+        // See LoadBaseFromEquirectangular: validity is module.IsValid(), not the
+        // raw DX11 shader pointer, which DX12 never populates.
+        const ComputeShader* cs = DX11::LoadComputeShader("data/shaders/EquirectangularToCubemapCS");
+        if (!cs || !cs->module.IsValid()) cs = DX11::LoadComputeShader("Shaders/EquirectangularToCubemapCS");
+        if (!cs || !cs->module.IsValid())
+        {
+            ERROR_PRINT("%s", "CubemapPrefilter: Could not load EquirectangularToCubemapCS.hlsl");
+            outCubemap.Reset();
+            return false;
+        }
+
+        rhi::ICommandContext& ctx = dev->GetContext();
+        PanoCBData data{};
+        data.faceResolution = aTargetResolution;
+        myPanoConstantBuffer.Update(ctx, data);
+
+        rhi::ComputePipelineDesc pd;
+        pd.cs = cs->module;
+        ctx.SetComputePipeline(dev->CreateComputePipeline(pd));
+        myPanoConstantBuffer.Bind(ctx);
+        ctx.SetSampler(rhi::ShaderStage::Compute, 0, mySampler);
+
+        rhi::UavHandle mip0Uav;
+        if (isDx12)
+        {
+            rhi::UavDesc uavDesc = {};
+            uavDesc.mipSlice = 0;
+            mip0Uav = dev->CreateUav(outCubemap.myRhiTexture.handle, uavDesc);
+            if (!mip0Uav.IsValid())
+            {
+                ERROR_PRINT("%s", "CubemapPrefilter: Failed to create mip-0 UAV for the panorama cubemap (DX12)");
+                outCubemap.Reset();
+                return false;
+            }
+            ctx.SetShaderResource(rhi::ShaderStage::Compute, 0, aPanoramaSrv);
+            ctx.SetUnorderedAccess(0, mip0Uav);
+        }
+        else
+        {
+            // DX11 keeps the transient raw views, same reasoning as the rest of
+            // this file: wrapping them would leak a pool slot per conversion.
+            auto* panoRaw = static_cast<ID3D11ShaderResourceView*>(dev->GetNativeSrv(aPanoramaSrv));
+            if (!panoRaw)
+            {
+                ERROR_PRINT("%s", "CubemapPrefilter: panorama SRV has no DX11 view");
+                outCubemap.Reset();
+                return false;
+            }
+            DX11::Context->CSSetShaderResources(0, 1, &panoRaw);
+            DX11::Context->CSSetUnorderedAccessViews(0, 1, mip0Uav11.GetAddressOf(), nullptr);
+        }
+
+        const uint32_t threadGroups = (aTargetResolution + 7) / 8;
+        ctx.Dispatch(threadGroups, threadGroups, 6);
+
+        if (isDx12)
+        {
+            ctx.SetUnorderedAccess(0, {});
+            ctx.SetShaderResource(rhi::ShaderStage::Compute, 0, {});
+        }
+        else
+        {
+            ID3D11UnorderedAccessView* nullUav = nullptr;
+            ID3D11ShaderResourceView* nullSrv = nullptr;
+            DX11::Context->CSSetUnorderedAccessViews(0, 1, &nullUav, nullptr);
+            DX11::Context->CSSetShaderResources(0, 1, &nullSrv);
+        }
+        ctx.SetComputePipeline({});
+
+        // The prefilter importance-samples across mips, so the base cube needs a
+        // full chain, not just mip 0.
+        if (isDx12) ctx.GenerateMips(outCubemap.GetSrv(), outCubemap.myRhiTexture.handle);
+        else        DX11::Context->GenerateMips(outCubemap.srv.Get());
+
+        INFO_PRINT("CubemapPrefilter: converted equirectangular panorama to cubemap (%ux%u, %u mips)",
+            aTargetResolution, aTargetResolution, mipCount);
         return true;
     }
 

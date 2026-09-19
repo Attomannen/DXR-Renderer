@@ -67,6 +67,17 @@ namespace Ag
 
         bool LoadBaseFromDDS(const std::string& ddsPath, CubemapData& outCubemap);
         bool LoadBaseFromEquirectangular(const std::string& panoPath, uint32_t targetResolution, CubemapData& outCubemap);
+        // Same conversion, but from an already-loaded panorama rather than a
+        // path, and backend-agnostic.
+        //
+        // LoadBaseFromEquirectangular above decodes the file itself through
+        // DirectXTex and binds the result with raw DX11 calls, so it cannot run
+        // on DX12 -- which is the only backend the ray-traced renderer uses.
+        // Taking an rhi SRV instead lets the caller obtain the panorama however
+        // it likes (TextureManager handles .hdr on both backends) and keeps the
+        // binding on the RHI path.
+        bool BuildCubemapFromEquirectangular(rhi::SrvHandle aPanoramaSrv, uint32_t aTargetResolution,
+                                             CubemapData& outCubemap);
         // Loads from a 4x3 horizontal cube cross image (+Y Top / -Y Bottom in Column 1)
         bool LoadBaseFromCubeCross(const std::string& crossPath, CubemapData& outCubemap);
 

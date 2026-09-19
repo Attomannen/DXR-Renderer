@@ -21,6 +21,16 @@ namespace Ag
 	class TextureManager
 	{
 	public:
+		// Does this asset path resolve to a cubemap?
+		//
+		// Only a DDS can be one; .hdr/.png/.tga are always flat images. Callers
+		// need this before binding a texture to a TextureCube register: a 2D
+		// view in a cube slot is undefined behaviour, and on this GPU it has
+		// already been confirmed to cause a DXGI_ERROR_DRIVER_INTERNAL_ERROR
+		// device removal rather than merely sampling wrong (see the fallback
+		// path in TextureManager.cpp, which probes the same way).
+		static bool IsCubemapAsset(const char* aTexturePath);
+
 		TextureManager(void);
 		~TextureManager(void);
 		void Init();
