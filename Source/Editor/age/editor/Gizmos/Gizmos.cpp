@@ -93,23 +93,37 @@ void Gizmos::Draw()
 		if (saveNow) SaveSnapSetting(mySnap);
 	}
 	
+}
 
-	{ // Keyboard shortcuts
-		if (ImGui::IsAnyItemActive() == false && ImGui::GetIO().KeyCtrl == false && !ImGui::GetIO().MouseDown[ImGuiMouseButton_Right])
-		{
-            if (ImGui::IsKeyPressed(ImGuiKey_W)) 
-			{
-                myCurrentOperation = ImGuizmo::TRANSLATE;
-            } 
-			if (ImGui::IsKeyPressed(ImGuiKey_E)) 
-			{
-				myCurrentOperation = ImGuizmo::ROTATE;
-            }
-			if (ImGui::IsKeyPressed(ImGuiKey_R)) 
-			{
-                myCurrentOperation = ImGuizmo::SCALE;
-            }
-        }
+void Gizmos::UpdateShortcuts()
+{
+	const ImGuiIO& io = ImGui::GetIO();
+	if (io.WantTextInput || ImGui::IsAnyItemActive() || io.MouseDown[ImGuiMouseButton_Right])
+		return;
+
+	if (io.KeyCtrl)
+	{
+		// Ctrl+` flips between local and world space, like Unreal.
+		if (!io.KeyShift && !io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_GraveAccent, false))
+			myCurrentMode = (uint16_t)(myCurrentMode == ImGuizmo::LOCAL ? ImGuizmo::WORLD : ImGuizmo::LOCAL);
+		return;
+	}
+	if (io.KeyAlt)
+		return;
+
+	if (ImGui::IsKeyPressed(ImGuiKey_Q, false))
+		myCurrentOperation = 0;   // select only
+	if (ImGui::IsKeyPressed(ImGuiKey_W, false))
+		myCurrentOperation = ImGuizmo::TRANSLATE;
+	if (ImGui::IsKeyPressed(ImGuiKey_E, false))
+		myCurrentOperation = ImGuizmo::ROTATE;
+	if (ImGui::IsKeyPressed(ImGuiKey_R, false))
+		myCurrentOperation = ImGuizmo::SCALE;
+	if (ImGui::IsKeyPressed(ImGuiKey_Space, false))
+	{
+		// Space cycles move -> rotate -> scale.
+		myCurrentOperation = (uint16_t)(myCurrentOperation == ImGuizmo::TRANSLATE ? ImGuizmo::ROTATE
+			: (myCurrentOperation == ImGuizmo::ROTATE ? ImGuizmo::SCALE : ImGuizmo::TRANSLATE));
 	}
 }
 

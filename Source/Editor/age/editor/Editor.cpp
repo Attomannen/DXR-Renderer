@@ -456,20 +456,28 @@ void Ag::Editor::Update(float aTimeDelta, InputManager& inputManager)
 		// Keyboard shortcuts
 		if (io.KeyCtrl)
 		{
-			if (ImGui::IsKeyPressed(ImGuiKey_Z))
+			if (ImGui::IsKeyPressed(ImGuiKey_S))
 			{
-				if (io.KeyShift)
+				Editor::GetEditor()->Save();
+			}
+			// Undo, redo and new-level must not fire while typing: a text field has its own undo.
+			else if (!io.WantTextInput)
+			{
+				if (ImGui::IsKeyPressed(ImGuiKey_Z))
+				{
+					if (io.KeyShift)
+						CommandManager::Redo();
+					else
+						CommandManager::Undo();
+				}
+				else if (ImGui::IsKeyPressed(ImGuiKey_Y))
 				{
 					CommandManager::Redo();
 				}
-				else
+				else if (ImGui::IsKeyPressed(ImGuiKey_N, false))
 				{
-					CommandManager::Undo();
+					myContentBrowser.RequestNewLevel();
 				}
-			}
-			else if (ImGui::IsKeyPressed(ImGuiKey_S))
-			{
-				Editor::GetEditor()->Save();
 			}
 		}
 

@@ -67,7 +67,7 @@ namespace Ag
 	{
 		// Grave/tilde, the conventional console key. Guarded on WantTextInput so
 		// typing a backtick into any other field does not toggle the window.
-		if (!ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_GraveAccent, false))
+		if (!ImGui::GetIO().WantTextInput && !ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_GraveAccent, false))
 			locOpen = !locOpen;
 
 		if (!locOpen) return;

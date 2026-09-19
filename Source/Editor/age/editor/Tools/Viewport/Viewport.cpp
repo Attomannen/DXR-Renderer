@@ -269,7 +269,7 @@ void EditorViewport::DrawAndUpdateViewportWindow(float aDeltaTime, ViewportInter
 				}
 				if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))
 				{
-					aViewportInterface.EndDragSelection({ ImGui::GetMousePos().x, ImGui::GetMousePos().y}, io.KeyShift);
+					aViewportInterface.EndDragSelection({ ImGui::GetMousePos().x, ImGui::GetMousePos().y}, io.KeyShift || io.KeyCtrl);
 				}
 				if (ImGui::IsMousePosValid(&mousePos))
 				{
@@ -278,7 +278,7 @@ void EditorViewport::DrawAndUpdateViewportWindow(float aDeltaTime, ViewportInter
 
 					if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
 					{
-						aViewportInterface.ClickSelection({ mousePos.x, mousePos.y }, pixel.id, io.KeyShift);
+						aViewportInterface.ClickSelection({ mousePos.x, mousePos.y }, pixel.id, io.KeyShift || io.KeyCtrl);
 					}
 				}
 
@@ -326,7 +326,7 @@ void EditorViewport::DrawAndUpdateViewportWindow(float aDeltaTime, ViewportInter
 						float wheel = io.MouseWheel > 0.f ? 0.1f : -0.1f;
 						myFreeFlyMovementSpeed = std::clamp(myFreeFlyMovementSpeed + wheel, .1f, 10.f);
 					}
-					activeCamera.GetTransform().SetPosition(activeCamera.GetTransform().GetPosition() + camMovement * (1000.f*myFreeFlyMovementSpeed) * aDeltaTime);
+					activeCamera.GetTransform().SetPosition(activeCamera.GetTransform().GetPosition() + camMovement * (1000.f*myFreeFlyMovementSpeed * (io.KeyShift ? 3.f : 1.f)) * aDeltaTime);
 
 				}
 				
@@ -334,24 +334,13 @@ void EditorViewport::DrawAndUpdateViewportWindow(float aDeltaTime, ViewportInter
 				// Camera controls - Blender like
 				else
 				{
+					// Middle mouse pans like Unreal; Shift pans in the ground plane.
 					if (ImGui::IsMouseDown(ImGuiMouseButton_Middle))
 					{
-						if (io.KeyShift && io.KeyCtrl)
-						{
+						if (io.KeyShift)
 							TranslateCameraInPlane(myCamera, mouseDelta, myCameraFocusDistance);
-						}
-						else if (io.KeyShift)
-						{
-							TranslateCamera(myCamera, mouseDelta, myCameraFocusDistance);
-						}
-						else if (io.KeyCtrl)
-						{
-							ZoomCamera(myCamera, mouseDelta, myCameraFocusDistance);
-						}
 						else
-						{
-							RotateCamera(myCamera, mouseDelta, myCameraFocusDistance, myCameraRotation);
-						}
+							TranslateCamera(myCamera, mouseDelta, myCameraFocusDistance);
 					}
 
 					if (ImGui::IsKeyPressed(ImGuiKey_MouseWheelY)) {

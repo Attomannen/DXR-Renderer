@@ -32,6 +32,9 @@ namespace Ag
 
 		virtual void Draw() override;
 
+		// Q/W/E/R, Space and Ctrl+` (Unreal's tool hotkeys). Call once per frame from the owning document.
+		void UpdateShortcuts();
+
 		void DrawGizmos(const Camera& camera, ViewportInterface& aViewportInterface, Vector2i aViewportPos, Vector2i aViewportSize);
 
 		uint16_t GetCurrentOperation() const { return myCurrentOperation; }

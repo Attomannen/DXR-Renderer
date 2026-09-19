@@ -554,6 +554,10 @@ void ContentBrowser::Draw()
 			}
 		}
 
+	if (myPendingDelete.empty() && !mySelectedPath.empty() && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
+		&& !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Delete, false))
+		myPendingDelete = fs::absolute(fs::path(Ag::Settings::GameAssetRoot()) / mySelectedPath);
+
 	if (!myPendingDelete.empty()) ImGui::OpenPopup("Confirm Asset Delete");
 	if (ImGui::BeginPopupModal("Confirm Asset Delete", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
 	{

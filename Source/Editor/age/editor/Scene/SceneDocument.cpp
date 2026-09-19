@@ -191,7 +191,7 @@ void SceneDocument::Update(float aTimeDelta, InputManager& inputManager)
 			Editor::GetEditor()->Save();
 		}
 		ImGui::SameLine();
-		if (ImGui::Selectable(ICON_LC_PLAY, false, 0, toolbarItemSize) || ImGui::IsKeyPressed(ImGuiKey_F5))
+		if (ImGui::Selectable(ICON_LC_PLAY, false, 0, toolbarItemSize) || ImGui::IsKeyPressed(ImGuiKey_F5) || (ImGui::GetIO().KeyAlt && ImGui::IsKeyPressed(ImGuiKey_P, false)))
 		{
 			ProjectRunControls::ExecuteRun(*this);
 		}
@@ -283,6 +283,8 @@ void SceneDocument::Update(float aTimeDelta, InputManager& inputManager)
 	ImGui::End();
 	ImGui::PopStyleColor();
 
+	myViewport.GetGizmos().UpdateShortcuts();
+
 	ImGui::SetNextWindowClass(&myDocumentWindowClass);
 	ImGui::Begin(myPanelWindowNames[(size_t)Panels::Properties].c_str());
 	myProperties.Draw();
@@ -333,103 +335,111 @@ void SceneDocument::Update(float aTimeDelta, InputManager& inputManager)
 
 		}
 
-		if (io.KeyCtrl)
+		if (io.KeyCtrl && !io.WantTextInput && ImGui::IsAnyItemActive() == false)
 		{
-			if (ImGui::IsKeyReleased(ImGuiKey_D))
+			// Every object created here gets a name no other object in the level has: "Cube" -> "Cube(1)" -> "Cube(2)".
+			auto pasteObjects = [&](const std::vector<std::shared_ptr<SceneObject>>& sources)
 			{
-				std::span<const uint32_t> selection = SceneSelection::GetActiveSceneSelection()->GetSelection();
+				if (sources.empty())
+					return;
 
-				if (selection.size() > 0)
+				std::shared_ptr<AddSceneObjectsCommand> command = std::make_shared<AddSceneObjectsCommand>();
+
+				constexpr int nameBufferSize = 512;
+				char nameBuffer[nameBufferSize];
+
+				for (const std::shared_ptr<SceneObject>& source : sources)
 				{
-					std::shared_ptr<AddSceneObjectsCommand> command = std::make_shared<AddSceneObjectsCommand>();
+					std::shared_ptr<SceneObject> object = std::make_shared<SceneObject>(*source);
 
-					constexpr int nameBufferSize = 512;
-					char nameBuffer[nameBufferSize];
+					const char* initialName = object->GetName();
+					size_t initialLength = strlen(initialName);
 
-					for (uint32_t id : selection)
+					std::regex re("(.*)\\((\\d+)\\)$"); // Regex to match name and number in parentheses
+					std::cmatch match;
+					int number = 1;
+					size_t baseLength = 0;
+
+					if (std::regex_match(initialName, initialName + initialLength, match, re))
 					{
-						std::shared_ptr<SceneObject> object = std::make_shared<SceneObject>(*GetActiveScene()->GetSceneObject(id));
+						std::string base = match[1].str();
+						baseLength = base.length();
+						sprintf_s(nameBuffer, nameBufferSize, "%s", base.c_str());
+						if (match[2].matched)
+							number = std::stoi(match[2].str()) + 1;
+					}
+					else
+					{
+						sprintf_s(nameBuffer, nameBufferSize, "%s", initialName);
+						baseLength = initialLength;
+					}
 
-						const char* initialName = object->GetName();
-						size_t initialLength = strlen(initialName);
-
-						std::regex re("(.*)\\((\\d+)\\)$"); // Regex to match name and number in parentheses
-						std::cmatch match;
-						int number = 1;
-						size_t baseLength = 0;
-
-						// Use regex to parse the base name and number if parentheses with numbers are present
-						if (std::regex_match(initialName, initialName + initialLength, match, re))
+					while (true)
+					{
+						bool exists = myScene->GetFirstSceneObject(nameBuffer) != nullptr;
+						if (!exists)
 						{
-							std::string base = match[1].str();
-							baseLength = base.length();
-							sprintf_s(nameBuffer, nameBufferSize, "%s", base.c_str());
-							if (match[2].matched) 
+							for (const auto& pair : command->GetObjects())
 							{
-								number = std::stoi(match[2].str()) + 1;
-							}
-						}
-						else 
-						{
-							sprintf_s(nameBuffer, nameBufferSize, "%s", initialName);
-							baseLength = initialLength;
-						}
-
-						// Check if the base name already exists
-						while (true)
-						{
-							bool exists = myScene->GetFirstSceneObject(nameBuffer) != nullptr;
-							if (!exists)
-							{
-								for (auto pair : command->GetObjects())
+								if (pair.second->GetName() == std::string_view(nameBuffer))
 								{
-									if (pair.second->GetName() == std::string_view(nameBuffer))
-									{
-										exists = true;
-										break;
-									}
+									exists = true;
+									break;
 								}
 							}
-
-							if (!exists)
-								break;
-
-							sprintf_s(nameBuffer + baseLength, nameBufferSize - baseLength, "(%d)", number++);
 						}
 
-						object->SetName(nameBuffer);
+						if (!exists)
+							break;
 
-						/*
-						int i = 1;
-
-						// todo: this is a O(n^2) algorithm
-						while (true)
-						{
-							sprintf_s(buffer, "%s(%i)", object->GetName(), i);
-							if (myScene->GetFirstSceneObject(buffer) == nullptr)
-							{
-								object->SetName(buffer);
-								break;
-							}
-							i++;
-						}
-						*/
-
-						command->AddObjects(std::span<std::shared_ptr<SceneObject>>(&object, 1));
+						sprintf_s(nameBuffer + baseLength, nameBufferSize - baseLength, "(%d)", number++);
 					}
 
-					CommandManager::DoCommand(command);
-
-					SceneSelection::GetActiveSceneSelection()->ClearSelection();
-
-					std::span<const std::pair<uint32_t, std::shared_ptr<SceneObject>>>  createdObjects = command->GetObjects();
-
-					for (const std::pair<uint32_t, std::shared_ptr<SceneObject>>& p : createdObjects)
-					{
-						SceneSelection::GetActiveSceneSelection()->AddToSelection(p.first);
-					}
+					object->SetName(nameBuffer);
+					command->AddObjects(std::span<std::shared_ptr<SceneObject>>(&object, 1));
 				}
+
+				CommandManager::DoCommand(command);
+
+				SceneSelection::GetActiveSceneSelection()->ClearSelection();
+				for (const std::pair<uint32_t, std::shared_ptr<SceneObject>>& p : command->GetObjects())
+					SceneSelection::GetActiveSceneSelection()->AddToSelection(p.first);
+			};
+
+			auto selectedObjects = [&]()
+			{
+				std::vector<std::shared_ptr<SceneObject>> objects;
+				for (uint32_t id : SceneSelection::GetActiveSceneSelection()->GetSelection())
+					if (SceneObject* object = myScene->GetSceneObject(id))
+						objects.push_back(std::make_shared<SceneObject>(*object));
+				return objects;
+			};
+
+			// Copy and cut share one clipboard for the whole editor session, so objects can move between levels.
+			static std::vector<std::shared_ptr<SceneObject>> locObjectClipboard;
+
+			if (ImGui::IsKeyPressed(ImGuiKey_A, false))
+			{
+				SceneSelection::GetActiveSceneSelection()->ClearSelection();
+				for (const auto& entry : myScene->GetSceneObjects())
+					if (entry.second)
+						SceneSelection::GetActiveSceneSelection()->AddToSelection(entry.first);
 			}
+			if (ImGui::IsKeyPressed(ImGuiKey_C, false))
+				locObjectClipboard = selectedObjects();
+			if (ImGui::IsKeyPressed(ImGuiKey_X, false) && !SceneSelection::GetActiveSceneSelection()->GetSelection().empty())
+			{
+				locObjectClipboard = selectedObjects();
+
+				std::shared_ptr<RemoveSceneObjectsCommand> command = std::make_shared<RemoveSceneObjectsCommand>();
+				command->AddObjects(SceneSelection::GetActiveSceneSelection()->GetSelection());
+				CommandManager::DoCommand(command);
+				SceneSelection::GetActiveSceneSelection()->ClearSelection();
+			}
+			if (ImGui::IsKeyPressed(ImGuiKey_V, false))
+				pasteObjects(locObjectClipboard);
+			if (ImGui::IsKeyPressed(ImGuiKey_D, false))
+				pasteObjects(selectedObjects());
 		}
 	}
 	assert(GetActiveScene() == myScene);

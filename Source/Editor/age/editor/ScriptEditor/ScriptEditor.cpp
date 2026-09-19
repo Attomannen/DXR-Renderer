@@ -1271,11 +1271,16 @@ void Ag::ScriptGraphEditor::Display(Script& script, SceneObjectDefinition* defin
 				CopyNodes(script, shortcut.selected);
 			if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V, false))
 				shortcut.paste = true;
-			if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false))
+			if (io.KeyCtrl && (ImGui::IsKeyPressed(ImGuiKey_D, false) || ImGui::IsKeyPressed(ImGuiKey_W, false)))
 			{
 				CopyNodes(script, shortcut.selected);
 				shortcut.duplicate = true;
 			}
+			// F frames the selection, Home frames the whole graph (Unreal's Blueprint editor).
+			if (!io.KeyCtrl && !io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_F, false) && !shortcut.selected.empty())
+				ed::NavigateToSelection(false, 0.25f);
+			if (ImGui::IsKeyPressed(ImGuiKey_Home, false))
+				ed::NavigateToContent(0.25f);
 			if (!io.KeyCtrl && !io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_Q, false))
 				StraightenNodes(script, activeScript.selection, activeScript.pinCanvasY, shortcut.selected);
 			if (!io.KeyCtrl && !io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_C, false) && !shortcut.selected.empty())
