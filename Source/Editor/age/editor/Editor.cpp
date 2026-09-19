@@ -28,6 +28,7 @@
 #include <age/editor/Scene/SceneDocument.h>
 #include <age/editor/Material/MaterialDocument.h>
 #include <age/editor/ParticleSystem/ParticleSystemDocument.h>
+#include <age/editor/DataTable/DataTableDocument.h>
 #include <age/editor/Import/FbxConvert.h>
 #include <age/editor/Scene/SceneSelection.h>
 #include <age/editor/ScriptEditor/ScriptEditor.h>
@@ -54,6 +55,7 @@
 #include <age/script/Nodes/ArrayNodes.h>
 #include <age/script/Nodes/GameFrameworkNodes.h>
 #include <age/script/Nodes/GameServiceNodes.h>
+#include <age/script/Nodes/DataTableNodes.h>
 #include <age/script/Nodes/SceneObjectNodes.h>
 #include <age/scene/ScenePropertyTypes.h>
 
@@ -151,6 +153,7 @@ void Ag::Editor::Init(const EditorConfiguration& aEditorConfiguration, std::uniq
 	Ag::RegisterArrayNodes();
 	Ag::RegisterGameFrameworkNodes();
 	Ag::RegisterGameServiceNodes();
+	Ag::RegisterDataTableNodes();
 	Ag::RegisterGameObjectNodes();
 	Ag::RegisterAnimationNodes();
 
@@ -384,6 +387,26 @@ namespace
 		property.flags = ScenePropertyFlags::None;
 		aDefinition.EditProperties().push_back(std::move(property));
 	}
+}
+
+std::string Ag::Editor::CreateNewDataTable(const fs::path& path)
+{
+	fs::path p = path;
+	if (p.extension().empty())
+		p.replace_extension(".csv");
+	if (fs::exists(p))
+		return "'" + p.filename().string() + "' already exists";
+
+	DataTable table;
+	table.columns = { "Name", "Value" };
+	table.rows = { { "Example", "1" } };
+	if (!table.Save(p.string()))
+		return "could not write '" + p.filename().string() + "'";
+
+	std::unique_ptr<DataTableDocument> document = std::make_unique<DataTableDocument>();
+	document->Init(p.string());
+	AddDocument(std::move(document));
+	return {};
 }
 
 std::string Ag::Editor::CreateNewGameMode(const fs::path& path)

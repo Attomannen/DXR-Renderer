@@ -19,6 +19,7 @@
 #include <age/editor/Scene/SceneDocument.h>
 #include <age/editor/Material/MaterialDocument.h>
 #include <age/editor/ParticleSystem/ParticleSystemDocument.h>
+#include <age/editor/DataTable/DataTableDocument.h>
 #include <age/editor/Import/FbxConvert.h>
 #include <age/editor/Tools/ContentBrowser/AssetFileCommands.h>
 #include <age/editor/CommandManager/CommandManager.h>
@@ -436,6 +437,7 @@ void ContentBrowser::Draw()
 					else if (extension == ".tgm" || extension == ".fbx") icon = ICON_LC_CUBOID;
 					else if (extension == ".tgo" || extension == ".tgac") icon = ICON_LC_FILE_CODE;
 					else if (extension == ".tgps") icon = ICON_LC_SPARKLES;
+					else if (extension == ".csv") icon = ICON_LC_TABLE;
 
 					if (path.extension() == ".dds")
 					{
@@ -486,6 +488,16 @@ void ContentBrowser::Draw()
 								std::unique_ptr<AnimationClipDocument> document = std::make_unique<AnimationClipDocument>();
 								document->Init(path.string());
 
+								Editor::GetEditor()->AddDocument(std::move(document));
+							}
+						}
+
+						if (absPath.extension() == ".csv")
+						{
+							if (itemStatus.doubleClicked)
+							{
+								std::unique_ptr<DataTableDocument> document = std::make_unique<DataTableDocument>();
+								document->Init(path.string());
 								Editor::GetEditor()->AddDocument(std::move(document));
 							}
 						}
@@ -666,7 +678,7 @@ void ContentBrowser::RequestNewLevel()
 
 void ContentBrowser::RequestCreate(CreateKind kind)
 {
-	static const char* defaults[] = { "", "NewFolder", "NewTGO", "NewLevel", "NewMaterial", "NewAnimationClip", "NewParticleSystem", "NewGameMode" };
+	static const char* defaults[] = { "", "NewFolder", "NewTGO", "NewLevel", "NewMaterial", "NewAnimationClip", "NewParticleSystem", "NewGameMode", "NewDataTable" };
 	myCreateKind = kind;
 	myOpenCreatePopup = true;
 	myAssetOperationError.clear();
@@ -685,6 +697,7 @@ void ContentBrowser::DrawAddMenuItems()
 	if (ImGui::MenuItem(ICON_LC_FILE_CODE "  Animation Clip")) RequestCreate(CreateKind::AnimationClip);
 	if (ImGui::MenuItem(ICON_LC_SPARKLES "  Particle System")) RequestCreate(CreateKind::ParticleSystem);
 	if (ImGui::MenuItem(ICON_LC_GAMEPAD_2 "  Game Mode")) RequestCreate(CreateKind::GameMode);
+	if (ImGui::MenuItem(ICON_LC_TABLE "  Data Table")) RequestCreate(CreateKind::DataTable);
 }
 
 void ContentBrowser::DrawCreatePopup()
@@ -697,8 +710,8 @@ void ContentBrowser::DrawCreatePopup()
 	if (!ImGui::BeginPopupModal("Create Asset", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
 		return;
 
-	static const char* titles[] = { "", "Folder", "TGO", "Level", "Material", "Animation Clip", "Particle System", "Game Mode" };
-	static const char* extensions[] = { "", "", ".tgo", ".tgs", ".tgmat", ".tgac", ".tgps", ".tgo" };
+	static const char* titles[] = { "", "Folder", "TGO", "Level", "Material", "Animation Clip", "Particle System", "Game Mode", "Data Table" };
+	static const char* extensions[] = { "", "", ".tgo", ".tgs", ".tgmat", ".tgac", ".tgps", ".tgo", ".csv" };
 	ImGui::Text("New %s", titles[(int)myCreateKind]);
 	ImGui::TextDisabled("in %s", _current_path.string().c_str());
 	ImGui::SetNextItemWidth(320.f);
@@ -729,6 +742,7 @@ void ContentBrowser::DrawCreatePopup()
 			case CreateKind::AnimationClip: error = Editor::GetEditor()->CreateNewAnimationClip(path); break;
 			case CreateKind::ParticleSystem: error = Editor::GetEditor()->CreateNewParticleSystem(path); break;
 			case CreateKind::GameMode: error = Editor::GetEditor()->CreateNewGameMode(path); break;
+			case CreateKind::DataTable: error = Editor::GetEditor()->CreateNewDataTable(path); break;
 			default: break;
 			}
 		}

@@ -86,6 +86,8 @@ public:
 	std::string CreateNewParticleSystem(const fs::path& path);
 	// A .tgo with a Game Mode component (opens in the TGO editor, where its rules are scripted).
 	std::string CreateNewGameMode(const fs::path& path);
+	// A .csv data table with a Name and a Value column, opened in the table editor.
+	std::string CreateNewDataTable(const fs::path& path);
 	// The Player Start marker object, created in Framework/PlayerStart.tgo the first time it is needed.
 	SceneObjectDefinition* EnsurePlayerStartDefinition();
 	std::string CreateNewMaterial(const fs::path& path);
