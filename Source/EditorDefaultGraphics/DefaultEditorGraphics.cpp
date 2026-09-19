@@ -51,6 +51,111 @@ using namespace Ag;
 
 namespace Ag
 {
+	// Keeps the particle systems of a level, or of the TGO being edited, playing in the viewport.
+	class ParticlePreviewSet
+	{
+	public:
+		// One system per level object that carries a Particle System component.
+		void UpdateScene(Scene& aScene, float aDeltaSeconds)
+		{
+			if (--myScanCountdown <= 0)
+			{
+				myScanCountdown = 20;
+				Rescan(aScene);
+			}
+			for (auto& [id, entry] : myEntries)
+			{
+				const SceneObject* object = aScene.GetSceneObject(id);
+				if (!object || !entry.system)
+					continue;
+				entry.system->SetTransform(object->GetTransform());
+				entry.system->Update(aDeltaSeconds);
+			}
+		}
+
+		// One system for the TGO being edited, at the origin.
+		void UpdateDefinition(const SceneObjectDefinition& aDefinition, float aDeltaSeconds)
+		{
+			Entry& entry = myEntries[0];
+			if (--myScanCountdown <= 0)
+			{
+				myScanCountdown = 20;
+				Refresh(entry, FindPath(aDefinition.GetProperties()));
+			}
+			if (entry.system)
+			{
+				entry.system->SetTransform(Matrix4x4f());
+				entry.system->Update(aDeltaSeconds);
+			}
+		}
+
+		void Render(float aRadianceScale)
+		{
+			for (auto& [id, entry] : myEntries)
+				if (entry.system)
+					myRenderer.Render(*entry.system, aRadianceScale);
+		}
+
+		// The editor viewports are plain forward passes; this maps the default sprite brightness to white.
+		static float LdrScale() { return 1.f / Photometry::NitsToUnits(2000.f); }
+
+	private:
+		struct Entry
+		{
+			std::string path;
+			std::filesystem::file_time_type writeTime;
+			std::unique_ptr<Particles::SystemInstance> system;
+		};
+
+		static std::string FindPath(std::span<const ScenePropertyDefinition> someProperties)
+		{
+			for (const ScenePropertyDefinition& property : someProperties)
+				if (property.type == GetPropertyType<CopyOnWriteWrapper<SceneParticleSystem>>())
+					if (const auto* value = property.value.Get<CopyOnWriteWrapper<SceneParticleSystem>>())
+						return value->Get().path.GetString();
+			return {};
+		}
+
+		// Loads the asset again when the path changed or the file was saved.
+		void Refresh(Entry& anEntry, const std::string& aPath)
+		{
+			std::error_code error;
+			const std::string resolved = aPath.empty() ? std::string() : Settings::ResolveAssetPath(aPath);
+			const std::filesystem::file_time_type writeTime = resolved.empty() ? std::filesystem::file_time_type() : std::filesystem::last_write_time(resolved, error);
+			if (aPath == anEntry.path && writeTime == anEntry.writeTime)
+				return;
+
+			anEntry.path = aPath;
+			anEntry.writeTime = writeTime;
+			anEntry.system.reset();
+			Particles::SystemAsset asset;
+			if (!resolved.empty() && asset.Load(resolved))
+				anEntry.system = std::make_unique<Particles::SystemInstance>(asset);
+		}
+
+		void Rescan(Scene& aScene)
+		{
+			std::unordered_map<uint32_t, std::string> wanted;
+			std::vector<ScenePropertyDefinition> properties;
+			for (const auto& [id, object] : aScene.GetSceneObjects())
+			{
+				properties.clear();
+				object->CalculateCombinedPropertySet(Editor::GetEditor()->GetSceneObjectDefinitionManager(), properties);
+				const std::string path = FindPath(properties);
+				if (!path.empty())
+					wanted[id] = path;
+			}
+			for (auto it = myEntries.begin(); it != myEntries.end();)
+				it = wanted.contains(it->first) ? std::next(it) : myEntries.erase(it);
+			for (const auto& [id, path] : wanted)
+				Refresh(myEntries[id], path);
+		}
+
+		std::unordered_map<uint32_t, Entry> myEntries;
+		Particles::ParticleRenderer myRenderer;
+		int myScanCountdown = 0;
+	};
+
 	class DefaultObjectDefinitionEditorGraphics : public ObjectDefinitionEditorGraphicsBase
 	{
 	public:
@@ -65,6 +170,7 @@ namespace Ag
 		void Draw(ObjectDefinitionDrawParameters& parameters) override;
 		void DrawVisualPreviewSettings() override;
 		SceneCache myCache;
+		ParticlePreviewSet myParticles;
 		struct ObjectEditorPreviewSettings
 		{
 			StringId previewPixelShaderPath;
@@ -113,6 +219,7 @@ namespace Ag
 		bool DrawDeferredColorPass(const SceneDrawParameters& parameters, Frustum& frustum);
 
 		SceneCache myCache;
+		ParticlePreviewSet myParticles;
 
 		// Routes the color pass through the real deferred pipeline (G-buffer,
 		// cascaded shadows, PBR resolve, tonemap) instead of a flat forward
@@ -211,6 +318,7 @@ void DefaultObjectDefinitionEditorGraphics::Draw(ObjectDefinitionDrawParameters&
 	// Asset edits still show up while the editor runs, but re-reading every
 	// model, texture and material from disk every frame is far too expensive.
 	myCache.ClearCacheThrottled();
+	myParticles.UpdateDefinition(*parameters.objectDefinition, ImGui::GetIO().DeltaTime);
 	Camera& renderCamera = parameters.viewport->GetCamera();
 	Frustum frustum = CalculateFrustum(renderCamera);
 
@@ -275,6 +383,7 @@ void DefaultObjectDefinitionEditorGraphics::Draw(ObjectDefinitionDrawParameters&
 				DrawSceneProperty(prop, 1.f, drawParameters);
 			}
 
+			myParticles.Render(ParticlePreviewSet::LdrScale());
 		}
 
 		DrawOutlines(*parameters.viewport);
@@ -431,6 +540,7 @@ void DefaultSceneEditorGraphics::Draw(const SceneDrawParameters& parameters)
 	// Asset edits still show up while the editor runs, but re-reading every
 	// model, texture and material from disk every frame is far too expensive.
 	myCache.ClearCacheThrottled();
+	myParticles.UpdateScene(*parameters.scene, ImGui::GetIO().DeltaTime);
 
 	const Camera& renderCamera = parameters.viewport->GetCamera();
 	Frustum frustum = CalculateFrustum(renderCamera);
@@ -495,6 +605,8 @@ void DefaultSceneEditorGraphics::Draw(const SceneDrawParameters& parameters)
 
 				DrawSceneObject(*p.second, drawParameters);
 			}
+
+			myParticles.Render(ParticlePreviewSet::LdrScale());
 		}
 	}
 	DrawOutlines(*parameters.viewport);
@@ -767,6 +879,8 @@ bool DefaultSceneEditorGraphics::DrawDeferredColorPass(const SceneDrawParameters
 	{
 		DrawParameters p = makeParameters(DrawParameters::MeshPass::Transparent, glassShader, frustum);
 		drawScene(p);
+		// The lit pass is photometric like the game, so particles need no scaling here.
+		myParticles.Render(1.f);
 	};
 	auto drawShadowCasters = [&](const Camera& shadowCamera)
 	{
