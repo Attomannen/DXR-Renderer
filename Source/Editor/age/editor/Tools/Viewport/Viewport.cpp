@@ -180,8 +180,8 @@ void EditorViewport::Resize(const Vector2i& aSize)
 			(float)resolution.x,
 			(float)resolution.y
 		},
-		0.1f,
-		50000.0f
+		0.01f,      // 1 cm near plane
+		5000.0f     // 5 km far plane
 	);
 	//camera.GetTransform().SetPosition(Vector3f(0.0f, 0.0f, -550.0f));
 }

@@ -87,8 +87,8 @@ void main(uint lane : SV_GroupIndex, uint3 groupId : SV_GroupID)
             RayDesc ray;
             ray.Origin = gProbePos;
             ray.Direction = dir;
-            ray.TMin = 0.01f;
-            ray.TMax = 100000.f;
+            ray.TMin = 0.0001f;
+            ray.TMax = 1000.f;
 
             RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES> q;
             q.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, ray);
@@ -168,7 +168,7 @@ void main(uint lane : SV_GroupIndex, uint3 groupId : SV_GroupID)
 				radiance *= gFireflyClamp / lum;
 
 			sRadiance[lane] = float4(radiance, 1.0f - hitGeom);
-            const float distance = hitGeom != 0.0f ? q.CommittedRayT() : 100000.0f;
+            const float distance = hitGeom != 0.0f ? q.CommittedRayT() : 1000.0f;
             sDirectionDistance[lane] = float4(dir, distance);
             float2 o = dir.xy / max(abs(dir.x)+abs(dir.y)+abs(dir.z), 1e-5f);
             if (dir.z < 0) o = (1-abs(o.yx))*sign(o.xy+1e-6f);
@@ -211,7 +211,7 @@ void main(uint lane : SV_GroupIndex, uint3 groupId : SV_GroupID)
     }
     const uint momentIndex = gProbeIndex * 64u + lane;
     const float4 previous = GiVisibility[momentIndex];
-    const float mean = momentCount > 0 ? momentSum / momentCount : 100000.0f;
+    const float mean = momentCount > 0 ? momentSum / momentCount : 1000.0f;
     const float meanSq = momentCount > 0 ? momentSumSq / momentCount : 1e10f;
     GiVisibility[momentIndex] = float4(lerp(mean, previous.x, gHysteresis),
         lerp(meanSq, previous.y, gHysteresis), momentCount > 0 ? 1 : 0, 0);

@@ -415,7 +415,7 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 	                                              : ("bench_camera_" + camKey + ".json");
 	camFile = aEnv ? bench.camFile.value_or(defCamFile) : defCamFile;
 	if (aEnv && bench.spinDeg) camSpinDeg = *bench.spinDeg;
-	if (aEnv && bench.bobCm) camBobCm = *bench.bobCm;
+	if (aEnv && bench.bobM) camBobM = *bench.bobM;
 	if (aEnv && bench.bobPitch) camBobPitch = *bench.bobPitch;
 	if (aEnv && bench.bobHold) camBobHoldFrames = *bench.bobHold;
 	camLoaded = false;

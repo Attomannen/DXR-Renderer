@@ -29,12 +29,12 @@ float3 EvaluatePointLightLambert(float3 albedoColor, float3 normal, float3 light
 {
     // Compute som useful values
     float3 lightDir = lightPos.xyz - pixelPos.xyz;
-    float lightDistance = 0.01f * length(lightDir); // centimeter to meter
+    float lightDistance = length(lightDir);
     lightDir = normalize(lightDir);
 	
     float lambert = saturate(dot(normal, lightDir));
       
-    float rangeFactor = lightDistance / (0.01f * lightRange);
+    float rangeFactor = lightDistance / lightRange;
     rangeFactor *= rangeFactor;
     rangeFactor *= rangeFactor;
 
@@ -51,14 +51,14 @@ float3 EvaluateSoftAreaLightLambert(float3 albedoColor, float3 normal,
 {
     // Compute som useful values
     float3 lightDir = lightPos.xyz - pixelPos.xyz;
-    float lightDistance = 0.01f * length(lightDir);
+    float lightDistance = length(lightDir);
     lightDir = normalize(lightDir);
 
     float NdL;
     float lambertAttentuation;
 
-    float radiusMeter = 0.01f * lightRadius;
-    float rangeMeter = 0.01f * lightRange;
+    float radiusMeter = lightRadius;
+    float rangeMeter = lightRange;
 
     // Approximation of normal distribution area light, derived by Bjorn Ottosson
     // instead of taking dot product between normal and light and dividing by square distance
@@ -106,7 +106,7 @@ float3 EvaluateSpotLightLambert(float3 albedoColor, float3 normal,
     float3 lightPos, float3 lightDir, float outerAngle, float innerAngle, float3 pixelPos)
 {
     float3 toLight = lightPos.xyz - pixelPos.xyz;
-    float lightDistance = 0.01f * length(toLight); // centimeter to meterz
+    float lightDistance = length(toLight);
     toLight = normalize(toLight);
 
     float NdL = saturate(dot(normal, toLight));
@@ -123,7 +123,7 @@ float3 EvaluateSpotLightLambert(float3 albedoColor, float3 normal,
     float intensity = clamp((theta - cosOuterAngle) / epsilon, 0.0f, 1.0f);
     intensity *= intensity;
 	
-    float rangeFactor = lightDistance / (0.01f * lightRange);
+    float rangeFactor = lightDistance / lightRange;
     rangeFactor *= rangeFactor;
     rangeFactor *= rangeFactor;
 

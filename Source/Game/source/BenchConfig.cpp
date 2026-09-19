@@ -36,7 +36,7 @@ Run ReadRun()
 	r.camMode = EnvOptStr("BENCH_CAM");
 	r.camFile = EnvOptStr("BENCH_CAMFILE");
 	r.spinDeg = EnvOptFloat("BENCH_SPIN");
-	r.bobCm = EnvOptFloat("BENCH_BOB");
+	r.bobM = EnvOptFloat("BENCH_BOB");
 	r.bobPitch = EnvOptFloat("BENCH_BOB_PITCH");
 	if (const char* v = std::getenv("BENCH_BOB_HOLD")) r.bobHold = atoi(v);
 	r.orbitRadius = EnvOptFloat("BENCH_ORBIT");

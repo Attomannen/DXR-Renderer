@@ -39,7 +39,7 @@ namespace Ag
 		m.flags = aTextured ? MaterialFlags::UseTextures : 0u;
 		m.ior = 1.52f;
 		m.refractionScale = 1.f;
-		m.thicknessCm = 12.f;
+		m.thickness = 0.12f;
 		m.absorption = 0.08f;
 		m.shadingModel = (uint32_t)ShadingModel::DefaultLit;
 		m.normalStrength = 1.f;

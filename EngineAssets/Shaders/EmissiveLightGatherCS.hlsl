@@ -109,7 +109,7 @@ void main(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
 		const float3 e1 = p[2] - p[0];
 		const float3 cross01 = cross(e0, e1);
 		const float area = 0.5f * length(cross01);
-		if (area <= 1e-6f) continue;
+		if (area <= 1e-10f) continue;   // same physical threshold, in m^2
 
 		// Radiance at the triangle's UV centroid. One sample per triangle is
 		// enough for a light list: it decides importance and the emitted colour,
@@ -138,7 +138,11 @@ void main(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
 
 		// Scene units are centimetres; power in metre units keeps the numbers in
 		// a range where a float32 threshold is meaningful.
-		const float areaM2 = area * 1e-4f;
+		// World units are metres, so the triangle area is already m^2. This used
+		// to be area_cm2 * 1e-4; leaving that in cost every emissive surface a
+		// factor of 10,000 of its radiated power, which is exactly as dark as it
+		// sounds -- the glass still glowed, but it lit nothing around it.
+		const float areaM2 = area;
 		const float power = dot(radiance, float3(0.2126f, 0.7152f, 0.0722f)) * areaM2;
 		if (power <= gMinPower) continue;
 

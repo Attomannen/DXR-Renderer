@@ -91,7 +91,7 @@ void main(uint3 tid : SV_DispatchThreadID)
 	float2 ndc = float2((uv.x + FogJitter.x / size.x) * 2.0f - 1.0f, 1.0f - (uv.y + FogJitter.y / size.y) * 2.0f);
 	float3 dir = normalize(gCloudCamForward + gCloudCamRight * (ndc.x * gCloudAspect * gCloudTanHalfFovY) + gCloudCamUp * (ndc.y * gCloudTanHalfFovY));
 	// True camera position, not the sky LUT's dead-zoned gCameraHeight.
-	float3 origin = FogCamera * 0.01f;
+	float3 origin = FogCamera;
 
 	// Spherical shell on a planet of radius gBottomRadius (the sky LUTs' own),
 	// centred under the camera: the deck curves down and away toward the

@@ -49,7 +49,7 @@
 #ifndef DXR_REFLECTION_SUN_SAMPLES
 #define DXR_REFLECTION_SUN_SAMPLES 1u
 #endif
-// DXR_SELF_SHADOW_DISTANCE: world units (cm) within which a shadow ray ignores
+// DXR_SELF_SHADOW_DISTANCE: world units (metres) within which a shadow ray ignores
 // triangles of the instance it started on. See TraceShadowRay.
 // DXR_SHADOW_TERMINATOR_OFFSET: lift shadow-ray origins onto the smooth surface
 // implied by vertex normals (see DecodeHit). 0 = start from the flat facet.
@@ -57,7 +57,7 @@
 #define DXR_SHADOW_TERMINATOR_OFFSET 1
 #endif
 #ifndef DXR_SELF_SHADOW_DISTANCE
-#define DXR_SELF_SHADOW_DISTANCE 10.0f
+#define DXR_SELF_SHADOW_DISTANCE 0.1f
 #endif
 #ifndef DXR_TWO_SIDED_SHADOWS
 #define DXR_TWO_SIDED_SHADOWS 1
@@ -314,7 +314,7 @@ float TraceShadowRay(float3 origin, float3 dir, float maxDist, uint sourceInstan
 	// candidates are also ignored below: thin, single-sided cloth and foliage
 	// meshes commonly fold over themselves, and treating their neighbouring
 	// triangles as opaque blockers creates hard triangle-shaped shadow acne.
-	r.TMin = 0.05f;
+	r.TMin = 0.0005f;
 	r.TMax = maxDist;
 	if (r.TMax <= r.TMin) return 1.0f;
 	// Two independent light leaks used to live in this query.
@@ -377,7 +377,11 @@ float TraceShadowRay(float3 origin, float3 dir, float maxDist, uint sourceInstan
 float3 OffsetRayOrigin(float3 position, float3 geometricNormal, float3 outgoingDirection)
 {
 	const float3 n = normalize(geometricNormal);
-	return position + n * (dot(n, outgoingDirection) >= 0.0f ? 0.05f : -0.05f);
+	// 0.5 mm, in metres. This was 0.05 when world units were centimetres --
+	// the same physical distance, which is what matters: too small and
+	// neighbouring triangles self-intersect, too large and contact shadows and
+	// short-range bounce lift off the surface.
+	return position + n * (dot(n, outgoingDirection) >= 0.0f ? 0.0005f : -0.0005f);
 }
 
 // Integer hash of a world position's bit pattern. Varies per pixel (no two
@@ -429,7 +433,7 @@ float TraceSunVisibility(float3 position, float3 geometricNormal, float3 dir, ui
 		const float angle = 6.283185307f * frac(v + rotAngle);
 		const float radius = sqrt(u);
 		const float3 sampleDir = normalize(dir + 0.00329f * radius * (t * cos(angle) + b * sin(angle)));
-		visibility += TraceShadowRay(OffsetRayOrigin(position, geometricNormal, sampleDir), sampleDir, 100000.0f, sourceInstanceId, sourcePrimitive);
+		visibility += TraceShadowRay(OffsetRayOrigin(position, geometricNormal, sampleDir), sampleDir, 1000.0f, sourceInstanceId, sourcePrimitive);
 	}
 	return visibility * invSunSamples;
 }
@@ -440,7 +444,7 @@ float TraceSunVisibility(float3 position, float3 geometricNormal, float3 dir, ui
 // directly is ~10,000x too small versus what the authored light colors assume.
 float PunctualAttenuation(float distWorldUnits, float rangeWorldUnits)
 {
-	const float distM = 0.01f * distWorldUnits;
+	const float distM = distWorldUnits;
 	const float rangeM = max(0.01f * rangeWorldUnits, 1e-4f);
 	const float distSq = max(distM * distM, 1e-4f);
 	const float win = saturate(1.f - pow(distM / rangeM, 4.f));
@@ -465,7 +469,7 @@ float AreaLightDistance(float centerDistance, float radius)
 // lights keep their authored radius.
 float EffectiveLightRadius(float authoredRadius)
 {
-	return max(authoredRadius, 20.0f); // 20 cm in this renderer's world units
+	return max(authoredRadius, 0.2f); // 20 cm, in metres
 }
 
 // Direct contribution of one point/spot light, including its own shadow ray.
@@ -1325,8 +1329,8 @@ float3 TraceReflection(float3 origin, float3 dir, float3 sunDirToLight, uint lig
 	RayDesc ray;
 	ray.Origin = origin;
 	ray.Direction = dir;
-	ray.TMin = 0.05f;
-	ray.TMax = 100000.f;
+	ray.TMin = 0.0005f;
+	ray.TMax = 1000.f;
 
 	RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES> q;
 	q.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, ray);

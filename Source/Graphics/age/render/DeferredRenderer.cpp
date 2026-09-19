@@ -758,7 +758,7 @@ void DeferredRenderer::RenderShadows(const std::function<void(const Camera&)>& a
 		// Pull the light back just far enough to catch casters above the slice,
 		// and give the ortho a depth range that spans from there through the slice
 		// plus headroom for tall casters (towers) directly overhead.
-		const float castHeadroom = std::min(myShadowSceneRadius, radius * 4.f + 400.f);
+		const float castHeadroom = std::min(myShadowSceneRadius, radius * 4.f + 4.f);   // metres
 		const float backoff = radius + castHeadroom;
 		const float orthoDepth = backoff + radius + 200.f;
 		const Vector3f lightPos{ center.x - fwd.x * backoff,

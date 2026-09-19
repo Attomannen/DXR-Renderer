@@ -21,7 +21,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     float depth = FogDepth.Load(int3(pixel, 0));
     float3 endpoint = FogWorld((pixel + 0.5 - FogJitter) / float2(FogWidth, FogHeight), min(depth, 0.99999));
     float3 delta = endpoint - FogCamera;
-    float distance = length(delta) * 0.01;
+    float distance = length(delta);
     float3 direction = normalize(delta);
     if (depth >= 0.999999) distance = FogMaxDistance;
     float end = min(distance, min(FogMaxDistance, FogVolumeDistance));
@@ -68,7 +68,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             const float t = a + offset * stepLength;
             const float3 samplePos = FogCamera + direction * (t * 100);
             const float cloudShadow = CloudShadowFactor(FogCloudShapeNoise, FogCloudDetailNoise, FogCloudSampler,
-                samplePos * 0.01f, FogSunDirection);
+                samplePos, FogSunDirection);
             scatter += weight * FogSunVisibility(samplePos) * cloudShadow;
         }
         if (transmittance < kMinRemaining) break;

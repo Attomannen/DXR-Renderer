@@ -48,7 +48,7 @@ MATERIAL_STRUCT_BEGIN(MaterialParams)
 	uint   flags;               // MATERIAL_FLAG_*
 	float  ior;                 // glass
 	float  refractionScale;     // glass: screen-space offset strength
-	float  thicknessCm;         // glass: path length for absorption
+	float  thickness;           // glass: path length for absorption, metres
 	float  absorption;          // glass: per metre, tinted by 1 - base colour
 	uint   shadingModel;        // SHADING_MODEL_*
 	float  normalStrength;

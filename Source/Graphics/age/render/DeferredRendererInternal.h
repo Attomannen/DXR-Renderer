@@ -111,9 +111,10 @@ namespace
 	}
 
 	// NRD's internal thresholds (plane distance, blur radii, hit distances)
-	// assume metres; the engine's world unit is the centimetre. Everything NRD
-	// sees -- view matrices, viewZ, hit distances -- is converted.
-	constexpr float kNrdMetersPerUnit = 0.01f;
+	// assume metres, and so does the engine now, so this conversion is an
+	// identity. Kept named rather than deleted at every use: these are exactly
+	// the places a future unit change would have to touch.
+	constexpr float kNrdMetersPerUnit = 1.0f;
 	constexpr float kNrdHitDistanceA = 3.0f;   // REBLUR default, metres
 
 	struct alignas(16) AtmosphereCb

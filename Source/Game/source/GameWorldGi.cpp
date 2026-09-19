@@ -91,7 +91,7 @@ void GameWorld::Impl::CaptureProbeImpl(GraphicsEngine& ge)
 
 		Camera cam;
 		cam.SetTransform(CubemapPrefilter::GetCubemapCameraTransform(face, probePos));
-		cam.SetPerspectiveProjection(90.f, { (float)kProbeRes, (float)kProbeRes }, 1.f, 100000.f);
+		cam.SetPerspectiveProjection(90.f, { (float)kProbeRes, (float)kProbeRes }, 0.01f, 1000.f);
 		gss.SetCamera(cam);
 		gss.UpdateGpuStates(true);
 
@@ -200,7 +200,7 @@ void GameWorld::Impl::CaptureGiProbesImpl(GraphicsEngine& ge)
 
 			Camera cam;
 			cam.SetTransform(CubemapPrefilter::GetCubemapCameraTransform(face, pos));
-			cam.SetPerspectiveProjection(90.f, { (float)kGiFaceRes, (float)kGiFaceRes }, 1.f, 5000.f);
+			cam.SetPerspectiveProjection(90.f, { (float)kGiFaceRes, (float)kGiFaceRes }, 0.01f, 50.f);
 			gss.SetCamera(cam);
 			gss.UpdateGpuStates(true);
 

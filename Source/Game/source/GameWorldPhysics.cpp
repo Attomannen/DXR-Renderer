@@ -459,7 +459,7 @@ void GameWorld::Impl::DrawPhysicsTab()
 	{
 		ImGui::SameLine();
 		ImGui::SetNextItemWidth(160.f);
-		ImGui::SliderFloat("Radius", &physicsWireRadius, 200.f, 20000.f, "%.0f cm", ImGuiSliderFlags_Logarithmic);
+		ImGui::SliderFloat("Radius", &physicsWireRadius, 2.f, 200.f, "%.1f m", ImGuiSliderFlags_Logarithmic);
 	}
 	ImGui::Separator();
 
@@ -489,11 +489,11 @@ void GameWorld::Impl::DrawPhysicsTab()
 	ImGui::Separator();
 	ImGui::TextUnformatted("Debug sphere");
 	ImGui::BeginDisabled(physicsActive); // applied when the simulation is started
-	ImGui::SliderFloat("Sphere radius", &debugBallRadius, 5.f, 400.f, "%.0f cm");
+	ImGui::SliderFloat("Sphere radius", &debugBallRadius, 0.05f, 4.f, "%.2f m");
 	ImGui::SliderFloat("Mass (0 = from volume)", &physicsMass, 0.f, 500.f, "%.1f kg");
 	ImGui::SliderFloat("Bounciness", &physicsRestitution, 0.f, 1.f, "%.2f");
 	ImGui::SliderFloat("Friction", &physicsFriction, 0.f, 2.f, "%.2f");
-	ImGui::SliderFloat("Floor height offset", &physicsFloorOffset, -2000.f, 2000.f, "%.0f cm");
+	ImGui::SliderFloat("Floor height offset", &physicsFloorOffset, -20.f, 20.f, "%.2f m");
 	ImGui::EndDisabled();
 	if (scenePhysicsStaticCount > 0)
 		ImGui::TextDisabled("The scene's static collision is the floor; the offset is unused.");

@@ -55,7 +55,7 @@ void WriteTemporal(uint2 pixel, float4 currentClip, float4 previousClip, bool ob
 	// from the pixel centre instead mixed this frame's jitter into every vector,
 	// which DLSS and NRD read as the whole image moving: visible bouncing.)
 	const float2 motion = valid ? ClipToPixel(previousClip) - ClipToPixel(currentClip) : float2(0,0);
-	const float dz = valid && currentClip.w > 0.0f ? (previousClip.w - currentClip.w) * 0.01f : 0.0f;
+	const float dz = valid && currentClip.w > 0.0f ? (previousClip.w - currentClip.w) : 0.0f;
 	gMotionVectors[pixel] = float4(all(isfinite(motion)) ? clamp(motion, -65504.0f, 65504.0f) : float2(0,0), all(isfinite(dz)) ? dz : 0.0f, 0.0f);
 	// Default the resolve motion to the surface motion; specular-dominated
 	// pixels overwrite it at the end of main() with the virtual image's motion.
@@ -165,7 +165,7 @@ float TraceAmbientOcclusion(float3 position, float3 normal, uint sourceInstanceI
 		const float3 aoDir = normalize(tangent * (cos(phi) * radial) + bitangent * (sin(phi) * radial) + normal * z);
 		RayDesc aoRay;
 		aoRay.Origin = OffsetRayOrigin(position, normal, aoDir); aoRay.Direction = aoDir;
-		aoRay.TMin = 0.05f; aoRay.TMax = max(gAoDistance, 0.05f);
+		aoRay.TMin = 0.0005f; aoRay.TMax = max(gAoDistance, 0.0005f);
 		RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES> aq;
 		aq.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, aoRay);
 		while (aq.Proceed()) {
@@ -258,8 +258,8 @@ void main(uint3 dtid : SV_DispatchThreadID)
 	RayDesc ray;
 	ray.Origin = gCameraOrigin;
 	ray.Direction = dir;
-	ray.TMin = 0.01f;
-	ray.TMax = 100000.f;
+	ray.TMin = 0.0001f;
+	ray.TMax = 1000.f;
 
 	RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES> q;
 	q.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, ray);
@@ -349,7 +349,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
 		RayDesc sr;
 		sr.Origin = OffsetRayOrigin(hs.shadowPosition, hs.geoWorldNormal, gSunDirToLight);
 		sr.Direction = gSunDirToLight;
-		sr.TMin = 0.05f; sr.TMax = 100000.0f;
+		sr.TMin = 0.0005f; sr.TMax = 1000.0f;
 		RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> sq;
 		sq.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, sr);
 		while (sq.Proceed()) {

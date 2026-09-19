@@ -460,8 +460,10 @@ void NavmeshCreationTool::BuildNavmesh()
 
 	for (const auto &object : scene.GetSceneObjects())
 	{
-		// AttoEngine uses 1 unit = 1 cm, while recast uses 1 unit = 1 meter. So we scale our transform by 0.1f so that recast can work on the correct sized mesh
-		const Matrix4x4f& transform = object.second->GetTransform() * Matrix4x4f::CreateFromScale({ 0.1f });
+		// Engine units are metres and so are Recast's, so no scaling. This used
+		// to multiply by 0.1f to reach metres from centimetres, which was itself
+		// wrong -- centimetres to metres is 0.01.
+		const Matrix4x4f& transform = object.second->GetTransform();
 
 		// Todo: reenable with new way of setting up meshes
 		vertexOffset; transform; object;

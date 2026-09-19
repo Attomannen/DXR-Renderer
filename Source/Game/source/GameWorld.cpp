@@ -65,7 +65,7 @@ void GameWorld::Init()
 	s.fallbackCube = s.ambient.cubemap;
 
 	const Vector2ui res = Application::GetInstance()->GetRenderSize();
-	s.camera.SetPerspectiveProjection(s.cameraFov, { (float)res.x, (float)res.y }, 1.f, 100000.f);
+	s.camera.SetPerspectiveProjection(s.cameraFov, { (float)res.x, (float)res.y }, 0.01f, 1000.f);
 	s.cameraProjectionSize = res;
 
 	// Load the scene (instances, bounds, light rig, start camera). Runtime scene
@@ -237,7 +237,7 @@ void GameWorld::Render()
 	const Vector2ui renderSize = Application::GetInstance()->GetRenderSize();
 	if (renderSize != s.cameraProjectionSize && renderSize.x != 0 && renderSize.y != 0)
 	{
-		s.camera.SetPerspectiveProjection(s.cameraFov, { static_cast<float>(renderSize.x), static_cast<float>(renderSize.y) }, 1.f, 100000.f);
+		s.camera.SetPerspectiveProjection(s.cameraFov, { static_cast<float>(renderSize.x), static_cast<float>(renderSize.y) }, 0.01f, 1000.f);
 		s.cameraProjectionSize = renderSize;
 	}
 
@@ -497,15 +497,15 @@ void GameWorld::Render()
 			float ec[3] = { dm.emissiveColor[0], dm.emissiveColor[1], dm.emissiveColor[2] };
 			if (std::max({ ec[0], ec[1], ec[2] }) < 0.001f) { ec[0] = ec[1] = ec[2] = 1.f; }
 
-			// The engine's point/area falloff is 1/distance_metres^2 (world units are
-			// treated as cm). At room scale that makes a naive proxy vanish, so scale
-			// the intensity by (0.01 * refDist)^2 -- refDist ~ sphere-to-far-wall --
+			// The engine's point/area falloff is 1/distance_metres^2, and world units
+			// are metres. At room scale that makes a naive proxy vanish, so scale
+			// the intensity by refDist^2 -- refDist ~ sphere-to-far-wall --
 			// which cancels the falloff at that distance and keeps the lit result
 			// stable whatever the room size. `gain` then reads as emissive efficiency.
 			// refDist ~ the sphere's typical distance to the surface it lights
 			// (spheres orbit near half-extent; walls at full extent -> ~half-extent).
-			const float refDist = std::max({ s.sceneExtents.x, s.sceneExtents.z, 200.f }) * 0.5f;
-			const float distScale = (0.01f * refDist) * (0.01f * refDist);
+			const float refDist = std::max({ s.sceneExtents.x, s.sceneExtents.z, 2.f }) * 0.5f;
+			const float distScale = refDist * refDist;
 			const float kRaw = s.debugEmissiveLightGain * distScale * emStr;
 			const float k = std::min(kRaw, 60.f);   // guard against blow-out on huge rooms / strengths
 			const float proxyRange = refDist * 5.0f;

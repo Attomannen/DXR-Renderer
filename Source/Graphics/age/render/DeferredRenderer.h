@@ -152,7 +152,7 @@ namespace Ag
 		// none). Returns true the frame it actually regenerated (callers use
 		// that to know when to re-run GeneratePrefilteredCubemap on the result).
 		bool UpdateProceduralSky(const Vector3f& aSunDirToLight, const Vector3f& aSunIlluminance,
-		                         float aCameraHeightCm, rhi::SrvHandle aNightSkyCubeSrv);
+		                         float aCameraHeightM, rhi::SrvHandle aNightSkyCubeSrv);
 		rhi::SrvHandle GetProceduralSkyCubemapSrv() const { return mySkyCubemapSrv; }
 		uint32_t GetProceduralSkyCubemapResolution() const { return kSkyCubemapRes; }
 
@@ -232,7 +232,7 @@ namespace Ag
 		// Live-tweakable knobs (debug UI). Read each frame by RenderSSAO / RenderShadows.
 		struct Tunables
 		{
-			float ssaoRadius = 42.f, ssaoBias = 0.6f, ssaoIntensity = 1.5f, ssaoPower = 1.6f;
+			float ssaoRadius = 0.42f, ssaoBias = 0.6f, ssaoIntensity = 1.5f, ssaoPower = 1.6f;
 			float shadowDepthBias = 3.0f;   // world units (/ cascade depth range in shader)
 			float shadowNormalOffset = 2.5f;   // in shadow-texels
 			float shadowStrength = 1.0f;
@@ -241,8 +241,8 @@ namespace Ag
 
 			// Screen-space contact shadows (directional light, in the lighting pass).
 			bool  contactShadows   = true;
-			float contactLength    = 45.0f;    // world units marched toward the sun
-			float contactThickness = 30.0f;    // max depth gap treated as an occluder
+			float contactLength    = 0.45f;    // metres marched toward the sun
+			float contactThickness = 0.3f;     // metres; max depth gap treated as an occluder
 			bool  contactViz       = false;    // debug: show the isolated contact term
 			bool  localShadowViz   = false;    // debug: flag local-shadowed local lights
 			bool  giViz            = false;    // debug: show the raw GI irradiance term
@@ -252,7 +252,7 @@ namespace Ag
 			int   localShadowMaxCasters = 4;   // total shadow-casting local lights
 			int   localShadowMaxPoints  = 2;   // of those, at most this many points (6x cost)
 
-			// Shared atmosphere; scene units are centimeters, UI distances are meters.
+			// Shared atmosphere. Scene units and UI distances are both metres.
 			bool fogEnabled = true;
 			float fogDensity = 0.0015f; // extinction per meter at base height
 			float fogHeightFalloff = 0.025f; // per meter
@@ -490,8 +490,8 @@ namespace Ag
 
 			// --- screen-space reflections ---
 			bool  ssrEnabled        = true;
-			float ssrMaxDistance    = 900.f;   // view-space march length
-			float ssrThickness      = 24.f;    // depth-match tolerance (view units)
+			float ssrMaxDistance    = 9.f;     // view-space march length, metres
+			float ssrThickness      = 0.24f;   // depth-match tolerance, metres
 			float ssrRoughnessCutoff = 0.55f;  // no SSR past this roughness
 			float ssrStrength       = 1.0f;
 			int   ssrSteps          = 48;
@@ -514,7 +514,7 @@ namespace Ag
 			float dxrGiInfiniteBounce = 0.8f;
 			bool  dxrReflections = true;
 			bool  dxrAmbientOcclusion = true;
-			float dxrAoDistance = 80.f;
+			float dxrAoDistance = 0.8f;   // metres
 			float dxrAoStrength = 1.f;
 			// Occlusion rays per pixel. Measured at 1600x900 on Sponza, AO was
 			// the single most expensive term in the DXR frame (~3.1 ms of

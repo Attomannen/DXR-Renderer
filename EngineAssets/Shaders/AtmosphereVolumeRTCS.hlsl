@@ -4,7 +4,7 @@ float FogSunVisibility(float3 world)
 {
     RayDesc ray;
     ray.Origin = world; ray.Direction = FogSunDirection;
-    ray.TMin = 0.01; ray.TMax = 100000;
+    ray.TMin = 0.0001; ray.TMax = 1000;
     RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
     query.TraceRayInline(gScene,RAY_FLAG_NONE,0xFF,ray);
     while (query.Proceed())

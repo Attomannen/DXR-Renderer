@@ -48,7 +48,7 @@ float3 FogWorld(float2 uv, float depth)
 float FogOpticalDepth(float3 direction, float distance)
 {
     float len = max(0, min(distance, FogMaxDistance) - FogStart);
-    float h = (FogCamera.y * 0.01 - FogBaseHeight) + direction.y * FogStart;
+    float h = (FogCamera.y - FogBaseHeight) + direction.y * FogStart;
     float density = FogDensity * exp(clamp(-FogHeightFalloff * h, -20, 20));
     float kdy = FogHeightFalloff * direction.y;
     float opticalDepth;

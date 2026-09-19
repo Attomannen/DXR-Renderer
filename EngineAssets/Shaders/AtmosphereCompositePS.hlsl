@@ -16,7 +16,7 @@ float4 main(FsIn input) : SV_TARGET
     p = max(p,0);
     float depth = FogDepth.Load(int3(p,0));
     float3 delta = FogWorld((p + 0.5 - FogJitter) / float2(FogWidth, FogHeight), min(depth,0.99999)) - FogCamera;
-    float distance = depth >= 0.999999 ? FogMaxDistance : length(delta) * 0.01;
+    float distance = depth >= 0.999999 ? FogMaxDistance : length(delta);
     float transmittance = exp(-FogOpticalDepth(normalize(delta), distance));
     if (depth >= 0.999999 && FogAffectSky == 0)
     {

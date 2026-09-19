@@ -55,7 +55,7 @@ namespace Ag
 		// Glass (surfaceType Transparent)
 		float ior              = 1.52f;
 		float refractionScale  = 1.0f;
-		float thicknessCm      = 12.0f;
+		float thickness        = 0.12f;   // metres
 		float absorption       = 0.08f;
 
 		std::array<std::string, 4> maps{ "", "", "", "" }; // base colour, normal, ORM, emissive
@@ -123,7 +123,7 @@ namespace Ag
 			p.shadingModel = (uint32_t)(IsTransparent() ? ShadingModel::Glass : ShadingModel::DefaultLit);
 			p.ior = ior;
 			p.refractionScale = refractionScale;
-			p.thicknessCm = thicknessCm;
+			p.thickness = thickness;
 			p.absorption = absorption;
 			return p;
 		}
@@ -172,7 +172,9 @@ namespace Ag
 			normalConvention = j.value("normalConvention", normalConvention);
 			ior              = j.value("ior", ior);
 			refractionScale  = j.value("refractionScale", refractionScale);
-			thicknessCm      = j.value("thicknessCm", thicknessCm);
+			// Older materials stored centimetres under "thicknessCm".
+			thickness        = j.contains("thicknessCm") ? j.value("thicknessCm", 12.0f) * 0.01f
+			                                             : j.value("thickness", thickness);
 			absorption       = j.value("absorption", absorption);
 			previewMesh      = j.value("previewMesh", previewMesh);
 			if (j.contains("maps") && j["maps"].is_object())
@@ -215,7 +217,7 @@ namespace Ag
 			j["normalStrength"]   = normalStrength;
 			j["ior"]              = ior;
 			j["refractionScale"]  = refractionScale;
-			j["thicknessCm"]      = thicknessCm;
+			j["thickness"]        = thickness;
 			j["absorption"]       = absorption;
 			j["previewMesh"]      = previewMesh;
 			j["maps"] = {

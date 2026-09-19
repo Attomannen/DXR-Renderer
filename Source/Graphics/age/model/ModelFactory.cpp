@@ -104,7 +104,7 @@ bool ModelFactory::InitUnitCube()
 	{
 		// Front
 		{
-			50.0f, -50.0f, 50.0f,
+			0.5f, -0.5f, 0.5f,
 			0, 0, 1,
 			1, 0, 0,
 			0, -1, 0,
@@ -112,7 +112,7 @@ bool ModelFactory::InitUnitCube()
 			0, 1
 		},
 		{
-			50.0f, 50.0f, 50.0f,
+			0.5f, 0.5f, 0.5f,
 			0, 0, 1,
 			1, 0, 0,
 			0, -1, 0,
@@ -120,7 +120,7 @@ bool ModelFactory::InitUnitCube()
 			0, 0
 		},
 		{
-			-50.0f, 50.0f, 50.0f,
+			-0.5f, 0.5f, 0.5f,
 			0, 0, 1,
 			1, 0, 0,
 			0, -1, 0,
@@ -128,7 +128,7 @@ bool ModelFactory::InitUnitCube()
 			1, 0
 		},
 		{
-			-50.0f, -50.0f, 50.0f,
+			-0.5f, -0.5f, 0.5f,
 			0, 0, 1,
 			1, 0, 0,
 			0, -1, 0,
@@ -138,7 +138,7 @@ bool ModelFactory::InitUnitCube()
 
 		// Left
 		{
-			-50.0f, -50.0f, 50.0f,
+			-0.5f, -0.5f, 0.5f,
 			-1, 0, 0,
 			0, 0, 1,
 			0, -1, 0,
@@ -146,7 +146,7 @@ bool ModelFactory::InitUnitCube()
 			0, 1
 		},
 		{
-			-50.0f, 50.0f, 50.0f,
+			-0.5f, 0.5f, 0.5f,
 			-1, 0, 0,
 			0, 0, 1,
 			0, -1, 0,
@@ -154,7 +154,7 @@ bool ModelFactory::InitUnitCube()
 			0, 0
 		},
 		{
-			-50.0f, 50.0f, -50.0f,
+			-0.5f, 0.5f, -0.5f,
 			-1, 0, 0,
 			0, 0, 1,
 			0, -1, 0,
@@ -162,7 +162,7 @@ bool ModelFactory::InitUnitCube()
 			1, 0
 		},
 		{
-			-50.0f, -50.0f, -50.0f,
+			-0.5f, -0.5f, -0.5f,
 			-1, 0, 0,
 			0, 0, 1,
 			0, -1, 0,
@@ -172,7 +172,7 @@ bool ModelFactory::InitUnitCube()
 
 		// Back
 		{
-			-50.0f, -50.0f, -50.0f,
+			-0.5f, -0.5f, -0.5f,
 			0, 0, -1,
 			1, 0, 0,
 			0, -1, 0,
@@ -180,7 +180,7 @@ bool ModelFactory::InitUnitCube()
 			0, 1
 		},
 		{
-			-50.0f, 50.0f, -50.0f,
+			-0.5f, 0.5f, -0.5f,
 			0, 0, -1,
 			1, 0, 0,
 			0, -1, 0,
@@ -188,7 +188,7 @@ bool ModelFactory::InitUnitCube()
 			0, 0
 		},
 		{
-			50.0f, 50.0f, -50.0f,
+			0.5f, 0.5f, -0.5f,
 			0, 0, -1,
 			1, 0, 0,
 			0, -1, 0,
@@ -196,7 +196,7 @@ bool ModelFactory::InitUnitCube()
 			1, 0
 		},
 		{
-			50.0f, -50.0f, -50.0f,
+			0.5f, -0.5f, -0.5f,
 			0, 0, -1,
 			1, 0, 0,
 			0, -1, 0,
@@ -206,7 +206,7 @@ bool ModelFactory::InitUnitCube()
 
 		// Right
 		{
-			50.0f, -50.0f, -50.0f,
+			0.5f, -0.5f, -0.5f,
 			1, 0, 0,
 			0, 0, -1,
 			0, -1, 0,
@@ -214,7 +214,7 @@ bool ModelFactory::InitUnitCube()
 			0, 1
 		},
 		{
-			50.0f, 50.0f, -50.0f,
+			0.5f, 0.5f, -0.5f,
 			1, 0, 0,
 			0, 0, -1,
 			0, -1, 0,
@@ -222,7 +222,7 @@ bool ModelFactory::InitUnitCube()
 			0, 0
 		},
 		{
-			50.0f, 50.0f, 50.0f,
+			0.5f, 0.5f, 0.5f,
 			1, 0, 0,
 			0, 0, -1,
 			0, -1, 0,
@@ -230,7 +230,7 @@ bool ModelFactory::InitUnitCube()
 			, 1, 0
 		},
 		{
-			50.0f, -50.0f, 50.0f,
+			0.5f, -0.5f, 0.5f,
 			1, 0, 0,
 			0, 0, -1,
 			0, -1, 0,
@@ -240,7 +240,7 @@ bool ModelFactory::InitUnitCube()
 
 		// Top
 		{
-			50.0f, 50.0f, 50.0f,
+			0.5f, 0.5f, 0.5f,
 			0, 1, 0,
 			1, 0, 0,
 			0, 0, 1,
@@ -248,7 +248,7 @@ bool ModelFactory::InitUnitCube()
 			0, 1
 		},
 		{
-			50.0f, 50.0f, -50.0f,
+			0.5f, 0.5f, -0.5f,
 			0, 1, 0,
 			1, 0, 0,
 			0, 0, 1,
@@ -256,7 +256,7 @@ bool ModelFactory::InitUnitCube()
 			0, 0
 		},
 		{
-			-50.0f, 50.0f, -50.0f,
+			-0.5f, 0.5f, -0.5f,
 			0, 1, 0,
 			1, 0, 0,
 			0, 0, 1,
@@ -264,7 +264,7 @@ bool ModelFactory::InitUnitCube()
 			1, 0
 		},
 		{
-			-50.0f, 50.0f, 50.0f,
+			-0.5f, 0.5f, 0.5f,
 			0, 1, 0,
 			1, 0, 0,
 			0, 0, 1,
@@ -274,7 +274,7 @@ bool ModelFactory::InitUnitCube()
 
 		// Bottom
 		{
-			-50.0f, -50.0f, 50.0f,
+			-0.5f, -0.5f, 0.5f,
 			0, -1, 0,
 			1, 0, 0,
 			0, 0, 1,
@@ -282,7 +282,7 @@ bool ModelFactory::InitUnitCube()
 			0, 1
 		},
 		{
-			-50.0f, -50.0f, -50.0f,
+			-0.5f, -0.5f, -0.5f,
 			0, -1, 0,
 			1, 0, 0,
 			0, 0, 1,
@@ -290,7 +290,7 @@ bool ModelFactory::InitUnitCube()
 			0, 0
 		},
 		{
-			50.0f, -50.0f, -50.0f,
+			0.5f, -0.5f, -0.5f,
 			0, -1, 0,
 			1, 0, 0,
 			0, 0, 1,
@@ -298,7 +298,7 @@ bool ModelFactory::InitUnitCube()
 			1, 0
 		},
 		{
-			50.0f, -50.0f, 50.0f,
+			0.5f, -0.5f, 0.5f,
 			0, -1, 0,
 			1, 0, 0,
 			0, 0, 1,
@@ -366,7 +366,7 @@ bool ModelFactory::InitUnitPlane()
 	Model::MeshData meshData = {};
 
 	meshData.vertices.push_back({
-		-50.0f, 0.0f, 50.0f,
+		-0.5f, 0.0f, 0.5f,
 		0, 1, 0,
 		1, 0, 0,
 		0, 0, 1,
@@ -375,7 +375,7 @@ bool ModelFactory::InitUnitPlane()
 		});
 
 	meshData.vertices.push_back({
-		50.0f, 0.0f, 50.0f,
+		0.5f, 0.0f, 0.5f,
 		0, 1, 0,
 		1, 0, 0,
 		0, 0, 1,
@@ -384,7 +384,7 @@ bool ModelFactory::InitUnitPlane()
 		});
 
 	meshData.vertices.push_back({
-		50.0f, 0.0f, -50.0f,
+		0.5f, 0.0f, -0.5f,
 		0, 1, 0,
 		1, 0, 0,
 		0, 0, 1,
@@ -393,7 +393,7 @@ bool ModelFactory::InitUnitPlane()
 		});
 
 	meshData.vertices.push_back({
-		-50.0f, 0.0f, -50.0f,
+		-0.5f, 0.0f, -0.5f,
 		0, 1, 0,
 		1, 0, 0,
 		0, 0, 1,
@@ -477,8 +477,8 @@ bool ModelFactory::InitUnitCone()
 	// Apex at +Y (y=+50), base ring radius 50 at y=-50, plus a base cap. Matches
 	// the ±50 convention of the other built-ins. +Y up.
 	constexpr int kSegments = 32;
-	constexpr float kRadius = 50.0f;
-	constexpr float kHalf = 50.0f;
+	constexpr float kRadius = 0.5f;
+	constexpr float kHalf = 0.5f;
 	const float kSlant = std::sqrt(kRadius * kRadius + (2.0f * kHalf) * (2.0f * kHalf));
 
 	Model::MeshData meshData = {};
@@ -529,8 +529,8 @@ bool ModelFactory::InitUnitTorus()
 	// the XZ plane, +Y up.
 	constexpr int kMajor = 48;
 	constexpr int kMinor = 20;
-	constexpr float kMajorR = 35.0f;
-	constexpr float kMinorR = 15.0f;
+	constexpr float kMajorR = 0.35f;
+	constexpr float kMinorR = 0.15f;
 	constexpr float kTwoPi = 6.28318530718f;
 
 	Model::MeshData meshData = {};
@@ -568,7 +568,7 @@ bool ModelFactory::InitUnitSphere()
 	// UV sphere, radius 50, +Y up.
 	constexpr int kRings = 32;   // latitude
 	constexpr int kSegs = 48;    // longitude
-	constexpr float kR = 50.0f;
+	constexpr float kR = 0.5f;
 	constexpr float kPi = 3.14159265358979f;
 	constexpr float kTwoPi = 6.28318530718f;
 
@@ -606,8 +606,8 @@ bool ModelFactory::InitUnitCylinder()
 {
 	// Radius 50, height 100 (y in [-50,50]), +Y up, with end caps.
 	constexpr int kSegs = 48;
-	constexpr float kR = 50.0f;
-	constexpr float kHalf = 50.0f;
+	constexpr float kR = 0.5f;
+	constexpr float kHalf = 0.5f;
 	constexpr float kTwoPi = 6.28318530718f;
 
 	Model::MeshData meshData = {};
@@ -1039,7 +1039,10 @@ namespace
 	//
 	// The version bump invalidates existing caches: the first load of each model
 	// after this re-imports its FBX once, then every load after is fast.
-	constexpr uint32_t kMeshCacheVersion = 5u;
+	// 6: vertex positions are metres, not centimetres (FBX import now sets
+	// ufbx target_unit_meters). Every cache written before this holds cm and
+	// must be rebuilt, hence the bump.
+	constexpr uint32_t kMeshCacheVersion = 6u;
 
 	// Most static meshes only use position / normal / tangent / binormal / uv0.
 	// Those are stored as 15 floats/vertex instead of the full ~208-byte Vertex.
@@ -1664,7 +1667,15 @@ std::shared_ptr<Model> ModelFactory::LoadModel(StringId someFilePath)
 	ufbx_load_opts opts =
 	{
 		.generate_missing_normals = true,
+		// One world unit is one metre. FBX files are almost always authored in
+		// centimetres (ufbx reports unit_meters = 0.01), and the engine used to
+		// take those numbers verbatim, which is where "1 unit = 1 cm" came from.
+		// MODIFY_GEOMETRY bakes the scale into the vertices rather than leaving
+		// it on the root node, so meshes are metric by the time anything else
+		// sees them -- including the mesh cache.
+		.space_conversion = UFBX_SPACE_CONVERSION_MODIFY_GEOMETRY,
 		.target_axes = FBX_AXIS,
+		.target_unit_meters = 1.0f,
 	};
 
 
@@ -1983,7 +1994,11 @@ std::shared_ptr<const Animation> ModelFactory::GetAnimation(
 		return it->second;
 
 	ufbx_load_opts opts = {
+		// Animation translations are in the same space as the mesh; see the
+		// loader above.
+		.space_conversion = UFBX_SPACE_CONVERSION_MODIFY_GEOMETRY,
 		.target_axes = FBX_AXIS,
+		.target_unit_meters = 1.0f,
 	};
 	ufbx_error error;
 	ufbx_scene* scene = ufbx_load_file(resolvedPath.GetData(), &opts, &error);

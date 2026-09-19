@@ -46,8 +46,8 @@ void main(uint3 id : SV_DispatchThreadID)
 	RayDesc primary; 
 	primary.Origin = gCameraOrigin; 
 	primary.Direction = primaryDir; 
-	primary.TMin = 0.01f; 
-	primary.TMax = 100000.0f;
+	primary.TMin = 0.0001f; 
+	primary.TMax = 1000.0f;
 	
 	RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES | RAY_FLAG_FORCE_OPAQUE> primaryQ;
 	primaryQ.TraceRayInline(gScene, RAY_FLAG_NONE, 0xff, primary); 
@@ -83,8 +83,8 @@ void main(uint3 id : SV_DispatchThreadID)
 	RayDesc aoRay; 
 	aoRay.Origin = origin; 
 	aoRay.Direction = rayDirWorld; 
-	aoRay.TMin = 0.01f; 
-	aoRay.TMax = max(gAoRadius, 1.5f); // Local occlusion radius
+	aoRay.TMin = 0.0001f; 
+	aoRay.TMax = max(gAoRadius, 0.015f); // Local occlusion radius, metres
 	
 	RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
 	q.TraceRayInline(gScene, RAY_FLAG_NONE, 0xff, aoRay); 

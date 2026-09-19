@@ -36,7 +36,7 @@ float3x3 GetTangentBasis(float3 n)
  if(any(id.xy>=gSize)) return;
  float2 uv=(float2(id.xy)+.5)/gSize; float2 ndc=float2(uv.x*2-1,1-uv.y*2);
  float3 primaryDir=normalize(gCameraForward+gCameraRight*(ndc.x*gAspect*gTanHalfFovY)+gCameraUp*(ndc.y*gTanHalfFovY));
- RayDesc primary; primary.Origin=gCameraOrigin; primary.Direction=primaryDir; primary.TMin=.01; primary.TMax=100000;
+ RayDesc primary; primary.Origin=gCameraOrigin; primary.Direction=primaryDir; primary.TMin=.0001; primary.TMax=1000;
  RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES|RAY_FLAG_FORCE_OPAQUE> primaryQ;
  primaryQ.TraceRayInline(gScene,RAY_FLAG_NONE,0xff,primary); while(primaryQ.Proceed()){}
  if(primaryQ.CommittedStatus()!=COMMITTED_TRIANGLE_HIT){gOut[id.xy]=1;return;}
@@ -62,7 +62,7 @@ float3x3 GetTangentBasis(float3 n)
  float3x3 sunBasis = GetTangentBasis(normalize(gSunDirToLight));
  float3 jitteredDir = normalize(normalize(gSunDirToLight) + (sunBasis[0] * diskPos.x * tanRadius) + (sunBasis[1] * diskPos.y * tanRadius));
 
- RayDesc r; r.Origin=origin; r.Direction=jitteredDir; r.TMin=0.0f; r.TMax=100000;
+ RayDesc r; r.Origin=origin; r.Direction=jitteredDir; r.TMin=0.0f; r.TMax=1000;
  // Shadow visibility must see both windings. Imported Sponza meshes are not
  // guaranteed to retain a consistent winding relative to raster culling.
  RayQuery<RAY_FLAG_FORCE_OPAQUE|RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;

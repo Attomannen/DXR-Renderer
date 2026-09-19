@@ -60,7 +60,7 @@ PixelOutput main(ModelVertexToPixel input)
 	}
 	else
 		scene = opaqueSceneTexture.SampleLevel(defaultSampler, refractedUv, 0).rgb;
-	const float thicknessMetres = max(m.thicknessCm, 0.0f) * 0.01f;
+	const float thicknessMetres = max(m.thickness, 0.0f);
 	const float3 transmittance = exp(-max(m.absorption, 0.0f) * thicknessMetres
 		* max(1.0f - surface.baseColor, 0.02f));
 	const float f0 = pow((ior - 1.0f) / (ior + 1.0f), 2.0f);

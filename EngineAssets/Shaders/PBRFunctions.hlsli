@@ -184,7 +184,7 @@ float3 EvaluatePointLight(float3 albedoColor, float3 specularColor, float3 norma
 {
     // Compute som useful values
     float3 lightDir = lightPos.xyz - pixelPos.xyz;
-    float lightDistance = 0.01f*length(lightDir);
+    float lightDistance = length(lightDir);
     lightDir = normalize(lightDir);
 	
     float NdL = saturate(dot(normal, lightDir));
@@ -197,7 +197,7 @@ float3 EvaluatePointLight(float3 albedoColor, float3 specularColor, float3 norma
     float3 cDiff = Diffuse(albedoColor);
     float3 cSpec = Specular(specularColor, h, viewDir, a, NdL, NdV, NdH);
 
-    float ue4Attenuation = ((pow(saturate(1 - pow(lightDistance / (0.01f * lightRange), 4.0f)), 2.0f)) / (pow(lightDistance, 2.0f) + 0.01f)); // Unreal Engine 4 attenuation
+    float ue4Attenuation = ((pow(saturate(1 - pow(lightDistance / lightRange, 4.0f)), 2.0f)) / (pow(lightDistance, 2.0f) + 0.01f)); // Unreal Engine 4 attenuation
     float attenuation = ue4Attenuation * lambert;
 
     return lightColor * attenuation * ((cDiff + cSpec) * PI);
@@ -214,7 +214,7 @@ float3 EvaluateSpotLight(float3 albedoColor, float3 specularColor, float3 normal
     float3 lightPos, float3 lightDir, float outerAngle, float innerAngle, float3 viewDir, float3 pixelPos)
 {
     float3 toLight = lightPos.xyz - pixelPos.xyz;
-    float lightDistance = 0.01f * length(toLight);
+    float lightDistance = length(toLight);
     toLight = normalize(toLight);
 
     float NdL = saturate(dot(normal, toLight));
@@ -238,7 +238,7 @@ float3 EvaluateSpotLight(float3 albedoColor, float3 specularColor, float3 normal
     float intensity = clamp((theta - cosOuterAngle) / epsilon, 0.0f, 1.0f);
     intensity *= intensity;
 	
-    float ue4Attenuation = ((pow(saturate(1 - pow(lightDistance / (0.01f * lightRange), 4.0f)), 2.0f)) / (pow(lightDistance, 2.0f) + 0.01f)); // Unreal Engine 4 attenuation
+    float ue4Attenuation = ((pow(saturate(1 - pow(lightDistance / lightRange, 4.0f)), 2.0f)) / (pow(lightDistance, 2.0f) + 0.01f)); // Unreal Engine 4 attenuation
     float finalAttenuation = lambert * intensity * ue4Attenuation;
 
     return lightColor * finalAttenuation * ((cDiff + cSpec) * PI);
@@ -535,7 +535,7 @@ float3 EvaluatePointLight(float3 albedoColor, float3 specularColor, float3 norma
 {
     // Compute som useful values
     float3 lightDir = lightPos.xyz - pixelPos.xyz;
-    float lightDistance = 0.01f * length(lightDir); // centimeter to meter
+    float lightDistance = length(lightDir);
     lightDir = normalize(lightDir);
 	
     float NdL = saturate(dot(normal, lightDir));
@@ -557,7 +557,7 @@ float3 EvaluatePointLight(float3 albedoColor, float3 specularColor, float3 norma
     cDiff *= specDiffScale.y;
 #endif
     
-    float rangeFactor = lightDistance / (0.01f * lightRange);
+    float rangeFactor = lightDistance / lightRange;
     rangeFactor *= rangeFactor;
     rangeFactor *= rangeFactor;
 
@@ -574,7 +574,7 @@ float3 EvaluateSoftAreaLight(float3 albedoColor, float3 specularColor, float3 no
 {
     // Compute som useful values
     float3 lightDir = lightPos.xyz - pixelPos.xyz;
-    float lightDistance = 0.01f*length(lightDir);
+    float lightDistance = length(lightDir);
     lightDir = normalize(lightDir);
 
     float NdL;
@@ -582,8 +582,8 @@ float3 EvaluateSoftAreaLight(float3 albedoColor, float3 specularColor, float3 no
     float3 h = normalize(lightDir + viewDir);
     float NdH = saturate(dot(normal, h));
 
-    float radiusMeter = 0.01f * lightRadius;
-    float rangeMeter = 0.01f * lightRange;
+    float radiusMeter = lightRadius;
+    float rangeMeter = lightRange;
 
     // Approximation of normal distribution area light, derived by Bjorn Ottosson
     // instead of taking dot product between normal and light and dividing by square distance
@@ -655,7 +655,7 @@ float3 EvaluateSpotLight(float3 albedoColor, float3 specularColor, float3 normal
     float3 lightPos, float3 lightDir, float outerAngle, float innerAngle, float3 viewDir, float3 pixelPos)
 {
     float3 toLight = lightPos.xyz - pixelPos.xyz;
-    float lightDistance = 0.01f * length(toLight); // centimeter to meterz
+    float lightDistance = length(toLight);
     toLight = normalize(toLight);
 
     float NdL = saturate(dot(normal, toLight));
@@ -688,7 +688,7 @@ float3 EvaluateSpotLight(float3 albedoColor, float3 specularColor, float3 normal
     float intensity = clamp((theta - cosOuterAngle) / epsilon, 0.0f, 1.0f);
     intensity *= intensity;
 	
-    float rangeFactor = lightDistance / (0.01f * lightRange);
+    float rangeFactor = lightDistance / lightRange;
     rangeFactor *= rangeFactor;
     rangeFactor *= rangeFactor;
 

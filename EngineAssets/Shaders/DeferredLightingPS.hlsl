@@ -352,7 +352,7 @@ float ContactShadow(float3 viewPos, float3 Lview, float2 uv)
 		// >0 : the ray has passed behind a surface. Min threshold scales with the
 		// ray point's own depth so grazing floors don't self-occlude at distance.
 		float delta = p.z - sceneZ;
-		float minGap = max(0.05f, p.z * 0.004f);
+		float minGap = max(0.0005f, p.z * 0.004f);   // 0.5 mm floor, in metres
 		if (delta > minGap && delta < gContactThickness)
 		{
 			occ = 1.0f - (float)i / (float)kSteps;   // soft toward the ray tip

@@ -95,8 +95,8 @@ void SceneDocument::Init(std::string_view path)
 			(float)resolution.x,
 			(float)resolution.y
 		},
-		0.1f,
-		50000.0f
+		0.01f,
+		5000.0f
 	);
 
 	Vector3f cameraRotation = { 45, 45, 0 };

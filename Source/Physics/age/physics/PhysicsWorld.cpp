@@ -40,8 +40,13 @@ namespace Ag
 
 	namespace
 	{
-		constexpr float kCmToM = 0.01f;
-		constexpr float kMToCm = 100.f;
+		// Engine units are metres, and so are Jolt's, so this boundary no longer
+		// converts anything. Kept as named identities rather than deleted at
+		// every call site: the conversion points are exactly where a future
+		// unit mistake would land, and they document that the agreement is
+		// deliberate rather than accidental.
+		constexpr float kCmToM = 1.0f;
+		constexpr float kMToCm = 1.0f;
 
 		namespace Layers
 		{
@@ -697,19 +702,19 @@ namespace Ag
 
 		PhysicsShapeDesc floorShape;
 		floorShape.type = PhysicsShapeType::Box;
-		floorShape.halfExtents = { 1000.f, 10.f, 1000.f };
+		floorShape.halfExtents = { 10.f, 0.1f, 10.f };   // 20 x 0.2 x 20 m
 		PhysicsShapeDesc boxShape;
 		boxShape.type = PhysicsShapeType::Box;
-		boxShape.halfExtents = { 50.f, 50.f, 50.f };
+		boxShape.halfExtents = { 0.5f, 0.5f, 0.5f };     // a 1 m cube
 
 		PhysicsBodyDesc floor;
 		floor.shape = world.CreateShape(floorShape);
 		floor.motion = PhysicsMotion::Static;
-		floor.position = { 0.f, -10.f, 0.f }; // top face at y = 0
+		floor.position = { 0.f, -0.1f, 0.f }; // top face at y = 0
 		PhysicsBodyDesc box;
 		box.shape = world.CreateShape(boxShape);
 		box.motion = PhysicsMotion::Dynamic;
-		box.position = { 0.f, 500.f, 0.f };
+		box.position = { 0.f, 5.f, 0.f };                // dropped from 5 m
 
 		if (!world.CreateBody(floor).IsValid())
 			return false;
@@ -725,7 +730,10 @@ namespace Ag
 		PhysicsQuat rotation;
 		if (!world.GetTransform(falling, position, rotation))
 			return false;
-		// Resting on the floor puts the box centre half a box height above y = 0.
-		return position.y > 45.f && position.y < 55.f;
+		// Resting on the floor puts the box centre half a box height above y = 0,
+		// i.e. 0.5 m. This doubles as the unit canary: if world units ever stop
+		// being metres, Jolt (which is always metric) reports a different rest
+		// height and this fails loudly at startup.
+		return position.y > 0.45f && position.y < 0.55f;
 	}
 }

@@ -20,8 +20,8 @@ cbuffer SsrParams : register(b8)
 	float4x4 gProjToView;
 	float4x4 gWorldToView;
 	float2   gScreen;
-	float    gMaxDistance;      // view-space march length
-	float    gThickness;        // depth-match tolerance (view units)
+	float    gMaxDistance;      // view-space march length, metres
+	float    gThickness;        // depth-match tolerance, metres
 
 	float    gRoughnessCutoff;  // no SSR past this roughness
 	float    gStrength;         // global multiplier
@@ -76,7 +76,7 @@ float4 main(FsIn i) : SV_TARGET
 		float sd = GBufferDepth.SampleLevel(PointClamp, uv, 0).r;
 		float sceneZ = ViewPosFromDepth(uv, sd).z;
 		float delta = p.z - sceneZ;                       // >0 : ray is behind a surface
-		if (delta > 0.02f && delta < gThickness)
+		if (delta > 0.0002f && delta < gThickness)   // 0.2 mm in metres
 		{
 			hit = true; hitUv = uv; hitW = w;
 			// --- binary refine ---

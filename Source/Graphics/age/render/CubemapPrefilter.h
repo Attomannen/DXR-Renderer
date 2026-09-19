@@ -90,7 +90,7 @@ namespace Ag
 
         static Matrix4x4f GetCubemapCameraTransform(uint32_t faceIndex, const Vector3f& position);
         static Matrix4x4f GetCubemapViewMatrix(uint32_t faceIndex, const Vector3f& position);
-        static Matrix4x4f GetCubemapProjectionMatrix(float nearPlane = 0.1f, float farPlane = 50000.0f);
+        static Matrix4x4f GetCubemapProjectionMatrix(float nearPlane = 0.01f, float farPlane = 5000.0f);
 
         bool GeneratePrefilteredCubemap(
             rhi::SrvHandle baseCubemapSrv,

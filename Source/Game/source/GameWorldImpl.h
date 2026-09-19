@@ -109,13 +109,13 @@ struct GameWorld::Impl
 
 	Vector3f sceneCenter{ 0,0,0 };
 	Vector3f sceneExtents{ 1000,1000,1000 };
-	float    orbitRadius = 800.f;
+	float    orbitRadius = 8.f;
 
 	// ---- free-fly state
 	Vector3f camPos{ 0, 200, -800 };
 	Vector3f camRot{ 10, 0, 0 };          // pitch, yaw, roll (deg)
 	bool     mouseTrapped = false;
-	float    flySpeed = 600.f;
+	float    flySpeed = 6.f;
 
 	// ---- bench state
 	int   frame = 0;
@@ -221,7 +221,7 @@ struct GameWorld::Impl
 	std::string debugMatLoadedMaps;      // maps currently bound to the preview spheres
 	bool DebugBallIsGlass() const { return debugMat.IsTransparent(); }
 	Vector3f debugBallPos{ 0.f, 0.f, 0.f };
-	float debugBallRadius = 45.f;      // desired world-space radius
+	float debugBallRadius = 0.45f;     // desired world-space radius, metres
 	float debugBallModelRadius = 1.f;  // FBX bounds radius (from the model)
 	float debugBallModelExtent = 1.f;  // FBX half-size of the sphere itself; the bounds radius is larger (box diagonal)
 	bool debugBallFollowCam = true;
@@ -235,7 +235,7 @@ struct GameWorld::Impl
 	std::vector<ModelInstance> orbitBalls;   // pool, sized kMaxOrbitBalls at load
 	bool  showOrbitBalls = false;
 	int   orbitBallCount = 4;
-	float orbitBallRadius = 60.f;    // world radius of each orbiting sphere
+	float orbitBallRadius = 0.6f;    // world radius of each orbiting sphere, metres
 	float orbitPathRadius = 0.f;     // 0 => auto from scene extents
 	float orbitHeight = 0.f;         // vertical offset from scene centre
 	float orbitSpeed = 0.4f;         // radians / second
@@ -310,11 +310,11 @@ struct GameWorld::Impl
 	// the saved point. Default when a camera is saved is "spin". No saved camera
 	// -> auto orbit around a point low in the scene.
 	// "bob" holds the saved position, pitches it by camBobPitch and moves it
-	// up and down by +/- camBobCm over the run (vertical translation only, for
+	// up and down by +/- camBobM over the run (vertical translation only, for
 	// sky / cloud reprojection tests).
 	enum class CamMode { Fixed, Spin, Orbit, Bob } camMode = CamMode::Orbit;
 	float camSpinDeg = 35.f;   // BENCH_SPIN: half-sweep for "spin" mode
-	float camBobCm = 300.f;    // BENCH_BOB: half-amplitude of the vertical bob, cm
+	float camBobM = 3.f;       // BENCH_BOB: half-amplitude of the vertical bob, metres
 	int   camBobHoldFrames = 200; // BENCH_BOB_HOLD: frames held still (history converges, first screenshot) before the bob starts
 	float camBobPitch = -35.f; // BENCH_BOB_PITCH: degrees added to the saved pitch (negative = up, matching the orbit camera)
 	// Set when the matching BENCH_SUN_* env var was present, so the scene's
@@ -415,7 +415,7 @@ struct GameWorld::Impl
 	float physicsMass = 0.f;              // kg, 0 = from volume
 	float physicsRestitution = 0.5f;
 	float physicsFriction = 0.5f;
-	float physicsFloorOffset = 0.f;       // cm above the bottom of the scene bounds
+	float physicsFloorOffset = 0.f;       // metres above the bottom of the scene bounds
 	// BENCH_PHYSICS=1: start the simulation as soon as the scene has physics and log the
 	// first prop's height once a second, for checking without the UI.
 	bool physicsAutoStart = false;
@@ -475,7 +475,7 @@ struct GameWorld::Impl
 	void ApplyCameraFov(float fov);
 
 	bool showPhysicsWireframe = false;    // draw collision edges (green static, orange awake, blue asleep)
-	float physicsWireRadius = 3000.f;     // only near the camera; a level mesh has far too many edges
+	float physicsWireRadius = 30.f;       // metres; only near the camera, a level mesh has far too many edges
 	Ag::PhysicsDebugLines physicsWireLines;
 	void DrawPhysicsOverlay();
 	bool physicsIncludeBall = true;       // drop the debug sphere with the scene's props

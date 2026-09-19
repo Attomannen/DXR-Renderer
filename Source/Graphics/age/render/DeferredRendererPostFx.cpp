@@ -115,12 +115,14 @@ void DeferredRenderer::PostFxFullscreen(const PixelShader* aPs, RenderTarget& aD
 			const float f = std::max(1.f, t.dofFocalLength);
 			const float pixelsPerMm = (float)myResolution.x / 36.f;   // 35 mm sensor width
 			c.dofCocScale = (f * f) / (std::max(0.7f, t.dofAperture) * std::max(1.f, focusMm - f)) * pixelsPerMm;
-			// In ENGINE units, not metres. myNear/myFar are centimetres, so the
+			// In engine units, which are metres. myNear/myFar are metres, so the
 			// shader's linearised depth is centimetres too; handing it a focus
 			// distance in metres made everything a hundred times out of focus
 			// and nothing in the frame was ever sharp. The tunable stays in
 			// metres because that is what a focus dial reads.
-			c.dofFocusDistance = std::max(0.01f, t.dofFocusDistance) * 100.f;
+			// Linearised depth is metres now, same as the tunable, so this no longer
+			// converts. It used to multiply by 100 to reach the centimetre domain.
+			c.dofFocusDistance = std::max(0.01f, t.dofFocusDistance);
 			c.dofMaxRadius = std::max(1.f, t.dofMaxRadius);
 			c.dofEnabled = t.dofEnabled ? 1.f : 0.f;
 			c.dofNear = myNear; c.dofFar = myFar;

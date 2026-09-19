@@ -272,7 +272,7 @@ void MaterialDocument::DrawProperties()
 		Ag::InspectorPropertyLabel("Opacity"); Ag::InspectorPropertyValue(); changed |= ImGui::SliderFloat("##Opacity", &myMaterial.opacity, 0.f, 1.f, "%.2f");
 		Ag::InspectorPropertyLabel("Index of Refraction"); Ag::InspectorPropertyValue(); changed |= ImGui::SliderFloat("##Ior", &myMaterial.ior, 1.01f, 2.5f, "%.3f");
 		Ag::InspectorPropertyLabel("Refraction Strength"); Ag::InspectorPropertyValue(); changed |= ImGui::SliderFloat("##Refraction", &myMaterial.refractionScale, 0.f, 3.f, "%.2f");
-		Ag::InspectorPropertyLabel("Thickness (cm)"); Ag::InspectorPropertyValue(); changed |= ImGui::SliderFloat("##Thickness", &myMaterial.thicknessCm, 0.f, 100.f, "%.1f");
+		Ag::InspectorPropertyLabel("Thickness (cm)"); Ag::InspectorPropertyValue(); changed |= ImGui::SliderFloat("##Thickness", &myMaterial.thickness, 0.f, 1.f, "%.3f m");
 		Ag::InspectorPropertyLabel("Absorption", "Tinted by 1 - base colour."); Ag::InspectorPropertyValue(); changed |= ImGui::SliderFloat("##Absorption", &myMaterial.absorption, 0.f, 4.f, "%.2f");
 	}
 

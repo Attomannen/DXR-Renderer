@@ -184,7 +184,7 @@ void DeferredRenderer::RenderSkyCubemap(rhi::SrvHandle aNightSkyCubeSrv)
 }
 
 bool DeferredRenderer::UpdateProceduralSky(const Vector3f& aSunDirToLight, const Vector3f& aSunIlluminance,
-                                           float aCameraHeightCm, rhi::SrvHandle aNightSkyCubeSrv)
+                                           float aCameraHeightM, rhi::SrvHandle aNightSkyCubeSrv)
 {
 	if (!myTunables.proceduralSkyEnabled || !mySkyTransmittanceLutCS || !mySkyMultiScatterLutCS ||
 	    !mySkyViewLutCS || !mySkyCubemapPs || !mySkyConstantsCb.IsValid() || !mySkyCubemapSrv.IsValid())
@@ -193,7 +193,7 @@ bool DeferredRenderer::UpdateProceduralSky(const Vector3f& aSunDirToLight, const
 	const float turbidity = std::max(0.1f, myTunables.atmosphereTurbidity);
 	const float groundAlbedo = std::clamp(myTunables.groundAlbedo, 0.f, 1.f);
 	// Same cm -> m convention the height-fog code already uses (AtmosphereCommon.hlsli).
-	const float cameraHeightM = std::max(0.f, aCameraHeightCm * 0.01f);
+	const float cameraHeightM = std::max(0.f, aCameraHeightM);
 
 	const bool fixedLutsDirty = !mySkyFixedLutsValid
 		|| std::abs(turbidity - myLastSkyTurbidity) > 1e-4f

@@ -681,7 +681,7 @@ bool DefaultSceneEditorGraphics::DrawDeferredColorPass(const SceneDrawParameters
 	dr.SetLocalShadows(true);
 	dr.SetPostFx(true);
 	const Vector3f cameraPos = camera.GetTransform().GetPosition();
-	dr.SetShadowLight(sun.transform.GetForward(), cameraPos, 5000.f);
+	dr.SetShadowLight(sun.transform.GetForward(), cameraPos, 50.f);   // metres
 	dr.SetCamera(camera);
 	gss.SetCamera(camera);
 	// The id pass and editor overlays leave GPU state behind that the state
