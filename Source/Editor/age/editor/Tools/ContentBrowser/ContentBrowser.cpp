@@ -329,6 +329,9 @@ void ContentBrowser::Draw()
 	ImGui::TableSetColumnIndex(1);
 	ImGui::BeginChild("##Assets", ImVec2(0.f, ImGui::GetContentRegionAvail().y));
 	{
+		// Set when the pointer is over a tile or folder, so an item's right-click menu and the
+		// empty-space menu never open on the same click.
+		bool pointerOverAsset = false;
 		if (ImGui::Button(myGridView ? ICON_LC_LIST : ICON_LC_LAYOUT_GRID))
 			myGridView = !myGridView;
 		if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
@@ -390,6 +393,7 @@ void ContentBrowser::Draw()
 					const Ag::AssetListItemStatus folderStatus = myGridView
 						? Ag::AssetGridItem(relativeDirectory, false, ICON_LC_FOLDER, (ImTextureID)0, myGridTileSize)
 						: Ag::AssetListItem(relativeDirectory, false, ICON_LC_FOLDER);
+					pointerOverAsset |= ImGui::IsItemHovered();
 					if (folderStatus.doubleClicked)
 						_current_path = directory;
 					if (myGridView)
@@ -509,6 +513,7 @@ void ContentBrowser::Draw()
 								OpenFbxConvertDialog(fbx);
 						}
 					}
+					pointerOverAsset |= ImGui::IsMouseHoveringRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax()) || itemStatus.contextClicked;
 					if (itemStatus.selectedAfter)
 						mySelectedPath = path;
 
@@ -568,7 +573,9 @@ void ContentBrowser::Draw()
 	}
 
 	// Right-click on empty space: the same things the Add button makes.
-	if (ImGui::BeginPopupContextWindow("##ContentBrowserContext", ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems))
+	if (!pointerOverAsset && ImGui::IsWindowHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Right))
+		ImGui::OpenPopup("##ContentBrowserContext");
+	if (ImGui::BeginPopup("##ContentBrowserContext"))
 	{
 		DrawAddMenuItems();
 		ImGui::EndPopup();
