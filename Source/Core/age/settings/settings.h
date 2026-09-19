@@ -111,6 +111,11 @@ namespace Ag
     };
 
 	extern bool LoadSettings(const std::string& aProjectName);
+
+	// Records whether Streamline/DLSS should be brought up; returns whether the
+	// settings file could be written. Takes effect on the next launch --
+	// Streamline interposes on DXGI/D3D12 and cannot start once the device exists.
+	extern bool SetUpscalingEnabled(bool aEnabled);
 	
 	namespace Settings
 	{

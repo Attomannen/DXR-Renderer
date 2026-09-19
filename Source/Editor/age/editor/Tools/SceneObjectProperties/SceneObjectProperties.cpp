@@ -497,21 +497,21 @@ void SceneObjectProperties::Draw()
 
 					PropertyEditor::PropertyLabel();
 					ImGui::Text("Range");
-					PropertyEditor::HelpMarker("Distance in scene units the light's influence extends to.");
+					PropertyEditor::HelpMarker("Distance in metres the light's influence extends to.");
 					PropertyEditor::PropertyValue();
 					{
 						float& range = object.GetLightRange();
-						ImGui::DragFloat("##LightRange", &range, 1.f, 0.f, 100000.f, "%.0f");
+						ImGui::DragFloat("##LightRange", &range, 0.05f, 0.f, 1000.f, "%.2f m");
 						DragLightField(id, LightField::Range, &range, 1);
 					}
 
 					PropertyEditor::PropertyLabel();
 					ImGui::Text("Source radius");
-					PropertyEditor::HelpMarker("Soft-shadow source size; 0 is a hard point/spot light.");
+					PropertyEditor::HelpMarker("Soft-shadow source radius in metres; 0 is a hard point/spot light.");
 					PropertyEditor::PropertyValue();
 					{
 						float& radius = object.GetLightRadius();
-						ImGui::DragFloat("##LightRadius", &radius, 0.1f, 0.f, 1000.f, "%.1f");
+						ImGui::DragFloat("##LightRadius", &radius, 0.005f, 0.f, 10.f, "%.3f m");
 						DragLightField(id, LightField::Radius, &radius, 1);
 					}
 

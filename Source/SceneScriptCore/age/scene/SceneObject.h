@@ -189,7 +189,7 @@ namespace Ag
 		StringId mySceneObjectDefinitionName;
 		SceneObjectType myType = SceneObjectType::GameObject;
 		float myLightColor[3] = { 1.f, 1.f, 1.f };
-		float myLightRange = 1000.f;
+		float myLightRange = 10.f;    // metres
 		float myLightRadius = 0.f;
 		float myLightInnerAngle = 20.f;
 		float myLightOuterAngle = 35.f;

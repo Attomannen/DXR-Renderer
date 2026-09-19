@@ -34,7 +34,7 @@ namespace
 		light->GetPosition() = { 0.f, 150.f, 0.f };
 		if (aSpot)
 		{
-			light->GetLightRange() = 1500.f;
+			light->GetLightRange() = 15.f;   // metres
 			light->GetEuler() = { 0.f, 0.f, 0.f };
 		}
 		std::vector<std::shared_ptr<SceneObject>> objects{ light };

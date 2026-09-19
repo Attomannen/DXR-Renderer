@@ -20,6 +20,8 @@ namespace Ag
 		static std::string locCookedAssetsPath;
 
 		static std::string locExecutableFolderPath;
+		// The settings file this run loaded, so it can be written back.
+		static std::string locSettingsFilepath;
 
 		static ApplicationConfiguration locWindowParams;
 	}
@@ -224,6 +226,7 @@ bool Ag::LoadSettings(const std::string& aProjectName)
 	std::string settingsFolder = executableFolder + "\\settings\\";
 	std::string filename = (aProjectName.find(".") == std::string::npos) ? (aProjectName + ".json") : aProjectName;
 	std::string settingsFilepath = settingsFolder + filename;
+	Settings::locSettingsFilepath = settingsFilepath;
 	std::ifstream game_ifs(settingsFilepath.c_str());
 
 	if (!game_ifs)
@@ -380,5 +383,34 @@ bool Ag::LoadSettings(const std::string& aProjectName)
 		}
 	}
 
+	return true;
+}
+
+// Persist the upscaling flag to the settings file this run loaded.
+//
+// Streamline cannot be enabled at runtime: it interposes on DXGI/D3D12 and so
+// has to load before the device is created (see Application::InternalStart).
+// The honest thing the engine can offer is to record the choice and have it
+// take effect on the next launch, which is what this does.
+bool Ag::SetUpscalingEnabled(bool aEnabled)
+{
+	using namespace Settings;
+	if (locSettingsFilepath.empty()) return false;
+
+	nlohmann::json settings;
+	{
+		std::ifstream in(locSettingsFilepath.c_str());
+		if (!in) return false;
+		try { in >> settings; } catch (...) { return false; }
+	}
+	settings["enable_upscaling"] = aEnabled;
+	{
+		std::ofstream out(locSettingsFilepath.c_str());
+		if (!out) return false;
+		out << settings.dump(1, '	');
+	}
+	// The live value follows so the UI reflects the choice immediately, even
+	// though nothing can act on it until restart.
+	Settings::locWindowParams.enableUpscaling = aEnabled;
 	return true;
 }
