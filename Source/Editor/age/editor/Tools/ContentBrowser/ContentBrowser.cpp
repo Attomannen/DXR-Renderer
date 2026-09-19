@@ -666,7 +666,7 @@ void ContentBrowser::RequestNewLevel()
 
 void ContentBrowser::RequestCreate(CreateKind kind)
 {
-	static const char* defaults[] = { "", "NewFolder", "NewTGO", "NewLevel", "NewMaterial", "NewAnimationClip", "NewParticleSystem" };
+	static const char* defaults[] = { "", "NewFolder", "NewTGO", "NewLevel", "NewMaterial", "NewAnimationClip", "NewParticleSystem", "NewGameMode" };
 	myCreateKind = kind;
 	myOpenCreatePopup = true;
 	myAssetOperationError.clear();
@@ -684,6 +684,7 @@ void ContentBrowser::DrawAddMenuItems()
 	if (ImGui::MenuItem(ICON_LC_PALETTE "  Material")) RequestCreate(CreateKind::Material);
 	if (ImGui::MenuItem(ICON_LC_FILE_CODE "  Animation Clip")) RequestCreate(CreateKind::AnimationClip);
 	if (ImGui::MenuItem(ICON_LC_SPARKLES "  Particle System")) RequestCreate(CreateKind::ParticleSystem);
+	if (ImGui::MenuItem(ICON_LC_GAMEPAD_2 "  Game Mode")) RequestCreate(CreateKind::GameMode);
 }
 
 void ContentBrowser::DrawCreatePopup()
@@ -696,8 +697,8 @@ void ContentBrowser::DrawCreatePopup()
 	if (!ImGui::BeginPopupModal("Create Asset", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
 		return;
 
-	static const char* titles[] = { "", "Folder", "TGO", "Level", "Material", "Animation Clip", "Particle System" };
-	static const char* extensions[] = { "", "", ".tgo", ".tgs", ".tgmat", ".tgac", ".tgps" };
+	static const char* titles[] = { "", "Folder", "TGO", "Level", "Material", "Animation Clip", "Particle System", "Game Mode" };
+	static const char* extensions[] = { "", "", ".tgo", ".tgs", ".tgmat", ".tgac", ".tgps", ".tgo" };
 	ImGui::Text("New %s", titles[(int)myCreateKind]);
 	ImGui::TextDisabled("in %s", _current_path.string().c_str());
 	ImGui::SetNextItemWidth(320.f);
@@ -727,6 +728,7 @@ void ContentBrowser::DrawCreatePopup()
 			case CreateKind::Material: error = Editor::GetEditor()->CreateNewMaterial(path); break;
 			case CreateKind::AnimationClip: error = Editor::GetEditor()->CreateNewAnimationClip(path); break;
 			case CreateKind::ParticleSystem: error = Editor::GetEditor()->CreateNewParticleSystem(path); break;
+			case CreateKind::GameMode: error = Editor::GetEditor()->CreateNewGameMode(path); break;
 			default: break;
 			}
 		}

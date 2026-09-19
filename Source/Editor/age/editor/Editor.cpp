@@ -364,6 +364,154 @@ std::string Ag::Editor::CreateNewMaterial(const fs::path& path)
 	return {};
 }
 
+namespace
+{
+	// Adds the component of this type to the definition unless it already has one.
+	void AddComponentIfMissing(SceneObjectDefinition& aDefinition, const char* aTypeName)
+	{
+		const PropertyTypeBase* type = PropertyTypeRegistry::GetPropertyType(StringRegistry::RegisterOrGetString(aTypeName));
+		if (!type)
+			return;
+		for (const ScenePropertyDefinition& existing : aDefinition.GetProperties())
+			if (existing.type == type)
+				return;
+		ScenePropertyDefinition property = {};
+		property.name = type->GetName();
+		property.type = type;
+		property.value = Property(type);
+		property.flags = ScenePropertyFlags::None;
+		aDefinition.EditProperties().push_back(std::move(property));
+	}
+}
+
+std::string Ag::Editor::CreateNewGameMode(const fs::path& path)
+{
+	fs::path p = path;
+	if (p.extension().empty())
+		p.replace_extension(".tgo");
+	if (fs::exists(p))
+		return "'" + p.filename().string() + "' already exists";
+
+	const fs::path relativePath = fs::relative(p, Settings::GameAssetRoot());
+	SceneObjectDefinition* definition = mySceneObjectDefinitionManager.CreateOrGet(relativePath.string());
+	if (!definition)
+		return "Could not create '" + p.filename().string() + "'";
+	AddComponentIfMissing(*definition, "Game Mode");
+	definition->Save();
+
+	std::unique_ptr<ObjectDefinitionDocument> document = std::make_unique<ObjectDefinitionDocument>();
+	document->Init(p.string());
+	AddDocument(std::move(document));
+	return {};
+}
+
+SceneObjectDefinition* Ag::Editor::EnsurePlayerStartDefinition()
+{
+	const fs::path root = Settings::GameAssetRoot();
+	std::error_code error;
+	fs::create_directories(root / "Framework", error);
+
+	SceneObjectDefinition* definition = mySceneObjectDefinitionManager.CreateOrGet("Framework/PlayerStart.tgo");
+	if (!definition)
+		return nullptr;
+
+	AddComponentIfMissing(*definition, "Player Start");
+
+	// A marker mesh, so the Player Start can be seen and clicked in the level. The game does not draw it.
+	bool hasModel = false;
+	for (const ScenePropertyDefinition& existing : definition->GetProperties())
+		hasModel |= existing.type == GetPropertyType<CopyOnWriteWrapper<SceneModel>>();
+	if (!hasModel && fs::exists(root / "Primitives/SM_Cylinder.fbx"))
+	{
+		auto model = CopyOnWriteWrapper<SceneModel>::Create();
+		model.Edit().path = StringRegistry::RegisterOrGetString("Primitives/SM_Cylinder.fbx");
+		ScenePropertyDefinition property = {};
+		property.name = "Model"_tgaid;
+		property.type = GetPropertyType<CopyOnWriteWrapper<SceneModel>>();
+		property.value = Property::Create<CopyOnWriteWrapper<SceneModel>>(model);
+		property.flags = ScenePropertyFlags::None;
+		definition->EditProperties().push_back(std::move(property));
+	}
+	definition->Save();
+	return definition;
+}
+
+void Ag::Editor::DrawProjectSettingsPanel()
+{
+	if (!myShowProjectSettings)
+		return;
+	if (!myGameSettingsLoaded)
+	{
+		myGameSettings.Load();
+		myGameSettingsLoaded = true;
+	}
+
+	ImGui::SetNextWindowSize(ImVec2(480.f, 220.f), ImGuiCond_FirstUseEver);
+	if (!ImGui::Begin("Project Settings", &myShowProjectSettings))
+	{
+		ImGui::End();
+		return;
+	}
+
+	// Paths are kept with forward slashes, and a level without its extension, the way the game reads them.
+	const auto normalise = [](StringId aPath, bool aStripLevelExtension)
+	{
+		std::string path = aPath.GetString();
+		std::replace(path.begin(), path.end(), '\\', '/');
+		if (aStripLevelExtension && path.size() > 4 && path.compare(path.size() - 4, 4, ".tgs") == 0)
+			path.resize(path.size() - 4);
+		return path;
+	};
+
+	bool changed = false;
+	ImGui::TextDisabled("Maps & Modes");
+	if (PropertyEditor::BeginPropertyTable())
+	{
+		PropertyEditor::PropertyLabel();
+		ImGui::Text("Game Name");
+		PropertyEditor::PropertyValue();
+		char name[128];
+		strncpy_s(name, myGameSettings.gameName.c_str(), _TRUNCATE);
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		if (ImGui::InputText("##gamename", name, IM_ARRAYSIZE(name)))
+		{
+			myGameSettings.gameName = name;
+			changed = true;
+		}
+
+		PropertyEditor::PropertyLabel();
+		ImGui::Text("Default Level");
+		PropertyEditor::HelpMarker("The level the game opens when it is started on its own");
+		PropertyEditor::PropertyValue();
+		{
+			StringId level = StringRegistry::RegisterOrGetString(myGameSettings.defaultLevel.empty() ? std::string() : myGameSettings.defaultLevel + ".tgs");
+			if (PropertyEditor::AssetField("##defaultlevel", level, { ".tgs" }, "None"))
+			{
+				myGameSettings.defaultLevel = normalise(level, true);
+				changed = true;
+			}
+		}
+
+		PropertyEditor::PropertyLabel();
+		ImGui::Text("Default Game Mode");
+		PropertyEditor::HelpMarker("Used by every level that does not name its own Game Mode. Create one from the Content Browser: Add > Game Mode");
+		PropertyEditor::PropertyValue();
+		{
+			StringId mode = StringRegistry::RegisterOrGetString(myGameSettings.defaultGameMode);
+			if (PropertyEditor::AssetField("##defaultmode", mode, { ".tgo" }, "None"))
+			{
+				myGameSettings.defaultGameMode = normalise(mode, false);
+				changed = true;
+			}
+		}
+		PropertyEditor::EndPropertyTable();
+	}
+	if (changed)
+		myGameSettings.Save();
+
+	ImGui::End();
+}
+
 std::string Ag::Editor::CreateNewParticleSystem(const fs::path& path)
 {
 	fs::path p = path;
@@ -621,6 +769,8 @@ void Ag::Editor::Update(float aTimeDelta, InputManager& inputManager)
 						}
 						ImGui::Separator();
 						ImGui::MenuItem("Undo History", nullptr, &myShowUndoHistory);
+						ImGui::Separator();
+						ImGui::MenuItem("Project Settings...", nullptr, &myShowProjectSettings);
 
 						ImGui::EndMenu();
 					}
@@ -756,6 +906,7 @@ void Ag::Editor::Update(float aTimeDelta, InputManager& inputManager)
 		}
 		DrawTextureImporter();
 		DrawUndoHistoryPanel();
+		DrawProjectSettingsPanel();
 	}
 }
 

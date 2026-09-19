@@ -75,6 +75,12 @@ void SceneObjectList::Draw()
 	{
 		const SceneLightSelection current = GetSelectedSceneLight();
 		const ImGuiTreeNodeFlags rowFlags = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanFullWidth;
+		ImGui::TreeNodeEx(ICON_LC_GLOBE " World Settings", rowFlags | (current == SceneLightSelection::World ? ImGuiTreeNodeFlags_Selected : 0));
+		if (ImGui::IsItemClicked())
+		{
+			SetSelectedSceneLight(SceneLightSelection::World);
+			SceneSelection::GetActiveSceneSelection()->ClearSelection();
+		}
 		ImGui::TreeNodeEx(ICON_LC_SUN " Sun", rowFlags | (current == SceneLightSelection::Sun ? ImGuiTreeNodeFlags_Selected : 0));
 		if (ImGui::IsItemClicked())
 		{

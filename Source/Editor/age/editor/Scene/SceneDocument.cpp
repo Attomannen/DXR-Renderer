@@ -619,6 +619,17 @@ void SceneDocument::DrawAddMenu()
 
 		if (ImGui::BeginChild("##placelist", ImVec2(300.f, 260.f)))
 		{
+			if (lowerFilter.empty() || std::string("player start").find(lowerFilter) != std::string::npos)
+			{
+				if (ImGui::Selectable(ICON_LC_FLAG "  Player Start"))
+				{
+					if (SceneObjectDefinition* definition = Editor::GetEditor()->EnsurePlayerStartDefinition())
+						PlaceObject(definition->GetPath(), "Player Start");
+					ImGui::CloseCurrentPopup();
+				}
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Where the player enters the level. The Game Mode spawns its pawn here");
+			}
 			int shown = 0;
 			for (SceneObjectDefinition* definition : Editor::GetEditor()->GetSceneObjectDefinitionManager().GetAll())
 			{

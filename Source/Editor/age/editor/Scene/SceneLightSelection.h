@@ -16,6 +16,7 @@ namespace Ag
 		None,
 		Sun,
 		Ambient,
+		World,   // the level's own settings (its Game Mode)
 	};
 
 	SceneLightSelection GetSelectedSceneLight();

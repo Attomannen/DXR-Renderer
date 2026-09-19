@@ -27,6 +27,7 @@ float deg_to_rad(float degree) { return (degree * (pi / 180.0f)); }
 #include <age/editor/Tools/SceneObjectProperties/ChangeSceneObjectLightFieldCommand.h>
 #include <age/editor/Tools/SceneObjectProperties/ChangeSceneLightingFieldCommand.h>
 #include <age/editor/Tools/SceneObjectProperties/ChangeSceneEnvironmentTextureCommand.h>
+#include <age/editor/Tools/SceneObjectProperties/ChangeSceneGameModeCommand.h>
 
 #include <IconFontHeaders\IconsLucide.h>
 #include <string>
@@ -237,6 +238,20 @@ void SceneObjectProperties::Draw()
 				PropertyEditor::PropertyValue();
 				if (ImGui::DragFloat("##SunIntensity", &intensity, 0.01f, 0.f, 100.f)) scene->SetSunIntensity(intensity);
 				DragSceneLightingField(SceneLightingField::SunIntensity, &intensity, 1);
+			}
+			else if (selectedLight == SceneLightSelection::World)
+			{
+				PropertyEditor::PropertyLabel();
+				ImGui::Text("Game Mode");
+				PropertyEditor::HelpMarker("The Game Mode this level uses: it decides which pawn the player controls and where it starts. Empty uses the project's default (Edit > Project Settings)");
+				PropertyEditor::PropertyValue();
+				StringId mode = StringRegistry::RegisterOrGetString(scene->GetGameMode());
+				if (PropertyEditor::AssetField("##GameMode", mode, { ".tgo" }, "Project default"))
+				{
+					std::string path = mode.GetString();
+					std::replace(path.begin(), path.end(), '\\', '/');
+					CommandManager::DoCommand(std::make_shared<ChangeSceneGameModeCommand>(path, scene->GetGameMode()));
+				}
 			}
 			else // Ambient
 			{

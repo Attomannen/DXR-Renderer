@@ -135,6 +135,11 @@ namespace Ag
 		// ambient fields do: it's authored scene state, not editor-only.
 		std::string myEnvironmentTexturePath;
 		const std::string& GetEnvironmentTexturePath() const { return myEnvironmentTexturePath; }
+
+		// The Game Mode this level uses (a .tgo relative to the asset root); empty uses the project's default.
+		std::string myGameMode;
+		const std::string& GetGameMode() const { return myGameMode; }
+		void SetGameMode(const std::string& path) { myGameMode = path; }
 		void SetEnvironmentTexturePath(const std::string& path) { myEnvironmentTexturePath = path; }
 
 	private:

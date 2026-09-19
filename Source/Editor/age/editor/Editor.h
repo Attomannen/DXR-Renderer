@@ -1,4 +1,5 @@
 #pragma once
+#include <age/settings/GameSettings.h>
 
 #include <age/Graphics/RenderTarget.h>
 #include <age/scene/Scene.h>
@@ -83,6 +84,10 @@ public:
 	std::string CreateNewObjectDefinition(const fs::path& path);
 	std::string CreateNewAnimationClip(const fs::path& path);
 	std::string CreateNewParticleSystem(const fs::path& path);
+	// A .tgo with a Game Mode component (opens in the TGO editor, where its rules are scripted).
+	std::string CreateNewGameMode(const fs::path& path);
+	// The Player Start marker object, created in Framework/PlayerStart.tgo the first time it is needed.
+	SceneObjectDefinition* EnsurePlayerStartDefinition();
 	std::string CreateNewMaterial(const fs::path& path);
 
 	bool IsViewportGridVisible() { return myIsViewportGridVisible; }
@@ -103,6 +108,7 @@ private:
 
 	bool ShowSavePromptModal();
 	void DrawUndoHistoryPanel();
+	void DrawProjectSettingsPanel();
 
 	friend void CommandManagerEditorCallback(CommandManager::Action);
 	void OnAction(CommandManager::Action action);
@@ -140,6 +146,9 @@ private:
 	bool myIsViewportGridVisible = true;
 	bool myIsCollisionVisible = false;
 	bool myShowUndoHistory = false;
+	bool myShowProjectSettings = false;
+	GameSettings myGameSettings;
+	bool myGameSettingsLoaded = false;
 };
 
 }

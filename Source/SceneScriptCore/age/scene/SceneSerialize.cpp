@@ -157,6 +157,7 @@ extern void Ag::SaveScene(const Scene& scene, void (*afileChangedCallback)(Scene
 	scenejson["lighting"]["sunIntensity"] = scene.GetSunIntensity();
 	scenejson["lighting"]["ambientColor"] = { scene.GetAmbientColor()[0], scene.GetAmbientColor()[1], scene.GetAmbientColor()[2] };
 	scenejson["lighting"]["environmentTexture"] = scene.GetEnvironmentTexturePath();
+	scenejson["gameMode"] = scene.GetGameMode();
 
 
 	std::ofstream fout(path, std::ios::trunc);
@@ -178,6 +179,7 @@ extern bool Ag::LoadScene(const char* filepath, Scene& scene)
 	scene.ClearScene();
 	if (std::filesystem::exists(resolvedTgsPath)) {
 		std::ifstream in(resolvedTgsPath); json root; in >> root;
+		scene.SetGameMode(root.value("gameMode", std::string()));
 		if (root.contains("lighting")) {
 			auto& l = root["lighting"];
 			scene.SetSunYaw(l.value("sunYaw", scene.GetSunYaw())); scene.SetSunPitch(l.value("sunPitch", scene.GetSunPitch()));
