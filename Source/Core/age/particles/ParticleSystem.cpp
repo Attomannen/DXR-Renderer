@@ -283,6 +283,13 @@ namespace Ag::Particles
 		myActive = true;
 	}
 
+	void SystemInstance::Burst(int aCount)
+	{
+		for (size_t i = 0; i < myEmitters.size(); ++i)
+			if (myAsset.emitters[i].enabled)
+				SpawnParticles(myAsset.emitters[i], myEmitters[i], aCount);
+	}
+
 	bool SystemInstance::IsComplete() const
 	{
 		if (myActive)

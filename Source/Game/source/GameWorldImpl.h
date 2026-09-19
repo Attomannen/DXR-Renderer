@@ -35,6 +35,7 @@
 #include <age/physics/PhysicsWorld.h>
 #include <age/Particles/ParticleRenderer.h>
 #include <age/settings/GameSettings.h>
+#include <age/audio/audio.h>
 #include <age/particles/ParticleSystem.h>
 #include <age/script/ScriptRuntimeInstance.h>
 #include <age/script/Contexts/GameScriptContext.h>
@@ -91,8 +92,12 @@ struct GameWorld::Impl
 	{
 		int model = -1;
 		Matrix4x4f transform;   // only used while the object has no mesh
+		std::string name;       // the name it has in the level
+		std::string definition; // the .tgo it was made from, without folder and extension
 	};
 	std::vector<SceneInstance> sceneInstances;
+	int playerPawn = -1;        // the object the Game Mode spawned for the player
+	size_t AddSceneInstance(const GameScene::SceneEntry& entry, int modelIndex, const Matrix4x4f& transform);
 	Matrix4x4f GetInstanceTransform(size_t index)
 	{
 		const SceneInstance& instance = sceneInstances[index];
@@ -505,6 +510,12 @@ struct GameWorld::Impl
 	std::vector<SceneParticleObject> sceneParticles;
 	Ag::Particles::ParticleRenderer particleRenderer;
 	void ClearSceneParticles();
+	std::unique_ptr<Ag::Audio> audio;
+	Ag::Audio& GetAudio()
+	{
+		if (!audio) audio = std::make_unique<Ag::Audio>();
+		return *audio;
+	}
 	void RegisterSceneParticles(const GameScene::SceneEntry& entry, size_t instanceIndex);
 	void UpdateSceneParticles(float deltaSeconds);
 	void DrawSceneParticles();   // during the forward pass

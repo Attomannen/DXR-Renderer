@@ -181,6 +181,7 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 	sceneCharacters.clear();
 	sceneCameras.clear();
 	sceneInstances.clear();
+	playerPawn = -1;
 	ClearSceneParticles();
 
 	ModelFactory& mf = ModelFactory::GetInstance();
@@ -226,8 +227,7 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 		if (e.fbx.empty())
 		{
 			// An object without a mesh still has a place in the world and can carry a camera, particles or a script.
-			sceneInstances.push_back({ -1, e.transform });
-			const size_t objectIndex = sceneInstances.size() - 1;
+			const size_t objectIndex = AddSceneInstance(e, -1, e.transform);
 			RegisterSceneScripts(e, objectIndex);
 			RegisterSceneCamera(e, objectIndex);
 			RegisterSceneParticles(e, objectIndex);
@@ -328,8 +328,7 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 			mi.SetTransform(xf);
 			models.push_back(mi);
 			instanceOffsets.push_back(Vector3f{ ox, 0.f, oz });
-			sceneInstances.push_back({ (int)models.size() - 1, xf });
-			const size_t instanceIndex = sceneInstances.size() - 1;
+			const size_t instanceIndex = AddSceneInstance(e, (int)models.size() - 1, xf);
 			RegisterScenePhysics(e, model, xf, instanceIndex);
 			RegisterSceneScripts(e, instanceIndex);
 			RegisterSceneCamera(e, instanceIndex);

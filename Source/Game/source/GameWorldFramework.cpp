@@ -58,10 +58,27 @@ void GameWorld::Impl::SpawnGameModeEntries(std::vector<SceneEntry>& entries)
 			else
 				ERROR_PRINT("game mode: no Player Start%s%s in this level; the pawn starts at the origin",
 					mode->gameMode.playerStartTag.empty() ? "" : " tagged ", mode->gameMode.playerStartTag.c_str());
+			pawn->name = "Player";
+			pawn->isPlayerPawn = true;
 			entries.push_back(std::move(*pawn));
 		}
 	}
+	mode->name = "GameMode";
 	entries.push_back(std::move(*mode));
+}
+
+size_t GameWorld::Impl::AddSceneInstance(const SceneEntry& entry, int modelIndex, const Matrix4x4f& transform)
+{
+	SceneInstance instance;
+	instance.model = modelIndex;
+	instance.transform = transform;
+	instance.name = entry.name;
+	instance.definition = fs::path(entry.tgoPath).filename().string();
+	sceneInstances.push_back(std::move(instance));
+	const size_t index = sceneInstances.size() - 1;
+	if (entry.isPlayerPawn)
+		playerPawn = (int)index;
+	return index;
 }
 
 void GameWorld::Impl::ProcessLevelRequest()

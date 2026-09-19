@@ -342,6 +342,7 @@ namespace GameScene
 				}
 			}
 			if (!haveModel) continue;
+			e.name = obj.value("name", std::string());
 			if (obj.contains("properties") && obj["properties"].is_array()) e.instanceProperties = obj["properties"];
 
 			Vector3f t{ 0,0,0 }, r{ 0,0,0 }, sc{ 1,1,1 };

@@ -101,6 +101,8 @@ namespace GameScene
 		SceneEntryParticles particles;
 		SceneEntryPlayerStart playerStart;
 		SceneEntryGameMode gameMode;
+		std::string name;                                   // the object's name in the level
+		bool isPlayerPawn = false;                          // spawned by the Game Mode for the player
 		json instanceProperties;                            // per-instance property values written in the scene file
 		std::string tgoPath;                                // "Folder/Name" of the .tgo (no extension); scripts live in <tgoPath>/
 		Matrix4x4f transform;                               // identity by default

@@ -14,6 +14,7 @@
 #include <age/script/Nodes/FlowNodes.h>
 #include <age/script/Nodes/StringNodes.h>
 #include <age/script/Nodes/GameFrameworkNodes.h>
+#include <age/script/Nodes/GameServiceNodes.h>
 #include <age/script/Nodes/ArrayNodes.h>
 #include <DirectXTex/ScreenGrab/ScreenGrab11.h>
 #pragma comment(lib, "windowscodecs.lib")
@@ -45,6 +46,7 @@ void GameWorld::Init()
 	Ag::RegisterArrayNodes();
 	Ag::RegisterGameObjectNodes();
 	Ag::RegisterGameFrameworkNodes();
+	Ag::RegisterGameServiceNodes();
 	INFO_PRINT("physics: Jolt %s, smoke test %s", Ag::GetPhysicsVersion(), Ag::PhysicsSmokeTest() ? "ok" : "FAILED");
 
 	// Materials rendered in the forward transparent pass (substring match, after

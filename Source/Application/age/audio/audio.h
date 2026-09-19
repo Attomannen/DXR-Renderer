@@ -20,6 +20,8 @@ namespace Ag
 		void Stop(Ag::StringId aKey, bool aImmediately = true);
 
 		float GetLengthInSeconds(Ag::StringId aKey);
+		// True once Init has opened this sound successfully.
+		bool IsLoaded(Ag::StringId aKey) const;
 		bool IsPlaying(Ag::StringId aKey);
 
 	private:

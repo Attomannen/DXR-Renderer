@@ -48,6 +48,33 @@ namespace Ag
 		virtual Vector3f GetVelocity() const = 0;
 		virtual void SetVelocity(const Vector3f& velocity) = 0;
 
+		// Objects in the level are named by their index (-1 means none). A script gets one from Get Self, a Find node,
+		// Get Player Pawn or an event.
+		virtual int GetSelfObject() const = 0;
+		virtual int GetPlayerPawn() const = 0;
+		virtual int FindObject(const char* name) const = 0;
+		virtual int FindObjectByDefinition(const char* definition, int nth) const = 0;
+		virtual int CountObjects(const char* definition) const = 0;
+		virtual bool IsObjectValid(int object) const = 0;
+		virtual Vector3f GetObjectLocation(int object) const = 0;
+		virtual void SetObjectLocation(int object, const Vector3f& location) = 0;
+		virtual Vector3f GetObjectForward(int object) const = 0;
+
+		// An object's Particle System component (object -1 is this object).
+		virtual bool HasParticles(int object) const = 0;
+		virtual void SetParticlesActive(int object, bool active) = 0;
+		virtual void ResetParticles(int object) = 0;
+		virtual void BurstParticles(int object, int count) = 0;
+		virtual void SetParticleFloat(int object, const char* name, float value) = 0;
+		virtual void SetParticleVector(int object, const char* name, const Vector3f& value) = 0;
+		virtual void SetParticleColor(int object, const char* name, float r, float g, float b, float a) = 0;
+
+		// Sounds are files under the asset root (wav, mp3, flac). A sound is opened the first time it is played.
+		virtual void PlaySound(const char* path, float volume, bool loop) = 0;
+		virtual void StopSound(const char* path) = 0;
+		virtual void SetSoundVolume(const char* path, float volume) = 0;
+		virtual bool IsSoundPlaying(const char* path) const = 0;
+
 		// The game framework: Player Starts placed in the level, and the flow between levels.
 		// FindPlayerStart matches a tag (an empty tag matches the first Player Start). Yaw is degrees.
 		virtual bool FindPlayerStart(const char* tag, Vector3f& location, float& yawDegrees) const = 0;

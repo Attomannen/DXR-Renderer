@@ -58,10 +58,11 @@ void Audio::Init(const char * aPath, Ag::StringId aKey, bool anPlayOnLoad, bool 
 		struct ma_sound* sound = &locAudioData.soundCache[aKey];
 		result = ma_sound_init_from_file(&locAudioData.engine, resolvedPath.GetData(), /*ma_uint32 flags*/ 0, /*ma_sound_group*/ NULL, /*ma_fence*/ NULL, sound);
 		if (result != MA_SUCCESS)
-	{
-			// TODO: Handle error!
+		{
+			// Forget the empty entry, so IsLoaded is false and a later Play does not use a sound that never opened.
+			locAudioData.soundCache.erase(aKey);
 			return;
-	}
+		}
 		ma_sound_set_looping(sound, aIsLooping);
 	
 		if (anPlayOnLoad)
@@ -80,6 +81,11 @@ void Audio::Play(Ag::StringId aKey, bool aResetAndPlay)
 		ma_sound_seek_to_pcm_frame(sound, 0);
 	}
 	ma_sound_start(sound);
+}
+
+bool Audio::IsLoaded(Ag::StringId aKey) const
+{
+	return locAudioData.soundCache.find(aKey) != locAudioData.soundCache.end();
 }
 
 float Audio::GetLengthInSeconds(Ag::StringId aKey)

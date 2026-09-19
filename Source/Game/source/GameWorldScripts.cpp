@@ -205,6 +205,133 @@ namespace
 
 		const char* GetGameName() const override { return myWorld.gameSettings.gameName.c_str(); }
 
+		// ---- objects
+		int GetSelfObject() const override { return (int)myInstance; }
+		int GetPlayerPawn() const override { return myWorld.playerPawn; }
+		bool IsObjectValid(int object) const override { return object >= 0 && (size_t)object < myWorld.sceneInstances.size(); }
+
+		int FindObject(const char* name) const override
+		{
+			for (size_t i = 0; i < myWorld.sceneInstances.size(); ++i)
+				if (myWorld.sceneInstances[i].name == name)
+					return (int)i;
+			return -1;
+		}
+
+		int FindObjectByDefinition(const char* definition, int nth) const override
+		{
+			int seen = 0;
+			for (size_t i = 0; i < myWorld.sceneInstances.size(); ++i)
+				if (myWorld.sceneInstances[i].definition == definition && seen++ == nth)
+					return (int)i;
+			return -1;
+		}
+
+		int CountObjects(const char* definition) const override
+		{
+			int count = 0;
+			for (const GameWorld::Impl::SceneInstance& instance : myWorld.sceneInstances)
+				if (instance.definition == definition)
+					++count;
+			return count;
+		}
+
+		Vector3f GetObjectLocation(int object) const override
+		{
+			return IsObjectValid(object) ? myWorld.GetInstanceTransform((size_t)object).GetPosition() : Vector3f(0.f, 0.f, 0.f);
+		}
+
+		void SetObjectLocation(int object, const Vector3f& location) override
+		{
+			if (!IsObjectValid(object))
+				return;
+			// The other object's own context knows how to move its body or character too.
+			ObjectScriptContext other(myWorld, (size_t)object);
+			other.SetLocation(location);
+		}
+
+		Vector3f GetObjectForward(int object) const override
+		{
+			return IsObjectValid(object) ? myWorld.GetInstanceTransform((size_t)object).GetForward() : Vector3f(0.f, 0.f, 1.f);
+		}
+
+		// ---- particles
+		bool HasParticles(int object) const override { return FindParticles(object) != nullptr; }
+
+		void SetParticlesActive(int object, bool active) override
+		{
+			if (Particles::SystemInstance* system = FindParticles(object))
+			{
+				if (active) system->Activate();
+				else system->Deactivate();
+			}
+		}
+
+		void ResetParticles(int object) override
+		{
+			if (Particles::SystemInstance* system = FindParticles(object))
+				system->Reset();
+		}
+
+		void BurstParticles(int object, int count) override
+		{
+			if (Particles::SystemInstance* system = FindParticles(object))
+				system->Burst(count);
+		}
+
+		void SetParticleFloat(int object, const char* name, float value) override
+		{
+			if (Particles::SystemInstance* system = FindParticles(object))
+				system->SetFloat(name, value);
+		}
+
+		void SetParticleVector(int object, const char* name, const Vector3f& value) override
+		{
+			if (Particles::SystemInstance* system = FindParticles(object))
+				system->SetVector(name, value);
+		}
+
+		void SetParticleColor(int object, const char* name, float r, float g, float b, float a) override
+		{
+			if (Particles::SystemInstance* system = FindParticles(object))
+				system->SetColor(name, Vector4f(r, g, b, a));
+		}
+
+		// ---- sound
+		void PlaySound(const char* path, float volume, bool loop) override
+		{
+			const StringId key = SoundKey(path);
+			if (key.IsEmpty())
+				return;
+			Ag::Audio& audio = myWorld.GetAudio();
+			if (!audio.IsLoaded(key))
+				audio.Init(path, key, false, loop);
+			if (!audio.IsLoaded(key))
+				return;   // no such file
+			audio.SetVolume(key, volume);
+			audio.Play(key, true);
+		}
+
+		void StopSound(const char* path) override
+		{
+			const StringId key = SoundKey(path);
+			if (!key.IsEmpty() && myWorld.audio && myWorld.audio->IsLoaded(key))
+				myWorld.audio->Stop(key, true);
+		}
+
+		void SetSoundVolume(const char* path, float volume) override
+		{
+			const StringId key = SoundKey(path);
+			if (!key.IsEmpty() && myWorld.audio && myWorld.audio->IsLoaded(key))
+				myWorld.audio->SetVolume(key, volume);
+		}
+
+		bool IsSoundPlaying(const char* path) const override
+		{
+			const StringId key = SoundKey(path);
+			return !key.IsEmpty() && myWorld.audio && myWorld.audio->IsLoaded(key) && myWorld.audio->IsPlaying(key);
+		}
+
 		void AddImpulse(const Vector3f& impulse) override
 		{
 			if (const GameWorld::Impl::ScenePhysicsObject* object = FindBody())
@@ -212,6 +339,17 @@ namespace
 		}
 
 	private:
+		static StringId SoundKey(const char* path) { return path && *path ? StringRegistry::RegisterOrGetString(path) : StringId(); }
+
+		Particles::SystemInstance* FindParticles(int object) const
+		{
+			const size_t instance = object < 0 ? myInstance : (size_t)object;
+			for (GameWorld::Impl::SceneParticleObject& particles : myWorld.sceneParticles)
+				if (particles.instance == instance)
+					return particles.system.get();
+			return nullptr;
+		}
+
 		const GameWorld::Impl::SceneCharacterObject* FindCharacter() const
 		{
 			if (!myWorld.physicsActive)

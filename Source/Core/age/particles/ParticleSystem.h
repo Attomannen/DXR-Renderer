@@ -91,6 +91,8 @@ namespace Ag::Particles
 		void Activate();
 		void Deactivate();
 		void Reset();
+		// Spawns Count particles from every enabled emitter right now, on top of what the emitters spawn on their own.
+		void Burst(int aCount);
 		bool IsActive() const { return myActive; }
 		// Not active and nothing left alive.
 		bool IsComplete() const;
