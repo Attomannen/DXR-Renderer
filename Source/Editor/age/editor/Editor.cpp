@@ -513,6 +513,10 @@ void Ag::Editor::Update(float aTimeDelta, InputManager& inputManager)
 					ImGui::DockBuilderDockWindow(GlobalWindowNames[(size_t)GlobalWindows::DocumentDock], center);
 					ImGui::DockBuilderDockWindow(ContentBrowserWindowName, bottom);
 
+					// The documents host is only a container; its own tab would just eat vertical space.
+					if (ImGuiDockNode* documentNode = ImGui::DockBuilderGetNode(center))
+						documentNode->SetLocalFlags(documentNode->LocalFlags | ImGuiDockNodeFlags_NoTabBar);
+
 					ImGui::DockBuilderFinish(myGlobalDockSpaceId);
 
 					myIsDockingInitialized = true;

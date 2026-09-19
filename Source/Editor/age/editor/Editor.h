@@ -40,7 +40,7 @@ constexpr const char* GlobalWindowNames[] =
 constexpr const char* ContentBrowserWindowName = "Content Browser";
 // Bumped whenever the default dock layout changes, so a layout saved by an older editor is
 // rebuilt instead of leaving windows floating.
-constexpr int DockLayoutVersion = 2;
+constexpr int DockLayoutVersion = 3;
 
 class Editor
 {
