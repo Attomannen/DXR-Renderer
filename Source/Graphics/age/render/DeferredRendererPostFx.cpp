@@ -11,6 +11,31 @@ using namespace Ag;
 // PostFxFullscreen, so anything added to one and not the other silently reads
 // as zero -- which is exactly how the first version of this shipped with every
 // grading slider doing nothing at all.
+// Both PostFxFullscreen and Composite build their own PostFxCb. Anything the
+// bloom shaders read has to be filled in both, which is exactly the trap that
+// once left colour grading silently disabled in the composite.
+static void FillBloomConstants(PostFxCb& c, const DeferredRenderer::Tunables& t)
+{
+	// See bloomRadius: past ~2 the fixed 9-tap kernel undersamples.
+	c.bloomRadius = std::clamp(t.bloomRadius, 0.f, 2.f);
+	c.bloomLerpBlend = t.bloomLerpBlend ? 1.f : 0.f;
+	c.bloomBlendStart = std::max(0.f, t.bloomBlendStart);
+	c.bloomBlendEnd = std::max(c.bloomBlendStart + 1e-4f, t.bloomBlendEnd);
+	c.bloomBlendAmount = std::clamp(t.bloomBlendAmount, 0.f, 1.f);
+
+	// Absolute per-mip gains, not proportions.
+	//
+	// Normalising them (divide by their sum) is the tidier idea -- shape then
+	// cannot change brightness -- but it makes the two blur paths incomparable:
+	// the tent cascade accumulates all six levels at full strength, so at the
+	// same bloomIntensity a normalised sum came out roughly five times dimmer
+	// and read as a much tighter glow. Absolute weights keep bloomIntensity
+	// meaning the same thing on both sides of the toggle, and match how the
+	// per-size bloom weights work in engines that expose them.
+	for (int i = 0; i < 6; ++i) c.bloomMipWeights[i] = std::max(0.f, t.bloomMipWeights[i]);
+	c.bloomMipWeights[6] = c.bloomMipWeights[7] = 0.f;
+}
+
 static void FillGradeConstants(PostFxCb& c, const DeferredRenderer::Tunables& t)
 {
 	c.gradeEnabled = t.gradeEnabled ? 1.f : 0.f;
@@ -33,8 +58,12 @@ bool DeferredRenderer::CreatePostFxTargets(Vector2ui aResolution)
 	{
 		myBloomSize[i] = s;
 		myBloomMip[i]  = RenderTarget::Create(s, rhi::Format::R11G11B10_Float);
+		// Scratch for the separable blur's first axis. Same format and size as
+		// the mip it serves; only touched when bloomMultiRadius is on.
+		myBloomBlur[i] = RenderTarget::Create(s, rhi::Format::R11G11B10_Float);
 		s = { std::max(1u, s.x / 2u), std::max(1u, s.y / 2u) };
 	}
+	myBloomResult = RenderTarget::Create(myBloomSize[0], rhi::Format::R11G11B10_Float);
 
 	const unsigned expSizes[7] = { 64, 32, 16, 8, 4, 2, 1 };
 	for (int i = 0; i < 7; ++i)
@@ -89,7 +118,7 @@ bool DeferredRenderer::CreatePostFxTargets(Vector2ui aResolution)
 
 void DeferredRenderer::PostFxFullscreen(const PixelShader* aPs, RenderTarget& aDst, Vector2ui aDstSize,
                                        const rhi::SrvHandle* aSrvs, int aSrvCount,
-                                       Vector2f aSrcTexel, bool aAdditive)
+                                       Vector2f aSrcTexel, bool aAdditive, Vector2f aBlurDir)
 {
 	const Tunables& t = myTunables;
 	{
@@ -98,6 +127,8 @@ void DeferredRenderer::PostFxFullscreen(const PixelShader* aPs, RenderTarget& aD
 		c.bloomThreshold = t.bloomThreshold;
 		c.bloomKnee = t.bloomKnee;
 		c.bloomIntensity = t.bloomIntensity;
+		FillBloomConstants(c, t);
+		c.bloomBlurDir[0] = aBlurDir.x; c.bloomBlurDir[1] = aBlurDir.y;
 		c.manualEv100 = Photometry::Ev100FromCamera(t.cameraAperture, t.cameraShutter, t.cameraIso);
 		c.autoEvMin = t.autoEvMin;
 		c.autoEvMax = t.autoEvMax;
@@ -292,16 +323,56 @@ void DeferredRenderer::RenderPostFx()
 			PostFxFullscreen(myBloomDownPs, myBloomMip[i], myBloomSize[i], &s, 1, texel);
 		}
 
-		for (int i = kBloomMips - 2; i >= 0; --i)
+		if (myTunables.bloomMultiRadius && myBloomBlurPs && myBloomCombinePs)
 		{
-			rhi::SrvHandle s = myBloomMip[i + 1].GetSrv();
-			const Vector2f texel{ 1.f / (float)myBloomSize[i + 1].x, 1.f / (float)myBloomSize[i + 1].y };
-			PostFxFullscreen(myBloomUpPs, myBloomMip[i], myBloomSize[i], &s, 1, texel, /*additive*/ true);
+			// Blur each mip in place with a separable Gaussian: horizontal into
+			// the scratch target, vertical back into the mip. Each level is half
+			// the size of the one above, so an identical kernel in texels is
+			// twice the radius in screen space -- the mips come out as a family
+			// of Gaussians whose radii double.
+			for (int i = 0; i < kBloomMips; ++i)
+			{
+				const Vector2f texel{ 1.f / (float)myBloomSize[i].x, 1.f / (float)myBloomSize[i].y };
+				rhi::SrvHandle a0 = myBloomMip[i].GetSrv();
+				PostFxFullscreen(myBloomBlurPs, myBloomBlur[i], myBloomSize[i], &a0, 1, texel,
+					false, Vector2f{ 1.f, 0.f });
+				rhi::SrvHandle a1 = myBloomBlur[i].GetSrv();
+				PostFxFullscreen(myBloomBlurPs, myBloomMip[i], myBloomSize[i], &a1, 1, texel,
+					false, Vector2f{ 0.f, 1.f });
+			}
+
+			// One weighted sum of all six radii. The smaller mips are upsampled
+			// bilinearly by the sampler, which is safe because they are already
+			// blurred -- interpolation cannot invent detail they do not have.
+			// Seven handles, not six: PostFxFullscreen reserves t5 for the 1x1
+			// exposure texture and overwrites whatever was bound there, so slot 5
+			// is a throwaway and the widest mip goes to t6. BloomCombinePS
+			// declares its registers to match.
+			rhi::SrvHandle mips[kBloomMips + 1];
+			for (int i = 0; i < kBloomMips - 1; ++i) mips[i] = myBloomMip[i].GetSrv();
+			mips[kBloomMips - 1] = myBloomMip[kBloomMips - 1].GetSrv();   // slot 5, clobbered
+			mips[kBloomMips]     = myBloomMip[kBloomMips - 1].GetSrv();   // slot 6, actually read
+			const Vector2f texel0{ 1.f / (float)myBloomSize[0].x, 1.f / (float)myBloomSize[0].y };
+			PostFxFullscreen(myBloomCombinePs, myBloomResult, myBloomSize[0], mips, kBloomMips + 1, texel0);
+		}
+		else
+		{
+			// The original pyramid: tent-filter each mip additively onto the one
+			// above it. Cheaper (it reuses the downsample chain and adds no
+			// passes) and continuously blended, but its falloff is whatever the
+			// repeated tent produces.
+			for (int i = kBloomMips - 2; i >= 0; --i)
+			{
+				rhi::SrvHandle s = myBloomMip[i + 1].GetSrv();
+				const Vector2f texel{ 1.f / (float)myBloomSize[i + 1].x, 1.f / (float)myBloomSize[i + 1].y };
+				PostFxFullscreen(myBloomUpPs, myBloomMip[i], myBloomSize[i], &s, 1, texel, /*additive*/ true);
+			}
 		}
 	}
 	else
 	{
 		myBloomMip[0].Clear({ 0, 0, 0, 0 });
+		myBloomResult.Clear({ 0, 0, 0, 0 });
 	}
 
 	// --- auto exposure: HDR -> 64x64 log-luma -> ... -> 1x1 -> temporal adapt ---
@@ -363,13 +434,17 @@ void DeferredRenderer::Composite()
 		c.adaptRate = t.exposureSpeed;
 		c.adaptStrength = std::clamp(t.exposureAdaptStrength, 0.f, 1.f);
 		FillGradeConstants(c, t);
+		FillBloomConstants(c, t);
 		c.deltaTime = std::min(Application::GetInstance()->GetDeltaTime(), 0.1f);
 		myPostFxCb.Update(DX11::Rhi()->GetContext(), c);
 	}
 
 	const rhi::SrvHandle srvs[3] = {
 		myHdr.GetSrv(),
-		myBloomMip[0].GetSrv(),
+		// Multi-radius writes its combined result to its own target; the tent
+		// cascade accumulates into mip 0.
+		(myTunables.bloomEnabled && myTunables.bloomMultiRadius && myBloomBlurPs && myBloomCombinePs)
+			? myBloomResult.GetSrv() : myBloomMip[0].GetSrv(),
 		myExposure[myExposureSrc].GetSrv(),
 	};
 	ctx.SetShaderResources(rhi::ShaderStage::Pixel, 0, 3, srvs);

@@ -284,6 +284,8 @@ bool DeferredRenderer::Init(Vector2ui aResolution)
 
 	// --- post fx: bloom + auto exposure ---
 	myBloomPrefilterPs = DX11::LoadPixelShader("Shaders/BloomPrefilterPS");
+	myBloomBlurPs      = DX11::LoadPixelShader("Shaders/BloomBlurPS");
+	myBloomCombinePs   = DX11::LoadPixelShader("Shaders/BloomCombinePS");
 	myBloomDownPs      = DX11::LoadPixelShader("Shaders/BloomDownPS");
 	myBloomUpPs        = DX11::LoadPixelShader("Shaders/BloomUpPS");
 	myExposureLumaPs   = DX11::LoadPixelShader("Shaders/ExposureLumaPS");

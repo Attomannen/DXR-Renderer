@@ -56,6 +56,21 @@ cbuffer PostFxParams : register(b10)
 	float4 gGradeLift;
 	float4 gGradeGamma;
 	float4 gGradeGain;
+
+	// Bloom. gBloomBlurDir is (1,0) or (0,1) for the separable Gaussian;
+	// gBloomMipWeights are already normalised so the sum preserves energy.
+	float2 gBloomBlurDir;
+	float  gBloomRadius;
+	float  gBloomLerpBlend;
+
+	float4 gBloomMipWeights0;   // mips 0..3
+	float4 gBloomMipWeights1;   // mips 4,5 then unused
+
+	float  gBloomBlendStart;
+	float  gBloomBlendEnd;
+	float  gBloomBlendAmount;
+	float  _bloomPad;
+
 };
 
 #include "Exposure.hlsli"

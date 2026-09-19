@@ -167,8 +167,14 @@ namespace
 		float gradeEnabled, gradeTemperature, gradeTint, gradeContrast;
 		float gradeSaturation; float gradePad[3];
 		float gradeLift[4], gradeGamma[4], gradeGain[4];
+
+		// Bloom: blur axis for the separable pass, per-mip weights (normalised
+		// on upload), and the lerp/threshold blend.
+		float bloomBlurDir[2]; float bloomRadius; float bloomLerpBlend;
+		float bloomMipWeights[8];                    // 6 used, padded to a float4 pair
+		float bloomBlendStart, bloomBlendEnd, bloomBlendAmount, bloomPad;
 	};
-	static_assert(sizeof(PostFxCb) == 192);   // +32 depth of field, +16 motion blur, +80 grading
+	static_assert(sizeof(PostFxCb) == 256);   // +64 bloom (blur dir/radius, mip weights, blend)
 
 	// Shared by all three motion-blur compute passes. Layout must match
 	// MotionBlurCb in MotionTileMaxCS / MotionNeighbourMaxCS / MotionBlurCS.

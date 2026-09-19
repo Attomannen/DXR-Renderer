@@ -406,7 +406,49 @@ namespace Ag
 			bool  bloomEnabled    = true;
 			float bloomThreshold  = 2.0f;    // HDR luma where bloom starts
 			float bloomKnee       = 0.5f;    // soft-knee width (fraction of threshold)
-			float bloomIntensity  = 0.04f;   // additive blend weight in the composite
+			float bloomIntensity  = 0.04f;   // weight of the bloom term in the composite
+
+			// Which blur builds the glow. The tent cascade (false) is the Call of
+			// Duty / Sledgehammer pyramid this renderer shipped with: cheap,
+			// continuously blended, and with a falloff fixed by the filter. The
+			// multi-radius Gaussian (true) blurs each mip separately so the
+			// radial profile can be authored, at the cost of twelve extra
+			// fullscreen passes. Kept switchable because "different" and
+			// "better" are not the same thing here and the pyramid is good.
+			bool  bloomMultiRadius = true;
+
+			// --- multi-radius Gaussian ---
+			// Each mip is blurred by a separable Gaussian of its own radius, and
+			// the mips are then summed. A pyramid built only from tent upsamples
+			// (the previous approach) has a fixed shape: the falloff is whatever
+			// the repeated tent happens to give. Blurring each level separately
+			// and weighting the sum makes the width and the shape independent,
+			// so a tight bright core and a wide faint veil can coexist.
+			// Scales every mip's Gaussian sigma. Clamped to 2 on upload: the blur
+			// is a fixed 9 taps, so stretching the step further just spreads the
+			// taps until the kernel undersamples its own Gaussian and the glow
+			// loses energy instead of widening (measured: radius 4 is visibly
+			// dimmer than radius 1, not wider). Width comes from the mip
+			// weights below, which is what the mip pyramid is for.
+			float bloomRadius     = 1.0f;
+			// Per-mip weights, mip 0 (tightest) to mip 5 (widest). Normalised at
+			// upload, so these read as relative proportions rather than gains.
+			// Absolute gains per mip, tight to wide; see FillBloomConstants for
+			// why they are not normalised. Near-flat on purpose: the cascade
+			// this replaced sums every level at full strength, and anything
+			// front-loaded toward the tight mips reads much narrower than it.
+			float bloomMipWeights[6] = { 1.0f, 1.0f, 1.0f, 0.9f, 0.8f, 0.7f };
+
+			// --- lerp / threshold blending ---
+			// Pure addition blows out: a bright bloom pushes the sum past the
+			// tonemapper's shoulder and the highlight clips to white, losing the
+			// colour it was blooming. Above a threshold the composite crossfades
+			// from "scene plus bloom" to "scene lerped toward bloom", so strong
+			// highlights veil instead of clipping.
+			bool  bloomLerpBlend  = true;
+			float bloomBlendStart = 0.15f;   // bloom luma where the crossfade begins
+			float bloomBlendEnd   = 1.5f;    // bloom luma where it is fully lerped
+			float bloomBlendAmount = 0.6f;   // how far toward the lerp it goes (0..1)
 			// Physical camera (see Photometry.h). Manual exposure comes from
 			// aperture/shutter/ISO; auto meters the scene like a reflected-light
 			// meter. Defaults are the "sunny 16" rule, EV100 ~15.
@@ -751,7 +793,8 @@ namespace Ag
 		bool CreatePostFxTargets(Vector2ui aResolution);
 		void PostFxFullscreen(const PixelShader* aPs, RenderTarget& aDst, Vector2ui aDstSize,
 		                      const rhi::SrvHandle* aSrvs, int aSrvCount,
-		                      Vector2f aSrcTexel, bool aAdditive = false);
+		                      Vector2f aSrcTexel, bool aAdditive = false,
+		                      Vector2f aBlurDir = { 0.f, 0.f });
 		void CullClusters();
 		void RenderSSAO();
 		void RenderShadows(const std::function<void(const Camera&)>& aDrawShadowCasters);
@@ -985,6 +1028,8 @@ namespace Ag
 		const PixelShader* myBloomPrefilterPs = nullptr;
 		const PixelShader* myBloomDownPs      = nullptr;
 		const PixelShader* myBloomUpPs        = nullptr;
+		const PixelShader* myBloomBlurPs      = nullptr;   // separable Gaussian, one axis per pass
+		const PixelShader* myBloomCombinePs   = nullptr;   // weighted sum of every blurred mip
 		const PixelShader* myExposureLumaPs   = nullptr;
 		const PixelShader* myExposureDownPs   = nullptr;
 		const PixelShader* myExposureAdaptPs  = nullptr;
@@ -1007,6 +1052,9 @@ namespace Ag
 		Vector2ui myMbTileCount{ 1, 1 };
 		const PixelShader* myCompositePs      = nullptr;
 		std::array<RenderTarget, kBloomMips> myBloomMip;   // [0] = half res, each next halved
+		// Ping-pong scratch for the separable blur, one per mip size.
+		std::array<RenderTarget, kBloomMips> myBloomBlur;
+		RenderTarget myBloomResult;                        // combined, half res
 		std::array<Vector2ui, kBloomMips>    myBloomSize{};
 		std::array<RenderTarget, 7> myExpMip;              // 64,32,16,8,4,2,1 log-luma
 		RenderTarget myExposure[2];                        // persistent 1x1 EV100 ping-pong

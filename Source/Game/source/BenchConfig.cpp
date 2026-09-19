@@ -138,6 +138,12 @@ void ApplyRendererOverrides(DeferredRenderer::Tunables& tun)
 	tun.shadowShowCascades = EnvInt("BENCH_SHADOW_VIZ", 0) != 0;
 	tun.bloomEnabled = EnvInt("BENCH_BLOOM", 1) != 0;
 	tun.bloomIntensity = EnvFloat("BENCH_BLOOM_INTENSITY", tun.bloomIntensity);
+	tun.bloomThreshold = EnvFloat("BENCH_BLOOM_THRESHOLD", tun.bloomThreshold);
+	// 0 selects the original tent cascade, for A/B against the multi-radius
+	// Gaussian without rebuilding.
+	tun.bloomMultiRadius = EnvInt("BENCH_BLOOM_MULTIRADIUS", tun.bloomMultiRadius ? 1 : 0) != 0;
+	tun.bloomRadius = EnvFloat("BENCH_BLOOM_RADIUS", tun.bloomRadius);
+	tun.bloomLerpBlend = EnvInt("BENCH_BLOOM_LERP", tun.bloomLerpBlend ? 1 : 0) != 0;
 	// BENCH_EMISSIVE_SAMPLES=0 turns emissive area lights off, to A/B them.
 	tun.emissiveLightSamples = std::clamp(EnvInt("BENCH_EMISSIVE_SAMPLES", tun.emissiveLightSamples), 0, 32);
 	tun.dxrLightingView = EnvInt("BENCH_LIGHTING_VIEW", 0);

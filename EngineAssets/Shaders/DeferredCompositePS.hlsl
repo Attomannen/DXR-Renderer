@@ -33,7 +33,32 @@ float4 main(FsIn i) : SV_TARGET
 	const float exposure = ExposureFromEv100(ev100) / HdrPreExposure();
 
 	// Bloom is gathered from the unexposed HDR, so expose it the same way.
-	float3 color = (hdr + bloom * gBloomIntensity) * exposure;
+	const float3 bloomTerm = bloom * gBloomIntensity;
+
+	// Additive is the honest model of lens scatter: light arriving at a sensel
+	// from elsewhere in the image is added to what was already there. It is
+	// also what clips. Past a threshold the sum runs off the tonemapper's
+	// shoulder and a coloured highlight turns into a white blob, losing the hue
+	// that made it worth blooming.
+	//
+	// So above gBloomBlendStart the composite crossfades toward a lerp: the
+	// scene is pulled *toward* the bloom colour rather than having it piled on
+	// top. The result saturates instead of clipping, so a bright sodium lamp
+	// stays orange as it veils out. gBloomBlendAmount caps how far that goes,
+	// because going all the way to a pure lerp reads as a wash.
+	float3 blended = hdr + bloomTerm;
+	if (gBloomLerpBlend > 0.5f)
+	{
+		const float bloomLuma = dot(bloomTerm, float3(0.2126f, 0.7152f, 0.0722f));
+		const float lo = gBloomBlendStart;
+		const float hi = max(gBloomBlendEnd, lo + 1e-4f);
+		const float t = saturate((bloomLuma - lo) / (hi - lo)) * saturate(gBloomBlendAmount);
+		// Toward max(), not toward bloom alone: the scene behind a bloom this
+		// strong should not darken just because the bloom is dimmer than it.
+		blended = lerp(blended, max(hdr, bloomTerm), t);
+	}
+
+	float3 color = blended * exposure;
 	color = ApplyColorGrade(color);
 	color = Tonemap(color);
 	return float4(color, 1.0f);   // opaque: the editor shows this target through ImGui
