@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "DefaultEditorGraphics.h"
+#include <age/debugging/CpuProfiler.h>
 #include <age/render/CubemapPrefilter.h>
 #include <age/Particles/ParticleRenderer.h>
 #include <age/math/Photometry.h>
@@ -535,12 +536,13 @@ void DefaultSceneEditorGraphics::Draw(const SceneDrawParameters& parameters)
 	if (!GraphicsEngine::GetInstance())
 		GraphicsEngine::Start();
 
+	AG_CPU_SCOPE("Editor scene draw");
 	GraphicsEngine::GetInstance()->BeginFrame();
 
 	// Asset edits still show up while the editor runs, but re-reading every
 	// model, texture and material from disk every frame is far too expensive.
-	myCache.ClearCacheThrottled();
-	myParticles.UpdateScene(*parameters.scene, ImGui::GetIO().DeltaTime);
+	{ AG_CPU_SCOPE("Cache throttle"); myCache.ClearCacheThrottled(); }
+	{ AG_CPU_SCOPE("Particles update"); myParticles.UpdateScene(*parameters.scene, ImGui::GetIO().DeltaTime); }
 
 	const Camera& renderCamera = parameters.viewport->GetCamera();
 	Frustum frustum = CalculateFrustum(renderCamera);
@@ -555,6 +557,7 @@ void DefaultSceneEditorGraphics::Draw(const SceneDrawParameters& parameters)
 		std::vector<ScenePropertyDefinition> sceneObjectProperties;
 
 		{ // One pass to render ID
+			AG_CPU_SCOPE("ID pass");
 			parameters.viewport->SetupIdPass();
 			SetupIdPass();
 
@@ -579,7 +582,9 @@ void DefaultSceneEditorGraphics::Draw(const SceneDrawParameters& parameters)
 			}
 		}
 
-		if (!DrawDeferredColorPass(parameters, frustum))
+		bool deferredOk = false;
+		{ AG_CPU_SCOPE("Deferred color pass"); deferredOk = DrawDeferredColorPass(parameters, frustum); }
+		if (!deferredOk)
 		{
 			// Forward fallback: flat PBR, no shadows or glass.
 			parameters.viewport->SetupColorPass();
@@ -609,10 +614,10 @@ void DefaultSceneEditorGraphics::Draw(const SceneDrawParameters& parameters)
 			myParticles.Render(ParticlePreviewSet::LdrScale());
 		}
 	}
-	DrawOutlines(*parameters.viewport);
+	{ AG_CPU_SCOPE("Outlines"); DrawOutlines(*parameters.viewport); }
 	parameters.viewport->EndDraw();
 
-	GraphicsEngine::GetInstance()->EndFrame();
+	{ AG_CPU_SCOPE("Graphics end frame"); GraphicsEngine::GetInstance()->EndFrame(); }
 
 }
 
@@ -768,8 +773,11 @@ bool DefaultSceneEditorGraphics::DrawDeferredColorPass(const SceneDrawParameters
 	// Scene point / spot lights. Authored as ordinary scene objects, so one
 	// pass over the hierarchy collects them.
 	std::vector<DeferredLight> lights;
-	CollectSceneLights(*scene, lights);
-	dr.UploadLights(lights.data(), (int)lights.size());
+	{
+		AG_CPU_SCOPE("Collect + upload lights");
+		CollectSceneLights(*scene, lights);
+		dr.UploadLights(lights.data(), (int)lights.size());
+	}
 
 	// The ray-traced path samples this cube for sky and ambient light.
 	if (environmentSrv.IsValid())
@@ -810,6 +818,7 @@ bool DefaultSceneEditorGraphics::DrawDeferredColorPass(const SceneDrawParameters
 	{
 		// The instance list only changes when the scene does; a moving editor
 		// camera must not rebuild it.
+		AG_CPU_SCOPE("Ray instances + TLAS");
 		const uint64_t sceneStamp = HashSceneGeometry(*scene);
 		if (sceneStamp != mySceneStamp || myRayInstances.empty())
 		{
@@ -872,11 +881,13 @@ bool DefaultSceneEditorGraphics::DrawDeferredColorPass(const SceneDrawParameters
 
 	auto drawOpaque = [&]()
 	{
+		AG_CPU_SCOPE("Submit opaque");
 		DrawParameters p = makeParameters(DrawParameters::MeshPass::Opaque, &geometryShader, frustum);
 		drawScene(p);
 	};
 	auto drawTransparent = [&]()
 	{
+		AG_CPU_SCOPE("Submit transparent");
 		DrawParameters p = makeParameters(DrawParameters::MeshPass::Transparent, glassShader, frustum);
 		drawScene(p);
 		// The lit pass is photometric like the game, so particles need no scaling here.
@@ -884,6 +895,7 @@ bool DefaultSceneEditorGraphics::DrawDeferredColorPass(const SceneDrawParameters
 	};
 	auto drawShadowCasters = [&](const Camera& shadowCamera)
 	{
+		AG_CPU_SCOPE("Submit shadow casters");
 		Frustum shadowFrustum = CalculateFrustum(shadowCamera);
 		DrawParameters p = makeParameters(DrawParameters::MeshPass::Opaque, &shadowShader, shadowFrustum);
 		drawScene(p);
@@ -895,8 +907,8 @@ bool DefaultSceneEditorGraphics::DrawDeferredColorPass(const SceneDrawParameters
 		char channel[8] = {};
 		size_t channelLength = 0;
 		getenv_s(&channelLength, channel, sizeof(channel), "AGE_EDITOR_GBUF");
-		dr.BuildFrame(graph, drawOpaque, drawTransparent, drawShadowCasters, channelLength ? atoi(channel) : 0);
-		graph.Execute();
+		{ AG_CPU_SCOPE("BuildFrame"); dr.BuildFrame(graph, drawOpaque, drawTransparent, drawShadowCasters, channelLength ? atoi(channel) : 0); }
+		{ AG_CPU_SCOPE("Graph execute"); graph.Execute(); }
 	}
 
 	DX11::BackBuffer = savedBackBuffer;

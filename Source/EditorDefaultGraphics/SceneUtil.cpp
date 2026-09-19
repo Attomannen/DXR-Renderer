@@ -1,5 +1,8 @@
 
 #include "stdafx.h"
+#include <cctype>
+#include <algorithm>
+#include <unordered_map>
 
 #include "SceneUtil.h"
 
@@ -53,48 +56,117 @@ namespace
 	void ApplyModelMaterials(const SceneModel& modelValue, Instance& instance, SceneCache& cache)
 	{
 		const int meshCount = std::min((int)instance.GetModel()->GetMeshCount(), MAX_MESHES_PER_MODEL);
-		for (int mesh = 0; mesh < meshCount; ++mesh)
+
+		// Identify this (model, material assignment) pair. StringId is an
+		// interned pointer, so the contents hash is just the pointers.
+		uint64_t key = 1469598103934665603ull;
+		const auto mix = [&key](const void* aPointer)
 		{
-			// FBX traversal order is exporter-dependent. Prefer the material asset
-			// whose filename matches the imported mesh material name, falling back
-			// to the legacy row index for assets without names.
-			StringId materialPath = modelValue.materials[mesh];
-			const std::string_view meshMaterial = instance.GetModel()->GetMaterialName(mesh).GetStringView();
-			if (!meshMaterial.empty())
+			key = (key ^ reinterpret_cast<uint64_t>(aPointer)) * 1099511628211ull;
+		};
+		mix(instance.GetModel().get());
+		for (const StringId candidate : modelValue.materials) mix(candidate.GetString());
+
+		SceneCache::ResolvedMaterials& resolved = cache.GetResolvedMaterials(key);
+		if (!resolved.built)
+		{
+			resolved.built = true;
+			resolved.meshes.assign((size_t)meshCount, {});
+
+			// Index the assigned material assets by lowercased filename stem.
+			//
+			// The obvious spelling -- scanning modelValue.materials per mesh and
+			// taking each candidate's stem inline -- is quadratic in a way that
+			// does not show until a real model arrives: materials is a fixed
+			// MAX_MESHES_PER_MODEL (2048) array, so a 132-mesh model built
+			// roughly 270k std::filesystem::path objects, plus a std::string per
+			// comparison, every frame.
+			static thread_local std::unordered_map<std::string, StringId> locStemToMaterial;
+			static thread_local std::string locKey;
+			locStemToMaterial.clear();
+			for (const StringId candidate : modelValue.materials)
 			{
-				for (const StringId candidate : modelValue.materials)
-				{
-					if (candidate.IsEmpty()) continue;
-					const std::string stem = std::filesystem::path(candidate.GetString()).stem().string();
-					if (_stricmp(stem.c_str(), std::string(meshMaterial).c_str()) == 0) { materialPath = candidate; break; }
-				}
-			}
-			if (materialPath.IsEmpty()) continue;
-			const MaterialAsset* cached = cache.GetMaterialUsingCache(materialPath);
-			if (!cached) continue;
-			const MaterialAsset& material = *cached;
-			for (int slot = 0; slot < 4; ++slot)
-			{
-				if (material.maps[slot].empty()) continue;
-				const TextureSrgbMode srgbMode = material.MapIsSrgb(slot) ? TextureSrgbMode::ForceSrgbFormat : TextureSrgbMode::ForceNoSrgbFormat;
-				if (Texture* texture = cache.GetTextureUsingCache(StringRegistry::RegisterOrGetString(material.maps[slot]), srgbMode))
-					instance.SetTexture(mesh, slot, texture);
+				if (candidate.IsEmpty()) continue;
+				locKey = std::filesystem::path(candidate.GetString()).stem().string();
+				std::transform(locKey.begin(), locKey.end(), locKey.begin(),
+					[](unsigned char c) { return (char)std::tolower(c); });
+				// First assignment wins, matching the original loop's early break.
+				locStemToMaterial.try_emplace(locKey, candidate);
 			}
 
-			// Same material record the game builds (GameWorld::ApplySceneMaterial).
-			const std::string recordName = std::string("tgmat/") + materialPath.GetString() + "@"
-				+ instance.GetModel()->GetPath() + "#" + std::to_string(mesh);
-			const uint32_t materialIndex = RayTracingMaterialTable::GetOrAssignMaterialIndex(StringRegistry::RegisterOrGetString(recordName));
-			const TextureResource* const* textures = instance.GetTextures(mesh);
-			auto srv = [&](int slot) { return textures[slot] ? textures[slot]->GetSrv() : rhi::SrvHandle{}; };
-			RayTracingMaterialTable::SetMaterialTextures(materialIndex, { srv(0), srv(1), srv(2), srv(3) });
-			RayTracingMaterialTable::SetMaterialParams(materialIndex, material.ToParams());
-			// Same classification as GameWorld::RegisterMaterial.
-			const bool provablyOpaque = !material.IsMasked()
-				&& (material.maps[MaterialAsset::BaseColor].empty() || !material.baseColorHasAlpha);
-			RayTracingMaterialTable::SetRayVisibility(materialIndex, material.IsTransparent() ? RayTracingMaterialTable::kRayTransparent
-				: provablyOpaque ? RayTracingMaterialTable::kRayOpaque : RayTracingMaterialTable::kRayMasked);
-			instance.SetMaterial(mesh, materialIndex);
+			for (int mesh = 0; mesh < meshCount; ++mesh)
+			{
+				// FBX traversal order is exporter-dependent. Prefer the material
+				// asset whose filename matches the imported mesh material name,
+				// falling back to the legacy row index for assets without names.
+				StringId materialPath = modelValue.materials[mesh];
+				const std::string_view meshMaterial = instance.GetModel()->GetMaterialName(mesh).GetStringView();
+				if (!meshMaterial.empty())
+				{
+					locKey.assign(meshMaterial);
+					std::transform(locKey.begin(), locKey.end(), locKey.begin(),
+						[](unsigned char c) { return (char)std::tolower(c); });
+					if (auto it = locStemToMaterial.find(locKey); it != locStemToMaterial.end())
+						materialPath = it->second;
+				}
+				if (materialPath.IsEmpty()) continue;
+
+				SceneCache::ResolvedMaterials::Mesh& out = resolved.meshes[(size_t)mesh];
+				out.materialPath = materialPath;
+				// Same material record the game builds (GameWorld::ApplySceneMaterial).
+				const std::string recordName = std::string("tgmat/") + materialPath.GetString() + "@"
+					+ instance.GetModel()->GetPath() + "#" + std::to_string(mesh);
+				out.materialIndex = RayTracingMaterialTable::GetOrAssignMaterialIndex(StringRegistry::RegisterOrGetString(recordName));
+				out.hasMaterial = true;
+			}
+		}
+
+		// Per frame: hash lookups and pointer writes, no string building. The
+		// instance is rebuilt on the stack each frame, so it still has to be
+		// stamped even when nothing about the materials changed.
+		for (int mesh = 0; mesh < (int)resolved.meshes.size(); ++mesh)
+		{
+			SceneCache::ResolvedMaterials::Mesh& out = resolved.meshes[(size_t)mesh];
+			if (!out.hasMaterial) continue;
+			const MaterialAsset* cached = cache.GetMaterialUsingCache(out.materialPath);
+			if (!cached) continue;
+			const MaterialAsset& material = *cached;
+
+			// A reloaded asset is a new allocation, which is also the signal
+			// that its contents may have changed on disk.
+			const bool materialChanged = cached != out.lastMaterial;
+			if (materialChanged)
+			{
+				out.lastMaterial = cached;
+				for (int slot = 0; slot < 4; ++slot)
+				{
+					out.texturePaths[slot] = material.maps[slot].empty() ? StringId{}
+						: StringRegistry::RegisterOrGetString(material.maps[slot]);
+					out.textureModes[slot] = material.MapIsSrgb(slot) ? TextureSrgbMode::ForceSrgbFormat : TextureSrgbMode::ForceNoSrgbFormat;
+				}
+			}
+
+			Texture* textures[4] = {};
+			for (int slot = 0; slot < 4; ++slot)
+			{
+				if (out.texturePaths[slot].IsEmpty()) continue;
+				textures[slot] = cache.GetTextureUsingCache(out.texturePaths[slot], out.textureModes[slot]);
+				if (textures[slot]) instance.SetTexture(mesh, slot, textures[slot]);
+			}
+
+			if (materialChanged)
+			{
+				auto srv = [&](int slot) { return textures[slot] ? textures[slot]->GetSrv() : rhi::SrvHandle{}; };
+				RayTracingMaterialTable::SetMaterialTextures(out.materialIndex, { srv(0), srv(1), srv(2), srv(3) });
+				RayTracingMaterialTable::SetMaterialParams(out.materialIndex, material.ToParams());
+				// Same classification as GameWorld::RegisterMaterial.
+				const bool provablyOpaque = !material.IsMasked()
+					&& (material.maps[MaterialAsset::BaseColor].empty() || !material.baseColorHasAlpha);
+				RayTracingMaterialTable::SetRayVisibility(out.materialIndex, material.IsTransparent() ? RayTracingMaterialTable::kRayTransparent
+					: provablyOpaque ? RayTracingMaterialTable::kRayOpaque : RayTracingMaterialTable::kRayMasked);
+			}
+
+			instance.SetMaterial(mesh, out.materialIndex);
 		}
 	}
 }
@@ -206,6 +278,7 @@ void Ag::SceneCache::ClearCache()
 	myTextureCache.clear();
 	myModelCache.clear();
 	myMaterialCache.clear();
+	// myResolvedMaterials is intentionally kept: see its declaration.
 }
 
 void Ag::SceneCache::ClearCacheThrottled(float aMinIntervalSeconds)
@@ -215,13 +288,31 @@ void Ag::SceneCache::ClearCacheThrottled(float aMinIntervalSeconds)
 		std::chrono::duration<float>(now - myLastClear).count() < aMinIntervalSeconds)
 		return;
 	myLastClear = now;
-	ClearCache();
+	// Not ClearCache(): these two are cheap to refill (their misses hit the
+	// engine's own caches), materials are not. See myMaterialCache.
+	myTextureCache.clear();
+	myModelCache.clear();
+	DropChangedMaterials();
+}
+
+void Ag::SceneCache::DropChangedMaterials()
+{
+	for (auto it = myMaterialCache.begin(); it != myMaterialCache.end(); )
+	{
+		std::error_code ec;
+		const auto written = std::filesystem::last_write_time(it->second.file, ec);
+		const long long stamp = ec ? 0 : written.time_since_epoch().count();
+		if (stamp != it->second.stamp)
+			it = myMaterialCache.erase(it);
+		else
+			++it;
+	}
 }
 
 const Ag::MaterialAsset* Ag::SceneCache::GetMaterialUsingCache(StringId path)
 {
 	if (path.IsEmpty()) return nullptr;
-	if (auto it = myMaterialCache.find(path); it != myMaterialCache.end()) return it->second.get();
+	if (auto it = myMaterialCache.find(path); it != myMaterialCache.end()) return it->second.asset.get();
 
 	auto material = std::make_shared<MaterialAsset>();
 	const std::filesystem::path absolutePath = std::filesystem::path(Settings::GameAssetRoot()) / path.GetString();
@@ -230,8 +321,16 @@ const Ag::MaterialAsset* Ag::SceneCache::GetMaterialUsingCache(StringId path)
 		ERROR_PRINT("Model material could not be loaded: %s", path.GetString());
 		material.reset();
 	}
-	myMaterialCache.emplace(path, material);
-	return material.get();
+
+	CachedMaterial entry;
+	entry.asset = material;
+	entry.file = absolutePath.string();
+	std::error_code ec;
+	const auto written = std::filesystem::last_write_time(absolutePath, ec);
+	entry.stamp = ec ? 0 : written.time_since_epoch().count();
+
+	auto [it, inserted] = myMaterialCache.emplace(path, std::move(entry));
+	return it->second.asset.get();
 }
 
 std::shared_ptr<Model> Ag::SceneCache::GetModelUsingCache(StringId path)
