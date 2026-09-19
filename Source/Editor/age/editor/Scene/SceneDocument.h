@@ -31,7 +31,6 @@ public:
 		Viewport,
 		Instances,
 		Properties,
-		ToolSettings,
 		NavmeshCreationTool,
 		Count
 	};

@@ -84,7 +84,6 @@ void SceneDocument::Init(std::string_view path)
 	sprintf_s(buffer, "Outliner##Document:%s", path.data());
 	myPanelWindowNames[(size_t)Panels::Instances] = buffer;
 	sprintf_s(buffer, "Tool Settings##Document:%s", path.data());
-	myPanelWindowNames[(size_t)Panels::ToolSettings] = buffer;
 	//sprintf_s(buffer, "Navmesh Creation##Document:%s", path.data());
 	//myPanelWindowNames[(size_t)Panels::NavmeshCreationTool] = buffer;
 
@@ -179,65 +178,65 @@ void SceneDocument::Update(float aTimeDelta, InputManager& inputManager)
 		// Add half of CellPadding to make positions of first icon more consistent
 		ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 5);
 
-		if (ImGui::BeginTable("Toolbar", 3, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingFixedFit))
+		const ImVec2 toolbarItemSize = ImVec2(26, 28);
+		auto toolbarSeparator = []()
 		{
-			ImGui::TableNextRow();
-			ImGui::TableSetColumnIndex(0);
+			ImGui::SameLine(0.f, 10.f);
+			ImGui::TextDisabled("|");
+			ImGui::SameLine(0.f, 10.f);
+		};
 
-			ImVec2 toolbarItemSize = ImVec2(26, 28);
-
-			if (ImGui::Selectable(ICON_LC_SAVE_ALL, false, 0, toolbarItemSize))
-			{
-				Editor::GetEditor()->Save();
-			}
-
-			ImGui::TableSetColumnIndex(1);
-
-			if (ImGui::Selectable(ICON_LC_PLAY, false, 0, toolbarItemSize) || ImGui::IsKeyPressed(ImGuiKey_F5))
-			{
-				ProjectRunControls::ExecuteRun(*this);
-			}
-
-			ImGui::TableSetColumnIndex(2);
-
-			{
-				Gizmos& gizmos = myViewport.GetGizmos();
-				bool isMoveToolActive = gizmos.GetCurrentOperation() == ImGuizmo::TRANSLATE;
-				if (ImGui::Selectable(ICON_LC_MOVE_3D, isMoveToolActive, 0, toolbarItemSize))
-				{
-					gizmos.SetCurrentOperation(isMoveToolActive ? 0 : ImGuizmo::TRANSLATE);
-				}
-				ImGui::SameLine();
-
-				bool isRotateToolActive = gizmos.GetCurrentOperation() == ImGuizmo::ROTATE;
-				if (ImGui::Selectable(ICON_LC_ROTATE_3D, isRotateToolActive, 0, toolbarItemSize))
-					gizmos.SetCurrentOperation(isRotateToolActive ? 0 : ImGuizmo::ROTATE);
-
-				ImGui::SameLine();
-
-				bool isScaleToolActive = gizmos.GetCurrentOperation() == ImGuizmo::SCALE;
-				if (ImGui::Selectable(ICON_LC_SCALE_3D, isScaleToolActive, 0, toolbarItemSize))
-					gizmos.SetCurrentOperation(isScaleToolActive ? 0 : ImGuizmo::SCALE);
-			}
-
-			ImGui::EndTable();
+		if (ImGui::Selectable(ICON_LC_SAVE_ALL, false, 0, toolbarItemSize))
+		{
+			Editor::GetEditor()->Save();
+		}
+		ImGui::SameLine();
+		if (ImGui::Selectable(ICON_LC_PLAY, false, 0, toolbarItemSize) || ImGui::IsKeyPressed(ImGuiKey_F5))
+		{
+			ProjectRunControls::ExecuteRun(*this);
 		}
 
+		toolbarSeparator();
+		{
+			Gizmos& gizmos = myViewport.GetGizmos();
+			const uint16_t operations[] = { ImGuizmo::TRANSLATE, ImGuizmo::ROTATE, ImGuizmo::SCALE };
+			const char* icons[] = { ICON_LC_MOVE_3D, ICON_LC_ROTATE_3D, ICON_LC_SCALE_3D };
+			for (int i = 0; i < 3; ++i)
+			{
+				if (i > 0) ImGui::SameLine();
+				const bool active = gizmos.GetCurrentOperation() == operations[i];
+				if (ImGui::Selectable(icons[i], active, 0, toolbarItemSize))
+					gizmos.SetCurrentOperation(active ? uint16_t(0) : operations[i]);
+			}
+
+			ImGui::SameLine();
+			if (ImGui::Selectable(ICON_LC_SETTINGS, false, 0, toolbarItemSize))
+				ImGui::OpenPopup("TransformSettings");
+			if (ImGui::BeginPopup("TransformSettings"))
+			{
+				ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);
+				gizmos.Draw();
+				ImGui::PopFont();
+				ImGui::EndPopup();
+			}
+		}
+
+		toolbarSeparator();
 		ImGui::PopFont();
 		ImGui::PopStyleVar(2);
+
+		ImGui::SameLine();
+		ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2.f);
+		DrawAddMenu();
 	}
 
 	ImGui::PopStyleVar(2);
-
-	ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 8.f);
-	DrawAddMenu();
-	ImGui::Dummy(ImVec2(0.f, 2.f));
 
 	ImVec2 docSpaceSize = ImGui::GetContentRegionAvail();
 
 	ImGuiID dockSpaceId = ImGui::GetID("Document Dockspace");
 	// todo: ImGui::GetContentRegionAvail() returns wrong result first time it seems. What to do instead?
-	ImGui::DockSpace(dockSpaceId, docSpaceSize, ImGuiDockNodeFlags_None, &myDocumentWindowClass);
+	ImGui::DockSpace(dockSpaceId, docSpaceSize, ImGuiDockNodeFlags_AutoHideTabBar, &myDocumentWindowClass);
 
 	if (!myIsDockingInitialized && docSpaceSize.x > 0.0f && docSpaceSize.y > 0.0f)
 	{
@@ -254,7 +253,6 @@ void SceneDocument::Update(float aTimeDelta, InputManager& inputManager)
 
 		ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Viewport].c_str(), center);
 		ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Instances].c_str(), right);
-		ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::ToolSettings].c_str(), right);
 		ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Properties].c_str(), rightBottom);
 
 		ImGui::DockBuilderFinish(dockSpaceId);
@@ -280,13 +278,6 @@ void SceneDocument::Update(float aTimeDelta, InputManager& inputManager)
 
 	ImGui::End();
 	ImGui::PopStyleColor();
-
-	ImGui::SetNextWindowClass(&myDocumentWindowClass);
-
-	ImGui::Begin(myPanelWindowNames[(size_t)Panels::ToolSettings].c_str());
-	Gizmos& gizmos = myViewport.GetGizmos();
-	gizmos.Draw();
-	ImGui::End();
 
 	ImGui::SetNextWindowClass(&myDocumentWindowClass);
 	ImGui::Begin(myPanelWindowNames[(size_t)Panels::Properties].c_str());
@@ -598,8 +589,6 @@ void SceneDocument::DrawAddMenu()
 		filter[0] = '\0';
 		ImGui::OpenPopup("PlaceObjectMenu");
 	}
-	ImGui::SameLine();
-	ImGui::TextDisabled("Place a TGO in the level");
 
 	if (ImGui::BeginPopup("PlaceObjectMenu"))
 	{

@@ -642,7 +642,7 @@ void Ag::Editor::Update(float aTimeDelta, InputManager& inputManager)
 			ImGui::PopStyleVar(2);
 
 			myDocumentDockSize = ImGui::GetContentRegionAvail();
-			ImGui::DockSpace(myDocumentDockSpaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_PassthruCentralNode, &myDocumentLevelWindowClass);
+			ImGui::DockSpace(myDocumentDockSpaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar, &myDocumentLevelWindowClass);
 			ImGui::End();
 			
 			std::erase_if(myOpenDocuments, [](const auto& document) { return document->GetState() == Document::State::CloseConfirmed; });
