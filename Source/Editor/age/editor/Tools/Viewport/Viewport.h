@@ -79,6 +79,11 @@ namespace Ag
 		// first frame. Uninitialised, it was whatever the stack held.
 		bool myNeedsResize = true;
 		bool myViewportHovered = false;
+		// A camera drag (free-fly, Maya orbit, middle-button pan) is in
+		// progress. While it is, the cursor is confined to the panel and the
+		// camera keeps reading input even though the mouse may no longer be
+		// hovering -- releasing the button ends it, not leaving the rectangle.
+		bool myCameraDragActive = false;
 
 		float myFreeFlyMovementSpeed = 1.f;
 		Gizmos myGizmos;

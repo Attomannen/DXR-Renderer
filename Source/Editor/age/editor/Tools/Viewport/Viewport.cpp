@@ -22,6 +22,7 @@
 #include <age/editor/Scene/SceneSelection.h>
 #include <age/editor/Scene/ActiveScene.h>
 #include <age/editor/Document/Document.h>
+#include <age/Application.h>
 
 
 #include "age/Application.h"
@@ -227,8 +228,44 @@ void EditorViewport::DrawAndUpdateViewportWindow(float aDeltaTime, ViewportInter
 		}
 
 		/////////////////////////
-		// Only check viewport input if mouse is over
-		if (ImGui::IsItemHovered() && ImGuizmo::IsUsingAny() == false)
+		// Confine the cursor to the panel for the duration of a camera drag,
+		// so looking around does not run the pointer out over the rest of the
+		// editor -- and so the drag survives reaching the edge, which the
+		// hover test below would otherwise end mid-motion.
+		{
+			const bool cameraButtonDown = ImGui::IsMouseDown(ImGuiMouseButton_Right)
+				|| ImGui::IsMouseDown(ImGuiMouseButton_Middle)
+				|| (ImGui::GetIO().KeyAlt && ImGui::IsMouseDown(ImGuiMouseButton_Left));
+
+			if (!myCameraDragActive && cameraButtonDown && myViewportHovered && !ImGuizmo::IsUsingAny())
+			{
+				if (HWND* window = Application::GetInstance() ? Application::GetInstance()->GetHWND() : nullptr)
+				{
+					// ImGui coordinates are the main viewport's, which is this
+					// window's client area; ClipCursor wants screen space.
+					POINT upperLeft{ myViewportPos.x, myViewportPos.y };
+					POINT lowerRight{ myViewportPos.x + myViewportSize.x, myViewportPos.y + myViewportSize.y };
+					MapWindowPoints(*window, nullptr, &upperLeft, 1);
+					MapWindowPoints(*window, nullptr, &lowerRight, 1);
+					RECT clip{ upperLeft.x, upperLeft.y, lowerRight.x, lowerRight.y };
+					if (clip.right > clip.left && clip.bottom > clip.top)
+					{
+						ClipCursor(&clip);
+						myCameraDragActive = true;
+					}
+				}
+			}
+			else if (myCameraDragActive && !cameraButtonDown)
+			{
+				ClipCursor(nullptr);
+				myCameraDragActive = false;
+			}
+		}
+
+		/////////////////////////
+		// Only check viewport input if mouse is over -- or if a camera drag
+		// that started over it is still held.
+		if ((ImGui::IsItemHovered() || myCameraDragActive) && ImGuizmo::IsUsingAny() == false)
 		{
 			ImGuiIO& io = ImGui::GetIO(); (void)io;
 
