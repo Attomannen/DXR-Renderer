@@ -48,6 +48,14 @@ namespace Ag
 		virtual Vector3f GetVelocity() const = 0;
 		virtual void SetVelocity(const Vector3f& velocity) = 0;
 
+		// The game framework: Player Starts placed in the level, and the flow between levels.
+		// FindPlayerStart matches a tag (an empty tag matches the first Player Start). Yaw is degrees.
+		virtual bool FindPlayerStart(const char* tag, Vector3f& location, float& yawDegrees) const = 0;
+		// Opens a level, e.g. "Scenes/Main"; an empty name restarts the current one. It happens at the start of the next frame.
+		virtual void OpenLevel(const char* level) = 0;
+		virtual void QuitGame() = 0;
+		virtual const char* GetGameName() const = 0;
+
 		// Keys are Windows virtual-key codes (see KeyNameToCode in the node library).
 		// All false / zero while the debug UI has the keyboard or mouse.
 		virtual bool IsKeyDown(int keyCode) const = 0;

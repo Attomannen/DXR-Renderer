@@ -184,6 +184,27 @@ namespace
 			return FindBody() != nullptr;
 		}
 
+		bool FindPlayerStart(const char* tag, Vector3f& location, float& yawDegrees) const override
+		{
+			Matrix4x4f transform;
+			if (!myWorld.FindPlayerStart(tag ? tag : "", transform))
+				return false;
+			location = transform.GetPosition();
+			const Vector3f forward = transform.GetForward();
+			yawDegrees = std::atan2(forward.x, forward.z) * 57.2957795131f;
+			return true;
+		}
+
+		void OpenLevel(const char* level) override
+		{
+			if (level && *level) myWorld.pendingLevel = level;
+			else myWorld.restartRequested = true;
+		}
+
+		void QuitGame() override { PostQuitMessage(0); }
+
+		const char* GetGameName() const override { return myWorld.gameSettings.gameName.c_str(); }
+
 		void AddImpulse(const Vector3f& impulse) override
 		{
 			if (const GameWorld::Impl::ScenePhysicsObject* object = FindBody())
@@ -347,7 +368,7 @@ void GameWorld::Impl::UpdateSceneScripts(float deltaSeconds)
 	++scriptFrame;
 	for (SceneScriptObject& object : sceneScripts)
 	{
-		if (object.instance >= models.size())
+		if (object.instance >= sceneInstances.size())
 			continue;
 
 		ObjectScriptContext context(*this, object.instance);
@@ -411,7 +432,7 @@ void GameWorld::Impl::UpdateSceneCamera()
 	if (activeSceneCamera < 0 || activeSceneCamera >= (int)sceneCameras.size())
 		return;
 	const SceneCameraObject& c = sceneCameras[activeSceneCamera];
-	if (c.instance >= models.size())
+	if (c.instance >= sceneInstances.size())
 		return;
 
 	const Matrix4x4f transform = GetInstanceTransform(c.instance);

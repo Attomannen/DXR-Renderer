@@ -311,7 +311,7 @@ void GameWorld::Impl::ResetPhysicsTest()
 		if (object.body.IsValid())
 			physics.DestroyBody(object.body);
 		object.body = {};
-		if (object.instance < models.size())
+		if (object.instance < sceneInstances.size())
 			SetInstanceTransform(object.instance, object.startTransform);
 	}
 
@@ -320,7 +320,7 @@ void GameWorld::Impl::ResetPhysicsTest()
 		if (character.id.IsValid())
 			physics.DestroyCharacter(character.id);
 		character.id = {};
-		if (character.instance < models.size())
+		if (character.instance < sceneInstances.size())
 			SetInstanceTransform(character.instance, character.startTransform);
 	}
 
@@ -357,7 +357,7 @@ void GameWorld::Impl::UpdatePhysicsTest(float deltaSeconds)
 	PhysicsQuat rotation;
 	for (const ScenePhysicsObject& object : scenePhysicsObjects)
 	{
-		if (!object.dynamic || !object.body.IsValid() || object.instance >= models.size())
+		if (!object.dynamic || !object.body.IsValid() || object.instance >= sceneInstances.size())
 			continue;
 		if (!physics.GetTransform(object.body, position, rotation))
 			continue;
@@ -370,7 +370,7 @@ void GameWorld::Impl::UpdatePhysicsTest(float deltaSeconds)
 	for (const SceneCharacterObject& character : sceneCharacters)
 	{
 		PhysicsVec3 feet;
-		if (!character.id.IsValid() || character.instance >= models.size() || !physics.GetCharacterPosition(character.id, feet))
+		if (!character.id.IsValid() || character.instance >= sceneInstances.size() || !physics.GetCharacterPosition(character.id, feet))
 			continue;
 		// Only the position comes from physics; the script owns which way it faces.
 		Matrix4x4f transform = GetInstanceTransform(character.instance);

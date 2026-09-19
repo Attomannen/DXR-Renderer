@@ -594,6 +594,117 @@ namespace Ag
 
 	IMPLEMENT_COMPONENT_PROPERTY_TYPE(CopyOnWriteWrapper<SceneParticleSystem>, "Particle System")
 
+	namespace
+	{
+		// A text field bound to a StringId.
+		bool StringIdRow(const char* aLabel, StringId& aValue)
+		{
+			BeginRow(aLabel);
+			char buffer[128];
+			strncpy_s(buffer, aValue.GetString(), _TRUNCATE);
+			bool changed = false;
+			if (ImGui::InputText("##v", buffer, IM_ARRAYSIZE(buffer)))
+			{
+				aValue = StringRegistry::RegisterOrGetString(buffer);
+				changed = true;
+			}
+			EndRow();
+			return changed;
+		}
+	}
+
+	template<>
+	void LoadFromJson<CopyOnWriteWrapper<ScenePlayerStart>>(CopyOnWriteWrapper<ScenePlayerStart>& value, const JsonData& jsonData)
+	{
+		value = CopyOnWriteWrapper<ScenePlayerStart>::Create();
+		value.Edit().tag = StringRegistry::RegisterOrGetString(jsonData.json.value("tag", std::string()));
+	}
+
+	template<>
+	void WriteToJson<CopyOnWriteWrapper<ScenePlayerStart>>(const CopyOnWriteWrapper<ScenePlayerStart>& value, JsonData& jsonData)
+	{
+		jsonData.json["tag"] = std::string(value.Get().tag.GetString());
+	}
+
+	template<>
+	bool ShowImGuiEditor<CopyOnWriteWrapper<ScenePlayerStart>>(CopyOnWriteWrapper<ScenePlayerStart>& value, const char* name, const char* description)
+	{
+		const ScenePlayerStart& start = value.Get();
+		if (name == nullptr)
+		{
+			ImGui::Text("%s", start.tag.IsEmpty() ? "Player Start" : start.tag.GetString());
+			return false;
+		}
+
+		PropertyHeader(name, description);
+		ScenePlayerStart edited = start;
+		const bool changed = StringIdRow("Tag", edited.tag);
+		if (changed)
+			value.Edit() = edited;
+		return changed;
+	}
+
+	IMPLEMENT_COMPONENT_PROPERTY_TYPE(CopyOnWriteWrapper<ScenePlayerStart>, "Player Start")
+
+	template<>
+	void LoadFromJson<CopyOnWriteWrapper<SceneGameMode>>(CopyOnWriteWrapper<SceneGameMode>& value, const JsonData& jsonData)
+	{
+		value = CopyOnWriteWrapper<SceneGameMode>::Create();
+		SceneGameMode& mode = value.Edit();
+		const nlohmann::json& json = jsonData.json;
+
+		mode.defaultPawn = StringRegistry::RegisterOrGetString(json.value("defaultPawn", std::string()));
+		mode.spawnPlayer = json.value("spawnPlayer", mode.spawnPlayer);
+		mode.playerStartTag = StringRegistry::RegisterOrGetString(json.value("playerStartTag", std::string()));
+	}
+
+	template<>
+	void WriteToJson<CopyOnWriteWrapper<SceneGameMode>>(const CopyOnWriteWrapper<SceneGameMode>& value, JsonData& jsonData)
+	{
+		const SceneGameMode& mode = value.Get();
+		jsonData.json["defaultPawn"] = std::string(mode.defaultPawn.GetString());
+		jsonData.json["spawnPlayer"] = mode.spawnPlayer;
+		jsonData.json["playerStartTag"] = std::string(mode.playerStartTag.GetString());
+	}
+
+	template<>
+	bool ShowImGuiEditor<CopyOnWriteWrapper<SceneGameMode>>(CopyOnWriteWrapper<SceneGameMode>& value, const char* name, const char* description)
+	{
+		const SceneGameMode& mode = value.Get();
+		if (name == nullptr)
+		{
+			ImGui::Text("%s", mode.defaultPawn.IsEmpty() ? "No pawn" : mode.defaultPawn.GetString());
+			return false;
+		}
+
+		PropertyHeader(name, description);
+		SceneGameMode edited = mode;
+		bool changed = false;
+
+		BeginRow("Default Pawn");
+		{
+			StringId pawn = edited.defaultPawn;
+			if (PropertyEditor::AssetField("##asset", pawn, { ".tgo" }, "None"))
+			{
+				edited.defaultPawn = pawn;
+				changed = true;
+			}
+		}
+		EndRow();
+
+		BeginRow("Spawn Player");
+		changed |= ImGui::Checkbox("##v", &edited.spawnPlayer);
+		EndRow();
+
+		changed |= StringIdRow("Player Start Tag", edited.playerStartTag);
+
+		if (changed)
+			value.Edit() = edited;
+		return changed;
+	}
+
+	IMPLEMENT_COMPONENT_PROPERTY_TYPE(CopyOnWriteWrapper<SceneGameMode>, "Game Mode")
+
 	template<>
 	void LoadFromJson<CopyOnWriteWrapper<SceneCharacter>>(CopyOnWriteWrapper<SceneCharacter>& value, const JsonData& jsonData)
 	{

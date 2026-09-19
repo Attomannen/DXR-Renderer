@@ -13,6 +13,7 @@
 #include <age/script/Nodes/MathMoreNodes.h>
 #include <age/script/Nodes/FlowNodes.h>
 #include <age/script/Nodes/StringNodes.h>
+#include <age/script/Nodes/GameFrameworkNodes.h>
 #include <age/script/Nodes/ArrayNodes.h>
 #include <DirectXTex/ScreenGrab/ScreenGrab11.h>
 #pragma comment(lib, "windowscodecs.lib")
@@ -43,6 +44,7 @@ void GameWorld::Init()
 	Ag::RegisterStringNodes();
 	Ag::RegisterArrayNodes();
 	Ag::RegisterGameObjectNodes();
+	Ag::RegisterGameFrameworkNodes();
 	INFO_PRINT("physics: Jolt %s, smoke test %s", Ag::GetPhysicsVersion(), Ag::PhysicsSmokeTest() ? "ok" : "FAILED");
 
 	// Materials rendered in the forward transparent pass (substring match, after
@@ -197,6 +199,7 @@ void GameWorld::Update(float aDeltaTime)
 {
 	Impl& s = *myImpl;
 	s.cpuStart = std::chrono::high_resolution_clock::now();
+	s.ProcessLevelRequest();
 
 	if (s.benchFrames > 0)
 		s.SetScriptedCamera();

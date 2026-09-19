@@ -61,6 +61,12 @@ void ApplyStartupOverrides(GameWorld::Impl& s)
 	// scene the editor asked for.
 	s.currentScene = EnvStr("BENCH_SCENE", "");
 	if (s.currentScene.empty()) s.currentScene = StartupScene();
+	// Nothing asked for a level: open the one the project's game settings name.
+	if (s.currentScene.empty())
+	{
+		GameSettings settings;
+		if (settings.Load()) s.currentScene = settings.defaultLevel;
+	}
 }
 
 void ApplyContentOverrides(GameWorld::Impl& s)

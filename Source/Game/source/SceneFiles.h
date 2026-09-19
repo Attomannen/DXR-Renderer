@@ -71,6 +71,20 @@ namespace GameScene
 		bool activateOnStart = true;
 	};
 
+	struct SceneEntryPlayerStart
+	{
+		bool has = false;
+		std::string tag;
+	};
+
+	struct SceneEntryGameMode
+	{
+		bool has = false;
+		std::string defaultPawn;          // .tgo, relative to the asset root
+		bool spawnPlayer = true;
+		std::string playerStartTag;
+	};
+
 	struct SceneEntryCharacter
 	{
 		bool has = false;
@@ -85,6 +99,8 @@ namespace GameScene
 		SceneEntryCamera camera;
 		SceneEntryCharacter character;
 		SceneEntryParticles particles;
+		SceneEntryPlayerStart playerStart;
+		SceneEntryGameMode gameMode;
 		json instanceProperties;                            // per-instance property values written in the scene file
 		std::string tgoPath;                                // "Folder/Name" of the .tgo (no extension); scripts live in <tgoPath>/
 		Matrix4x4f transform;                               // identity by default

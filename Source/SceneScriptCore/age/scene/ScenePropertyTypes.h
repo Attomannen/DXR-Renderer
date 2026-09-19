@@ -122,6 +122,22 @@ namespace Ag
 		bool activateOnStart = true;
 	};
 
+	// Marks where the player enters the level. The Game Mode spawns its Default Pawn at the Player Start whose tag matches
+	// (or at the first one when it asks for no tag). In the editor the object keeps its marker mesh; in the game it is invisible.
+	struct ScenePlayerStart
+	{
+		StringId tag;
+	};
+
+	// The rules of a game, like Unreal's Game Mode: which pawn the player controls and where it starts. The .tgo that
+	// carries this component is the Game Mode, and its event graph is where the game's own rules live.
+	struct SceneGameMode
+	{
+		StringId defaultPawn;         // a .tgo, usually with a Character and a Camera
+		bool spawnPlayer = true;
+		StringId playerStartTag;      // which Player Start to use; empty means the first one
+	};
+
 	// A walking character: a capsule that steps, slides and climbs slopes (not a rigid body).
 	// The object's origin is its feet. Scripts drive it with Move and Jump.
 	struct SceneCharacter
@@ -157,6 +173,8 @@ namespace Ag
 	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<SceneCamera>)
 	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<SceneCharacter>)
 	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<SceneParticleSystem>)
+	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<ScenePlayerStart>)
+	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<SceneGameMode>)
 	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<SceneReference>)
 	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<AnimationClipReference>)
 	DECLARE_PROPERTY_TYPE(PoseAndMotion)

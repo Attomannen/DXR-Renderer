@@ -162,6 +162,31 @@ namespace GameScene
 		}
 	}
 
+	// The Player Start and Game Mode components from a .tgo's "properties" array.
+	void ParseFrameworkProperties(const json& propsHolder, SceneEntry& out)
+	{
+		if (!propsHolder.contains("properties")) return;
+		for (const json& p : propsHolder["properties"])
+		{
+			if (!p.contains("value") || !p["value"].is_object()) continue;
+			const std::string type = p.value("type", "");
+			const json& v = p["value"];
+			if (type == "Player Start")
+			{
+				out.playerStart.has = true;
+				out.playerStart.tag = v.value("tag", "");
+			}
+			else if (type == "Game Mode")
+			{
+				out.gameMode.has = true;
+				out.gameMode.defaultPawn = v.value("defaultPawn", "");
+				std::replace(out.gameMode.defaultPawn.begin(), out.gameMode.defaultPawn.end(), '\\', '/');
+				out.gameMode.spawnPlayer = v.value("spawnPlayer", true);
+				out.gameMode.playerStartTag = v.value("playerStartTag", "");
+			}
+		}
+	}
+
 	// The Character component from a .tgo's "properties" array.
 	void ParseCharacterProperty(const json& propsHolder, SceneEntryCharacter& out)
 	{
@@ -190,8 +215,15 @@ namespace GameScene
 		ParseCameraProperty(j, e.camera);
 		ParseCharacterProperty(j, e.character);
 		ParseParticleProperty(j, e.particles);
-		// A mesh is not required: a camera or a particle system can stand on its own.
-		if (!hasModel && !e.camera.has && !e.particles.has) { ERROR_PRINT("bench: %s has no Model, Camera or Particle System", tgoPath.string().c_str()); return std::nullopt; }
+		ParseFrameworkProperties(j, e);
+		// A mesh is not required: a camera, a particle system, a Player Start or a Game Mode can stand on its own.
+		if (!hasModel && !e.camera.has && !e.particles.has && !e.playerStart.has && !e.gameMode.has)
+		{
+			ERROR_PRINT("bench: %s has no Model, Camera, Particle System, Player Start or Game Mode", tgoPath.string().c_str());
+			return std::nullopt;
+		}
+		// A Player Start's mesh is only a marker for the editor; the game does not draw it.
+		if (e.playerStart.has) e.fbx.clear();
 		{
 			std::error_code pathEc;
 			fs::path relative = fs::relative(tgoPath, Ag::Settings::GameAssetRoot(), pathEc);

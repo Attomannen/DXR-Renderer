@@ -130,10 +130,12 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 		ambientColor[0] = 0.35f; ambientColor[1] = 0.42f; ambientColor[2] = 0.55f;
 	}
 	currentScene = sceneName;
+	levelGameMode.clear();
 	std::ifstream lightingFile(fs::path(Settings::GameAssetRoot()) / fs::path(sceneName).replace_extension(".tgs"));
 	if (lightingFile) {
 		try {
 			json document; lightingFile >> document;
+			levelGameMode = document.value("gameMode", std::string());
 			if (document.contains("lighting")) {
 				const auto& lighting = document["lighting"];
 				// Negated on the way in, the same as the editor viewport does.
@@ -195,6 +197,9 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 		ERROR_PRINT("bench: scene '%s' contains no loadable objects", sceneName.c_str());
 		return false;
 	}
+
+	// The Game Mode adds its own object and spawns the player's pawn at a Player Start.
+	SpawnGameModeEntries(entries);
 
 	// Decode every texture the scene's materials reference in parallel
 	// before the (main-thread) per-instance texture assignment below.

@@ -34,6 +34,7 @@
 #include <age/EngineDefines.h>
 #include <age/physics/PhysicsWorld.h>
 #include <age/Particles/ParticleRenderer.h>
+#include <age/settings/GameSettings.h>
 #include <age/particles/ParticleSystem.h>
 #include <age/script/ScriptRuntimeInstance.h>
 #include <age/script/Contexts/GameScriptContext.h>
@@ -478,6 +479,22 @@ struct GameWorld::Impl
 	};
 	std::vector<SceneCharacterObject> sceneCharacters;
 	void RegisterSceneCharacter(const GameScene::SceneEntry& entry, const Matrix4x4f& worldTransform, size_t instanceIndex);
+
+	// --- Game framework (GameWorldFramework.cpp) ---
+	struct PlayerStartInfo
+	{
+		std::string tag;
+		Matrix4x4f transform;
+	};
+	std::vector<PlayerStartInfo> playerStarts;
+	std::string levelGameMode;      // the level's own Game Mode ("" = the project's default)
+	std::string pendingLevel;       // set by scripts; that level opens at the start of the next frame
+	bool restartRequested = false;
+	GameSettings gameSettings;
+	bool FindPlayerStart(const std::string& tag, Matrix4x4f& transform) const;
+	// Adds the Game Mode object and the pawn it spawns at a Player Start to the level's objects.
+	void SpawnGameModeEntries(std::vector<GameScene::SceneEntry>& entries);
+	void ProcessLevelRequest();
 
 	// --- Particle System components (GameWorldParticles.cpp) ---
 	struct SceneParticleObject
