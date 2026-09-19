@@ -189,7 +189,7 @@ void AnimationClipDocument::Update(float aTimeDelta, InputManager& inputManager)
 		ImVec2 docSpaceSize = ImGui::GetContentRegionAvail();
 		ImGuiID dockSpaceId = ImGui::GetID("Document Dockspace");
 		// todo: ImGui::GetContentRegionAvail() returns wrong result first time it seems. What to do instead?
-		ImGui::DockSpace(dockSpaceId, docSpaceSize, ImGuiDockNodeFlags_None, &myDocumentWindowClass);
+		ImGui::DockSpace(dockSpaceId, docSpaceSize, ImGuiDockNodeFlags_AutoHideTabBar, &myDocumentWindowClass);
 
 		if (!myIsDockingInitialized && docSpaceSize.x > 0.0f && docSpaceSize.y > 0.0f)
 		{
@@ -206,16 +206,22 @@ void AnimationClipDocument::Update(float aTimeDelta, InputManager& inputManager)
 
 			center = dockSpaceId;
 
-			ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.25f, &right, &center);
-			ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.3333f, &left, &center);
+			// Skeleton on the left, details on the right, a one-row timeline under the viewport.
+			ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.22f, &right, &center);
+			ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.22f, &left, &center);
 
-			ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.2f, &centerLower, &centerUpper);
+			ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.07f, &centerLower, &centerUpper);
 
 			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Properties].c_str(), right);
 			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Skeleton].c_str(), left);
 			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::PlayControls].c_str(), centerLower);
 
 			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Viewport].c_str(), centerUpper);
+
+			// Single-panel nodes do not need a tab header.
+			for (const ImGuiID node : { centerUpper, centerLower })
+				if (ImGuiDockNode* dockNode = ImGui::DockBuilderGetNode(node))
+					dockNode->SetLocalFlags(dockNode->LocalFlags | ImGuiDockNodeFlags_AutoHideTabBar);
 
 			ImGui::DockBuilderFinish(dockSpaceId);
 
@@ -251,6 +257,7 @@ void AnimationClipDocument::Update(float aTimeDelta, InputManager& inputManager)
 
 	ImGui::End();
 
+	ImGui::SetNextWindowClass(&myDocumentWindowClass);
 	isViewportOrPropertiesFocused = isViewportOrPropertiesFocused || ImGui::IsWindowFocused();
 	ImGui::Begin(myPanelWindowNames[(size_t)Panels::Skeleton].c_str());
 
@@ -537,50 +544,39 @@ void AnimationClipDocument::DrawPropertyPanel()
 
 void AnimationClipDocument::DrawPlayControls()
 {
-	ImVec2 availableSize = ImGui::GetContentRegionAvail();
-	ImGui::SetNextItemWidth(availableSize.x);
-	ImGui::SliderFloat("##Time", &myCurrentTime, myAnimationClip->startTime, myAnimationClip->endTime);
+	const bool playingForward = myAnimationClip->playbackRate > 0.f;
+	const float startTime = playingForward ? myAnimationClip->startTime : myAnimationClip->endTime;
+	const float endTime = playingForward ? myAnimationClip->endTime : myAnimationClip->startTime;
+	const bool playing = myPlayState == PlayState::Playing;
 
-	// This is just a manual approximation of the size of the button table, roughly centers the play controls.
-	int playControlWidth = 26 * 3;
-
-	bool playingForward = myAnimationClip->playbackRate > 0.f;
-	float startTime = playingForward ? myAnimationClip->startTime : myAnimationClip->endTime;
-	float endTime = playingForward ? myAnimationClip->endTime : myAnimationClip->startTime;
-
-	ImGui::SetCursorPosX((availableSize.x - playControlWidth) / 2);
-	if (ImGui::BeginTable("Toolbar", 3, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingFixedFit))
+	ImGui::BeginDisabled(playing);
+	if (ImGui::Button(ICON_LC_PLAY))
 	{
-		ImGui::TableNextRow();
-		ImGui::TableSetColumnIndex(0);
+		myPlayState = PlayState::Playing;
 
-		ImVec2 toolbarItemSize = ImVec2(26, 28);
-
-		if (ImGui::Selectable(ICON_LC_PLAY, myPlayState == PlayState::Playing, myPlayState == PlayState::Playing ? ImGuiSelectableFlags_Disabled : 0, toolbarItemSize))
-		{
-			myPlayState = PlayState::Playing;
-
-			if (myCurrentTime == endTime)
-				myCurrentTime = startTime;
-		}
-
-		ImGui::TableSetColumnIndex(1);
-
-		if (ImGui::Selectable(ICON_LC_PAUSE, myPlayState != PlayState::Playing && myCurrentTime != startTime, myPlayState == PlayState::Playing ? 0 : ImGuiSelectableFlags_Disabled, toolbarItemSize))
-		{
-			myPlayState = PlayState::Stopped;
-		}
-
-		ImGui::TableSetColumnIndex(2);
-
-		if (ImGui::Selectable(ICON_LC_SQUARE, myPlayState != PlayState::Playing && myCurrentTime == startTime, myPlayState == PlayState::Playing || myCurrentTime != 0.f ? 0 : ImGuiSelectableFlags_Disabled, toolbarItemSize))
-		{
-			myPlayState = PlayState::Stopped;
+		if (myCurrentTime == endTime)
 			myCurrentTime = startTime;
-		}
-
-		ImGui::EndTable();
 	}
+	ImGui::EndDisabled();
+
+	ImGui::SameLine();
+	ImGui::BeginDisabled(!playing);
+	if (ImGui::Button(ICON_LC_PAUSE))
+		myPlayState = PlayState::Stopped;
+	ImGui::EndDisabled();
+
+	ImGui::SameLine();
+	if (ImGui::Button(ICON_LC_SQUARE))
+	{
+		myPlayState = PlayState::Stopped;
+		myCurrentTime = startTime;
+	}
+
+	ImGui::SameLine();
+	ImGui::SetNextItemWidth(-110.f);
+	ImGui::SliderFloat("##Time", &myCurrentTime, myAnimationClip->startTime, myAnimationClip->endTime, "");
+	ImGui::SameLine();
+	ImGui::TextDisabled("%.2f / %.2f s", myCurrentTime, myAnimationClip->endTime);
 }
 
 void AnimationClipDocument::HandleDrop()
