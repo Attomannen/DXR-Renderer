@@ -195,6 +195,7 @@ void GameWorld::Update(float aDeltaTime)
 
 	s.animTime += aDeltaTime;
 	s.UpdateSceneScripts(aDeltaTime);
+	s.UpdateSceneParticles(aDeltaTime);
 	s.UpdatePhysicsTest(aDeltaTime);
 	s.UpdateSceneCamera();
 	if (s.showOrbitBalls)
@@ -717,7 +718,7 @@ void GameWorld::Render()
 			};
 
 			std::function<void()> drawTransparent;
-			if (s.anyTransparent || (s.debugBallValid && s.DebugBallIsGlass()))
+			if (s.anyTransparent || (s.debugBallValid && s.DebugBallIsGlass()) || !s.sceneParticles.empty())
 			{
 				drawTransparent = [dr, mdp, sp]()
 				{
@@ -730,6 +731,7 @@ void GameWorld::Render()
 							sp->models[k].Render(psh, sp->transparentMeshes[k]);
 					if (sp->debugBallValid && sp->DebugBallIsGlass())
 						sp->DrawDebugBalls(psh);
+					sp->DrawSceneParticles();
 				};
 			}
 

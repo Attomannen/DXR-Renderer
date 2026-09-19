@@ -136,7 +136,16 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 			json document; lightingFile >> document;
 			if (document.contains("lighting")) {
 				const auto& lighting = document["lighting"];
-				sunPitch = lighting.value("sunPitch", sunPitch);
+				// Negated on the way in, the same as the editor viewport does.
+				//
+				// The .tgs stores pitch negative-down (the editor's Sun widget
+				// writes -75 for a high sun) while the renderer -- and this
+				// struct, and BENCH_SUN_PITCH -- take it positive-down. The
+				// editor applied that flip in DefaultEditorGraphics and the game
+				// did not, so a scene that read as bright midday in the viewport
+				// came up at night in the game with the sun 75 degrees below the
+				// horizon.
+				sunPitch = -lighting.value("sunPitch", -sunPitch);
 				sunYaw = lighting.value("sunYaw", sunYaw);
 				sunIlluminanceLux = lighting.value("sunIlluminance", lighting.value("sunIntensity", SunIntensity()) * 100000.0f);
 				if (lighting.contains("sunTemperature"))
@@ -169,6 +178,8 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 	SetSceneCameraActive(-1);
 	sceneCharacters.clear();
 	sceneCameras.clear();
+	sceneInstances.clear();
+	ClearSceneParticles();
 
 	ModelFactory& mf = ModelFactory::GetInstance();
 	auto& texMgr = GraphicsEngine::GetInstance()->GetTextureManager();
@@ -207,6 +218,17 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 
 	for (const SceneEntry& e : entries)
 	{
+		if (e.fbx.empty())
+		{
+			// An object without a mesh still has a place in the world and can carry a camera, particles or a script.
+			sceneInstances.push_back({ -1, e.transform });
+			const size_t objectIndex = sceneInstances.size() - 1;
+			RegisterSceneScripts(e, objectIndex);
+			RegisterSceneCamera(e, objectIndex);
+			RegisterSceneParticles(e, objectIndex);
+			continue;
+		}
+
 		std::shared_ptr<Model> model = mf.GetModel(e.fbx.c_str());
 		if (!model) { ERROR_PRINT("bench: failed to load '%s'", e.fbx.c_str()); continue; }
 		const int meshCount = std::min((int)model->GetMeshCount(), MAX_MESHES_PER_MODEL);
@@ -301,10 +323,13 @@ bool GameWorld::Impl::LoadSceneContent(const std::string& sceneName, bool aEnv)
 			mi.SetTransform(xf);
 			models.push_back(mi);
 			instanceOffsets.push_back(Vector3f{ ox, 0.f, oz });
-			RegisterScenePhysics(e, model, xf, models.size() - 1);
-			RegisterSceneScripts(e, models.size() - 1);
-			RegisterSceneCamera(e, models.size() - 1);
-			RegisterSceneCharacter(e, xf, models.size() - 1);
+			sceneInstances.push_back({ (int)models.size() - 1, xf });
+			const size_t instanceIndex = sceneInstances.size() - 1;
+			RegisterScenePhysics(e, model, xf, instanceIndex);
+			RegisterSceneScripts(e, instanceIndex);
+			RegisterSceneCamera(e, instanceIndex);
+			RegisterSceneParticles(e, instanceIndex);
+			RegisterSceneCharacter(e, xf, instanceIndex);
 
 			std::vector<int> op, tr;
 			for (int m = 0; m < meshCount; ++m)

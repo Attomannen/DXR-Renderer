@@ -137,6 +137,9 @@ namespace Ag::Particles
 		int flipbookColumns = 1;
 		int flipbookRows = 1;
 		float velocityStretch = 0.1f;   // VelocityAligned: extra length per unit of speed
+		// Luminance in cd/m2 that a colour of (1,1,1) is drawn at. Scene units are photometric (a sunlit sky is a few
+		// thousand cd/m2), so 1.0 in scene units would be blinding; sprites are unlit and need a sensible brightness.
+		float brightness = 2000.f;
 	};
 
 	struct EmitterAsset

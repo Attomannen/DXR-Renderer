@@ -81,8 +81,8 @@ namespace Ag
 	{
 		SceneColliderShape shape = SceneColliderShape::Auto;
 		Vector3f halfExtents = { 50.f, 50.f, 50.f }; // Box, cm
-		float radius = 50.f;                         // Sphere / Capsule, cm
-		float halfHeight = 50.f;                     // Capsule cylinder half height, cm
+		float radius = 0.5f;                         // Sphere / Capsule, metres
+		float halfHeight = 0.5f;                     // Capsule cylinder half height, metres
 		Vector3f offset = { 0.f, 0.f, 0.f };         // from the object origin, cm
 		bool isTrigger = false;                      // reports overlaps (On Trigger Enter) instead of blocking
 	};
@@ -110,18 +110,25 @@ namespace Ag
 	// heading; scripts add pitch.
 	struct SceneCamera
 	{
-		Vector3f offset = { 0.f, 170.f, 0.f };  // eye height for a standing character
+		Vector3f offset = { 0.f, 1.7f, 0.f };   // metres; eye height for a standing character
 		float fov = 90.f;                       // horizontal, degrees
 		bool activeOnStart = true;
+	};
+
+	// Plays a particle system asset (.tgps) at the object's position.
+	struct SceneParticleSystem
+	{
+		StringId path;
+		bool activateOnStart = true;
 	};
 
 	// A walking character: a capsule that steps, slides and climbs slopes (not a rigid body).
 	// The object's origin is its feet. Scripts drive it with Move and Jump.
 	struct SceneCharacter
 	{
-		float radius = 35.f;          // cm
-		float height = 170.f;         // cm, feet to top of head
-		float stepHeight = 40.f;      // cm, the tallest step it walks up
+		float radius = 0.35f;         // metres
+		float height = 1.7f;          // metres, feet to top of head
+		float stepHeight = 0.4f;      // metres, the tallest step it walks up
 		float maxSlope = 50.f;        // degrees; steeper ground is not walkable
 		float mass = 80.f;            // kg, for pushing bodies
 	};
@@ -129,7 +136,7 @@ namespace Ag
 	struct SceneSprite
 	{
 		StringId textures[4];
-		Vector2f size = { 100.f, 100.f };
+		Vector2f size = { 1.f, 1.f };   // metres
 		Vector2f pivot = { 0.5f, 0.5f };
 	};
 
@@ -149,6 +156,7 @@ namespace Ag
 	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<SceneRigidBody>)
 	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<SceneCamera>)
 	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<SceneCharacter>)
+	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<SceneParticleSystem>)
 	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<SceneReference>)
 	DECLARE_PROPERTY_TYPE(CopyOnWriteWrapper<AnimationClipReference>)
 	DECLARE_PROPERTY_TYPE(PoseAndMotion)

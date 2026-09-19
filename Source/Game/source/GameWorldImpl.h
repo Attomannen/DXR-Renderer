@@ -33,6 +33,8 @@
 #include <age/log/Log.h>
 #include <age/EngineDefines.h>
 #include <age/physics/PhysicsWorld.h>
+#include <age/Particles/ParticleRenderer.h>
+#include <age/Particles/ParticleSystem.h>
 #include <age/script/ScriptRuntimeInstance.h>
 #include <age/script/Contexts/GameScriptContext.h>
 #include <Windows.h>
@@ -82,6 +84,25 @@ struct GameWorld::Impl
 
 	// ---- scene
 	std::vector<ModelInstance> models;
+	// Every placed scene object, with a mesh or without. Physics, scripts, cameras and particles refer to an
+	// object by its index here; `model` is the index into `models` when it has a mesh, -1 otherwise.
+	struct SceneInstance
+	{
+		int model = -1;
+		Matrix4x4f transform;   // only used while the object has no mesh
+	};
+	std::vector<SceneInstance> sceneInstances;
+	Matrix4x4f GetInstanceTransform(size_t index)
+	{
+		const SceneInstance& instance = sceneInstances[index];
+		return instance.model >= 0 ? models[(size_t)instance.model].GetTransform() : instance.transform;
+	}
+	void SetInstanceTransform(size_t index, const Matrix4x4f& transform)
+	{
+		SceneInstance& instance = sceneInstances[index];
+		if (instance.model >= 0) models[(size_t)instance.model].SetTransform(transform);
+		else instance.transform = transform;
+	}
 	// Per-model sub-mesh split: indices whose material is flagged transparent go
 	// to the forward transparent pass, the rest to the deferred G-buffer.
 	std::vector<std::vector<int>> opaqueMeshes;
@@ -426,7 +447,7 @@ struct GameWorld::Impl
 	// and runs every frame.
 	struct SceneScriptObject
 	{
-		size_t instance = 0;                                   // index into models
+		size_t instance = 0;                                   // index into sceneInstances
 		std::string name;                                      // for logs
 		std::unique_ptr<Ag::ScriptRuntimeInstance> graph;
 		std::unordered_map<StringId, Ag::Property> dynamicProperties;
@@ -457,6 +478,19 @@ struct GameWorld::Impl
 	};
 	std::vector<SceneCharacterObject> sceneCharacters;
 	void RegisterSceneCharacter(const GameScene::SceneEntry& entry, const Matrix4x4f& worldTransform, size_t instanceIndex);
+
+	// --- Particle System components (GameWorldParticles.cpp) ---
+	struct SceneParticleObject
+	{
+		size_t instance = 0;
+		std::unique_ptr<Ag::Particles::SystemInstance> system;
+	};
+	std::vector<SceneParticleObject> sceneParticles;
+	Ag::Particles::ParticleRenderer particleRenderer;
+	void ClearSceneParticles();
+	void RegisterSceneParticles(const GameScene::SceneEntry& entry, size_t instanceIndex);
+	void UpdateSceneParticles(float deltaSeconds);
+	void DrawSceneParticles();   // during the forward pass
 
 	// --- Camera components (GameWorldScripts.cpp) ---
 	struct SceneCameraObject
@@ -489,7 +523,7 @@ struct GameWorld::Impl
 	// (Rigidbody) get theirs on Start so Reset can put them back.
 	struct ScenePhysicsObject
 	{
-		size_t instance = 0;                 // index into models
+		size_t instance = 0;                 // index into sceneInstances
 		Ag::PhysicsBodyDesc desc;
 		Ag::PhysicsBodyId body;
 		Matrix4x4f startTransform;

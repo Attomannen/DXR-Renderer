@@ -38,7 +38,7 @@ namespace
 
 		Vector3f GetLocation() const override
 		{
-			return myWorld.models[myInstance].GetTransform().GetPosition();
+			return myWorld.GetInstanceTransform(myInstance).GetPosition();
 		}
 
 		void SetLocation(const Vector3f& location) override
@@ -56,15 +56,15 @@ namespace
 					myWorld.physics.SetLinearVelocity(object->body, {});
 				}
 			}
-			Matrix4x4f transform = myWorld.models[myInstance].GetTransform();
+			Matrix4x4f transform = myWorld.GetInstanceTransform(myInstance);
 			transform.SetPosition(location);
-			myWorld.models[myInstance].SetTransform(transform);
+			myWorld.SetInstanceTransform(myInstance, transform);
 		}
 
 		void SetRotation(const Vector3f& eulerDegrees) override
 		{
 			// Keep the object's scale: rebuild it the way the scene loader does, scale then rotation.
-			const Matrix4x4f current = myWorld.models[myInstance].GetTransform();
+			const Matrix4x4f current = myWorld.GetInstanceTransform(myInstance);
 			Vector3f position, scale;
 			Quaternionf ignored;
 			current.DecomposeMatrix(position, ignored, scale);
@@ -72,15 +72,15 @@ namespace
 			const Quaternionf rotation(eulerDegrees);
 			Matrix4x4f transform = Matrix4x4f::CreateFromScale(scale) * Matrix4x4f::CreateFromRotation(rotation);
 			transform.SetPosition(position);
-			myWorld.models[myInstance].SetTransform(transform);
+			myWorld.SetInstanceTransform(myInstance, transform);
 
 			if (const GameWorld::Impl::ScenePhysicsObject* object = FindBody())
 				myWorld.physics.SetTransform(object->body, { position.x, position.y, position.z }, { rotation.X, rotation.Y, rotation.Z, rotation.W });
 		}
 
-		Vector3f GetForward() const override { return myWorld.models[myInstance].GetTransform().GetForward(); }
-		Vector3f GetRight() const override { return myWorld.models[myInstance].GetTransform().GetRight(); }
-		Vector3f GetUp() const override { return myWorld.models[myInstance].GetTransform().GetUp(); }
+		Vector3f GetForward() const override { return myWorld.GetInstanceTransform(myInstance).GetForward(); }
+		Vector3f GetRight() const override { return myWorld.GetInstanceTransform(myInstance).GetRight(); }
+		Vector3f GetUp() const override { return myWorld.GetInstanceTransform(myInstance).GetUp(); }
 
 		bool HasCharacter() const override { return FindCharacter() != nullptr; }
 
@@ -141,7 +141,7 @@ namespace
 		Vector3f GetCameraForward() const override
 		{
 			const int index = FindCamera();
-			const Vector3f forward = myWorld.models[myInstance].GetTransform().GetForward();
+			const Vector3f forward = myWorld.GetInstanceTransform(myInstance).GetForward();
 			const float yaw = GameScene::Rad2Deg(std::atan2(forward.x, forward.z));
 			const float pitch = index >= 0 ? myWorld.sceneCameras[index].pitch : 0.f;
 			return Matrix4x4f::CreateFromRollPitchYaw(Vector3f{ pitch, yaw, 0.f }).GetForward();
@@ -413,7 +413,7 @@ void GameWorld::Impl::UpdateSceneCamera()
 	if (c.instance >= models.size())
 		return;
 
-	const Matrix4x4f transform = models[c.instance].GetTransform();
+	const Matrix4x4f transform = GetInstanceTransform(c.instance);
 	const Vector3f forward = transform.GetForward();
 	const float yaw = GameScene::Rad2Deg(std::atan2(forward.x, forward.z));
 

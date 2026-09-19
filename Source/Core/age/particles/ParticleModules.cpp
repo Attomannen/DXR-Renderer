@@ -1,5 +1,5 @@
 #include "stdafx.h"
-#include "ParticleAsset.h"
+#include <age/particles/ParticleAsset.h>
 
 #include <algorithm>
 #include <fstream>
@@ -283,6 +283,7 @@ namespace Ag::Particles
 	{
 		EmitterAsset emitter;
 		emitter.name = "Smoke";
+		emitter.renderer.texture = "Textures/T_ParticleSoft.dds";
 		emitter.emitterUpdate.push_back(CreateModule(ModuleType::SpawnRate));
 
 		ModuleInstance initialize = CreateModule(ModuleType::InitializeParticle);
@@ -444,7 +445,7 @@ namespace Ag::Particles
 			const RendererSettings& r = emitter.renderer;
 			e["renderer"] = {
 				{ "enabled", r.enabled }, { "texture", r.texture }, { "blend", (int)r.blend }, { "facing", (int)r.facing },
-				{ "sort", (int)r.sort }, { "columns", r.flipbookColumns }, { "rows", r.flipbookRows }, { "stretch", r.velocityStretch } };
+				{ "sort", (int)r.sort }, { "columns", r.flipbookColumns }, { "rows", r.flipbookRows }, { "stretch", r.velocityStretch }, { "brightness", r.brightness } };
 			emitterArray.push_back(e);
 		}
 		j["emitters"] = emitterArray;
@@ -511,6 +512,7 @@ namespace Ag::Particles
 					emitter.renderer.flipbookColumns = std::max(1, r.value("columns", 1));
 					emitter.renderer.flipbookRows = std::max(1, r.value("rows", 1));
 					emitter.renderer.velocityStretch = r.value("stretch", 0.1f);
+					emitter.renderer.brightness = r.value("brightness", 2000.f);
 				}
 				emitters.push_back(std::move(emitter));
 			}

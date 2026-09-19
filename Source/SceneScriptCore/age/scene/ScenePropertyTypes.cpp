@@ -536,6 +536,65 @@ namespace Ag
 	IMPLEMENT_COMPONENT_PROPERTY_TYPE(CopyOnWriteWrapper<SceneCamera>, "Camera")
 
 	template<>
+	void LoadFromJson<CopyOnWriteWrapper<SceneParticleSystem>>(CopyOnWriteWrapper<SceneParticleSystem>& value, const JsonData& jsonData)
+	{
+		value = CopyOnWriteWrapper<SceneParticleSystem>::Create();
+		SceneParticleSystem& particles = value.Edit();
+		const nlohmann::json& json = jsonData.json;
+
+		particles.path = StringRegistry::RegisterOrGetString(json.value("path", std::string()));
+		particles.activateOnStart = json.value("activateOnStart", particles.activateOnStart);
+	}
+
+	template<>
+	void WriteToJson<CopyOnWriteWrapper<SceneParticleSystem>>(const CopyOnWriteWrapper<SceneParticleSystem>& value, JsonData& jsonData)
+	{
+		const SceneParticleSystem& particles = value.Get();
+		nlohmann::json& json = jsonData.json;
+
+		json["path"] = std::string(particles.path.GetString());
+		json["activateOnStart"] = particles.activateOnStart;
+	}
+
+	template<>
+	bool ShowImGuiEditor<CopyOnWriteWrapper<SceneParticleSystem>>(CopyOnWriteWrapper<SceneParticleSystem>& value, const char* name, const char* description)
+	{
+		const SceneParticleSystem& particles = value.Get();
+
+		if (name == nullptr)
+		{
+			ImGui::Text("%s", particles.path.IsEmpty() ? "No system" : particles.path.GetString());
+			return false;
+		}
+
+		PropertyHeader(name, description);
+
+		SceneParticleSystem edited = particles;
+		bool changed = false;
+
+		BeginRow("System");
+		{
+			StringId system = edited.path;
+			if (PropertyEditor::AssetField("##asset", system, { ".tgps" }, "None"))
+			{
+				edited.path = system;
+				changed = true;
+			}
+		}
+		EndRow();
+
+		BeginRow("Active on start");
+		changed |= ImGui::Checkbox("##v", &edited.activateOnStart);
+		EndRow();
+
+		if (changed)
+			value.Edit() = edited;
+		return changed;
+	}
+
+	IMPLEMENT_COMPONENT_PROPERTY_TYPE(CopyOnWriteWrapper<SceneParticleSystem>, "Particle System")
+
+	template<>
 	void LoadFromJson<CopyOnWriteWrapper<SceneCharacter>>(CopyOnWriteWrapper<SceneCharacter>& value, const JsonData& jsonData)
 	{
 		value = CopyOnWriteWrapper<SceneCharacter>::Create();

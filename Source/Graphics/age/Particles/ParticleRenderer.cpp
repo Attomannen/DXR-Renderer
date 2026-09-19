@@ -5,6 +5,7 @@
 #include "age/graphics/GraphicsEngine.h"
 #include "age/Graphics/GraphicsStateStack.h"
 #include "age/texture/TextureManager.h"
+#include <age/math/Photometry.h>
 
 #include <algorithm>
 #include <cmath>
@@ -71,6 +72,7 @@ namespace Ag::Particles
 				std::sort(myOrder.begin(), myOrder.end(), [this](uint32_t a, uint32_t b) { return myDepth[a] > myDepth[b]; });
 			}
 
+			const float brightness = Photometry::NitsToUnits(settings.brightness);
 			const int columns = std::max(1, settings.flipbookColumns);
 			const int rows = std::max(1, settings.flipbookRows);
 			const int frames = columns * rows;
@@ -121,7 +123,8 @@ namespace Ag::Particles
 					camForward.x, camForward.y, camForward.z, 0.f,
 					origin.x, origin.y, origin.z, 1.f };
 				const Vector4f c = particles.color[i];
-				instance.color = Color{ c.x, c.y, c.z, c.w };
+				// The sprite shader decodes colours from sRGB, so hand it the encoded value of the linear radiance we want.
+				instance.color = Color::FromLinear(c.x * brightness, c.y * brightness, c.z * brightness, c.w);
 				if (frames > 1)
 				{
 					const int frame = std::clamp((int)std::floor(particles.frame[i]), 0, frames - 1);
@@ -134,6 +137,7 @@ namespace Ag::Particles
 			stack.Push();
 			stack.SetBlendState(settings.blend == BlendMode::Additive ? BlendState::AdditiveBlend : BlendState::AlphaBlend);
 			stack.SetDepthStencilState(DepthStencilState::ReadOnlyLess);
+			stack.SetRasterizerState(RasterizerState::NoFaceCulling);   // the forward pass culls back faces; a billboard has no "back"
 			stack.SetTransform(Matrix4x4f());
 			{
 				// BeginBatch -> PrepareRender -> UpdateGpuStates flushes the states set above.

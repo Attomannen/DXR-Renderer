@@ -147,6 +147,21 @@ namespace GameScene
 		}
 	}
 
+	// The Particle System component from a .tgo's "properties" array.
+	void ParseParticleProperty(const json& propsHolder, SceneEntryParticles& out)
+	{
+		if (!propsHolder.contains("properties")) return;
+		for (const json& p : propsHolder["properties"])
+		{
+			if (p.value("type", "") != "Particle System" || !p.contains("value") || !p["value"].is_object()) continue;
+			const json& v = p["value"];
+			out.path = v.value("path", "");
+			std::replace(out.path.begin(), out.path.end(), '\\', '/');
+			out.has = !out.path.empty();
+			out.activateOnStart = v.value("activateOnStart", out.activateOnStart);
+		}
+	}
+
 	// The Character component from a .tgo's "properties" array.
 	void ParseCharacterProperty(const json& propsHolder, SceneEntryCharacter& out)
 	{
@@ -170,10 +185,13 @@ namespace GameScene
 		if (!in) { ERROR_PRINT("bench: cannot open tgo %s", tgoPath.string().c_str()); return std::nullopt; }
 		json j; try { in >> j; } catch (const std::exception& e) { ERROR_PRINT("bench: tgo parse: %s", e.what()); return std::nullopt; }
 		SceneEntry e;
-		if (!ParseModelProperty(j, e)) { ERROR_PRINT("bench: no Model property in %s", tgoPath.string().c_str()); return std::nullopt; }
+		const bool hasModel = ParseModelProperty(j, e);
 		ParsePhysicsProperties(j, e.physics);
 		ParseCameraProperty(j, e.camera);
 		ParseCharacterProperty(j, e.character);
+		ParseParticleProperty(j, e.particles);
+		// A mesh is not required: a camera or a particle system can stand on its own.
+		if (!hasModel && !e.camera.has && !e.particles.has) { ERROR_PRINT("bench: %s has no Model, Camera or Particle System", tgoPath.string().c_str()); return std::nullopt; }
 		{
 			std::error_code pathEc;
 			fs::path relative = fs::relative(tgoPath, Ag::Settings::GameAssetRoot(), pathEc);
@@ -270,7 +288,7 @@ namespace GameScene
 
 			SceneEntry e;
 			bool haveModel = ParseModelProperty(obj, e);
-			if (haveModel) { ParsePhysicsProperties(obj, e.physics); ParseCameraProperty(obj, e.camera); ParseCharacterProperty(obj, e.character); }
+			if (haveModel) { ParsePhysicsProperties(obj, e.physics); ParseCameraProperty(obj, e.camera); ParseCharacterProperty(obj, e.character); ParseParticleProperty(obj, e.particles); }
 			if (!haveModel && obj.contains("path") && !obj["path"].get<std::string>().empty())
 			{
 				std::string tgoRel = obj["path"].get<std::string>();

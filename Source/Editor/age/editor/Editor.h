@@ -82,6 +82,7 @@ public:
 	std::string CreateNewScene(const fs::path& path);
 	std::string CreateNewObjectDefinition(const fs::path& path);
 	std::string CreateNewAnimationClip(const fs::path& path);
+	std::string CreateNewParticleSystem(const fs::path& path);
 	std::string CreateNewMaterial(const fs::path& path);
 
 	bool IsViewportGridVisible() { return myIsViewportGridVisible; }

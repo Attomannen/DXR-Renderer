@@ -35,6 +35,7 @@
 #include <age/editor/Commands/AddSceneObjectsCommand.h>
 
 #include <age/editor/Tools/Viewport/Viewport.h>
+#include <age/particles/ParticleAsset.h>
 #include <age/editor/Tools/ProjectRunControls/ProjectRunControls.h>
 #include <age/editor/FileDialog/FileDialog.h>
 #include <age/editor/imgui_widgets/imgui_widgets.h>
@@ -349,6 +350,21 @@ std::string Ag::Editor::CreateNewMaterial(const fs::path& path)
 	std::unique_ptr<MaterialDocument> document = std::make_unique<MaterialDocument>();
 	document->Init(p.string());
 	AddDocument(std::move(document));
+	return {};
+}
+
+std::string Ag::Editor::CreateNewParticleSystem(const fs::path& path)
+{
+	fs::path p = path;
+	if (p.extension().empty())
+		p.replace_extension(".tgps");
+	if (fs::exists(p))
+		return "'" + p.filename().string() + "' already exists";
+
+	Particles::SystemAsset system = Particles::MakeDefaultSystem();
+	system.name = p.stem().string();
+	if (!system.Save(p.string()))
+		return "could not write '" + p.filename().string() + "'";
 	return {};
 }
 

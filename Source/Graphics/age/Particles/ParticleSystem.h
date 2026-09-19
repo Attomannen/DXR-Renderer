@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ParticleAsset.h"
+#include <age/particles/ParticleAsset.h>
 
 #include <age/math/Matrix4x4.h>
 #include <age/math/Vector3.h>

@@ -46,7 +46,7 @@ namespace Ag
 
 		// What the Add menu can make in the current folder. The name is asked for in a small
 		// popup, then the asset is created and opened.
-		enum class CreateKind { None, Folder, Tgo, Level, Material, AnimationClip };
+		enum class CreateKind { None, Folder, Tgo, Level, Material, AnimationClip, ParticleSystem };
 		CreateKind myCreateKind = CreateKind::None;
 		bool myOpenCreatePopup = false;
 		char myCreateNameBuffer[128]{};

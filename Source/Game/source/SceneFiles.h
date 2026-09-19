@@ -64,6 +64,13 @@ namespace GameScene
 		bool activeOnStart = true;
 	};
 
+	struct SceneEntryParticles
+	{
+		bool has = false;
+		std::string path;                 // .tgps, relative to the asset root
+		bool activateOnStart = true;
+	};
+
 	struct SceneEntryCharacter
 	{
 		bool has = false;
@@ -72,11 +79,12 @@ namespace GameScene
 
 	struct SceneEntry
 	{
-		std::string fbx;
+		std::string fbx;                                    // empty: an object without a mesh (camera, particles, script...)
 		std::vector<std::string> materials;
 		SceneEntryPhysics physics;
 		SceneEntryCamera camera;
 		SceneEntryCharacter character;
+		SceneEntryParticles particles;
 		json instanceProperties;                            // per-instance property values written in the scene file
 		std::string tgoPath;                                // "Folder/Name" of the .tgo (no extension); scripts live in <tgoPath>/
 		Matrix4x4f transform;                               // identity by default

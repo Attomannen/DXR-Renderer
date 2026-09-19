@@ -312,7 +312,7 @@ void GameWorld::Impl::ResetPhysicsTest()
 			physics.DestroyBody(object.body);
 		object.body = {};
 		if (object.instance < models.size())
-			models[object.instance].SetTransform(object.startTransform);
+			SetInstanceTransform(object.instance, object.startTransform);
 	}
 
 	for (SceneCharacterObject& character : sceneCharacters)
@@ -321,7 +321,7 @@ void GameWorld::Impl::ResetPhysicsTest()
 			physics.DestroyCharacter(character.id);
 		character.id = {};
 		if (character.instance < models.size())
-			models[character.instance].SetTransform(character.startTransform);
+			SetInstanceTransform(character.instance, character.startTransform);
 	}
 
 	if (physicsBall.IsValid())
@@ -364,7 +364,7 @@ void GameWorld::Impl::UpdatePhysicsTest(float deltaSeconds)
 		Matrix4x4f xf = Matrix4x4f::CreateFromScale(object.scale) *
 			Matrix4x4f::CreateFromRotation(Quaternionf(rotation.w, rotation.x, rotation.y, rotation.z));
 		xf.SetPosition({ position.x, position.y, position.z });
-		models[object.instance].SetTransform(xf);
+		SetInstanceTransform(object.instance, xf);
 	}
 
 	for (const SceneCharacterObject& character : sceneCharacters)
@@ -373,9 +373,9 @@ void GameWorld::Impl::UpdatePhysicsTest(float deltaSeconds)
 		if (!character.id.IsValid() || character.instance >= models.size() || !physics.GetCharacterPosition(character.id, feet))
 			continue;
 		// Only the position comes from physics; the script owns which way it faces.
-		Matrix4x4f transform = models[character.instance].GetTransform();
+		Matrix4x4f transform = GetInstanceTransform(character.instance);
 		transform.SetPosition({ feet.x, feet.y, feet.z });
-		models[character.instance].SetTransform(transform);
+		SetInstanceTransform(character.instance, transform);
 	}
 
 	physicsLogTimer += deltaSeconds;

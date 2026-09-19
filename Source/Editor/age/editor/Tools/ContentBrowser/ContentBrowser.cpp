@@ -227,7 +227,7 @@ void ContentBrowser::DrawFileTree(const fs::path& parentPath)
 		}
 		if (ImGui::BeginDragDropTarget())
 		{
-			const char* types[] = { ".tgo", ".tgs", ".tgm", ".tgmat", ".tgac", ".dds", ".fbx" };
+			const char* types[] = { ".tgo", ".tgs", ".tgm", ".tgmat", ".tgac", ".tgps", ".dds", ".fbx" };
 			for (const char* type : types)
 			{
 				if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(type))
@@ -434,6 +434,7 @@ void ContentBrowser::Draw()
 					else if (extension == ".tgs") icon = ICON_LC_MAP;
 					else if (extension == ".tgm" || extension == ".fbx") icon = ICON_LC_CUBOID;
 					else if (extension == ".tgo" || extension == ".tgac") icon = ICON_LC_FILE_CODE;
+					else if (extension == ".tgps") icon = ICON_LC_SPARKLES;
 
 					if (path.extension() == ".dds")
 					{
@@ -654,7 +655,7 @@ void ContentBrowser::RequestNewLevel()
 
 void ContentBrowser::RequestCreate(CreateKind kind)
 {
-	static const char* defaults[] = { "", "NewFolder", "NewTGO", "NewLevel", "NewMaterial", "NewAnimationClip" };
+	static const char* defaults[] = { "", "NewFolder", "NewTGO", "NewLevel", "NewMaterial", "NewAnimationClip", "NewParticleSystem" };
 	myCreateKind = kind;
 	myOpenCreatePopup = true;
 	myAssetOperationError.clear();
@@ -671,6 +672,7 @@ void ContentBrowser::DrawAddMenuItems()
 	if (ImGui::MenuItem(ICON_LC_MAP "  Level")) RequestCreate(CreateKind::Level);
 	if (ImGui::MenuItem(ICON_LC_PALETTE "  Material")) RequestCreate(CreateKind::Material);
 	if (ImGui::MenuItem(ICON_LC_FILE_CODE "  Animation Clip")) RequestCreate(CreateKind::AnimationClip);
+	if (ImGui::MenuItem(ICON_LC_SPARKLES "  Particle System")) RequestCreate(CreateKind::ParticleSystem);
 }
 
 void ContentBrowser::DrawCreatePopup()
@@ -683,8 +685,8 @@ void ContentBrowser::DrawCreatePopup()
 	if (!ImGui::BeginPopupModal("Create Asset", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
 		return;
 
-	static const char* titles[] = { "", "Folder", "TGO", "Level", "Material", "Animation Clip" };
-	static const char* extensions[] = { "", "", ".tgo", ".tgs", ".tgmat", ".tgac" };
+	static const char* titles[] = { "", "Folder", "TGO", "Level", "Material", "Animation Clip", "Particle System" };
+	static const char* extensions[] = { "", "", ".tgo", ".tgs", ".tgmat", ".tgac", ".tgps" };
 	ImGui::Text("New %s", titles[(int)myCreateKind]);
 	ImGui::TextDisabled("in %s", _current_path.string().c_str());
 	ImGui::SetNextItemWidth(320.f);
@@ -713,6 +715,7 @@ void ContentBrowser::DrawCreatePopup()
 			case CreateKind::Level: error = Editor::GetEditor()->CreateNewScene(path); break;
 			case CreateKind::Material: error = Editor::GetEditor()->CreateNewMaterial(path); break;
 			case CreateKind::AnimationClip: error = Editor::GetEditor()->CreateNewAnimationClip(path); break;
+			case CreateKind::ParticleSystem: error = Editor::GetEditor()->CreateNewParticleSystem(path); break;
 			default: break;
 			}
 		}
