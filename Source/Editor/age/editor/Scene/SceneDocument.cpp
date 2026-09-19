@@ -58,7 +58,7 @@ void SceneDocument::Init(std::string_view path)
 	//myNavmeshCreationTool.Init();
 
 	myViewport.Init();
-	myViewport.GetGrid().SetGridLineExtreme(2000.0f);
+	myViewport.GetGrid().SetGridLineExtreme(20.0f);   // metres
 
 	myScene = Editor::GetEditor()->GetEditorSceneManager().Get(path);
 	// EditorSceneManager::Get() returns null when the .tgs doesn't exist on

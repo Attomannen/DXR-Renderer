@@ -30,7 +30,7 @@ namespace Ag
 		bool snapPosEnabled = false;
 		bool snapRotEnabled = false;
 		bool snapScaleEnabled = false;
-		float snapPosAmount = 100.f;
+		float snapPosAmount = 1.f;      // metres
 		float snapRotAmount = 45.f;
 		float snapScaleAmount = 0.1f;
 

@@ -25,7 +25,7 @@ void AnimationClipDocument::Init(std::string_view aPath)
 	myGraphics = Editor::GetEditor()->GetEditorGraphics().CreateAnimationClipGraphicsInterface();
 
 	myViewport.Init();
-	myViewport.GetGrid().SetGridLineExtreme(400.0f);
+	myViewport.GetGrid().SetGridLineExtreme(4.0f);    // metres
 
 	myPath = StringRegistry::RegisterOrGetString(aPath);
 	myAnimationClip = GetOrCreateAnimationClip(myPath);

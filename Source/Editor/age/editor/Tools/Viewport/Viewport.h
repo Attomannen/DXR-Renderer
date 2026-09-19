@@ -78,7 +78,7 @@ namespace Ag
 		Gizmos myGizmos;
 
 		Camera myCamera;
-		float myCameraFocusDistance = 1000.f;
+		float myCameraFocusDistance = 10.f;   // metres
 		Vector3f myCameraRotation = { 0.f, 0.f, 0.f };
 	};
 

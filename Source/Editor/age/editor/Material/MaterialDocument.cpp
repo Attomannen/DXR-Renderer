@@ -40,7 +40,7 @@ void MaterialDocument::Init(std::string_view aPath)
 	Document::Init(aPath);
 
 	myViewport.Init();
-	myViewport.GetGrid().SetGridLineExtreme(400.0f);
+	myViewport.GetGrid().SetGridLineExtreme(4.0f);
 	myGraphics = Editor::GetEditor()->GetEditorGraphics().CreateMaterialGraphicsInterface();
 
 	std::filesystem::path path = aPath;

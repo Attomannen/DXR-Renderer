@@ -36,7 +36,7 @@ void ObjectDefinitionDocument::Init(std::string_view aPath)
 	Document::Init(aPath);
 
 	myViewport.Init();
-	myViewport.GetGrid().SetGridLineExtreme(400.0f);
+	myViewport.GetGrid().SetGridLineExtreme(4.0f);    // metres
 	myGraphics = Editor::GetEditor()->GetEditorGraphics().CreateObjectDefinitionGraphicsInterface();
 
 	std::filesystem::path path = aPath;

@@ -326,7 +326,7 @@ void EditorViewport::DrawAndUpdateViewportWindow(float aDeltaTime, ViewportInter
 						float wheel = io.MouseWheel > 0.f ? 0.1f : -0.1f;
 						myFreeFlyMovementSpeed = std::clamp(myFreeFlyMovementSpeed + wheel, .1f, 10.f);
 					}
-					activeCamera.GetTransform().SetPosition(activeCamera.GetTransform().GetPosition() + camMovement * (1000.f*myFreeFlyMovementSpeed * (io.KeyShift ? 3.f : 1.f)) * aDeltaTime);
+					activeCamera.GetTransform().SetPosition(activeCamera.GetTransform().GetPosition() + camMovement * (10.f * myFreeFlyMovementSpeed * (io.KeyShift ? 3.f : 1.f)) * aDeltaTime);
 
 				}
 				
@@ -344,7 +344,7 @@ void EditorViewport::DrawAndUpdateViewportWindow(float aDeltaTime, ViewportInter
 					}
 
 					if (ImGui::IsKeyPressed(ImGuiKey_MouseWheelY)) {
-						ZoomCamera(myCamera, { 0, io.MouseWheel * 100.f }, myCameraFocusDistance);
+						ZoomCamera(myCamera, { 0, io.MouseWheel * 1.f }, myCameraFocusDistance);
 					}
 				}
 			}
