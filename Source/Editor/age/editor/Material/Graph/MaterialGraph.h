@@ -36,7 +36,45 @@ namespace Ag::MaterialGraphNS
 		SplitChannels,
 		CombineChannels,
 		Output,   // fixed material-output socket, like a shader graph's Material Output node
+
+		// Everything below was added after saved graphs already existed: the enum is serialised as an int, so
+		// new kinds are only ever appended, never inserted. Keep NodeDefs() in MaterialGraph.cpp in the same order.
+		ConstantVector4,
+		TexCoord,
+		RotateUV,
+
+		Subtract, Divide, Power, Min, Max, Modulo,
+		Abs, Negate, Saturate, Floor, Ceil, Frac, Round, Sign, Sqrt, Reciprocal, Sine, Cosine,
+		Step, SmoothStep, RemapRange, If,
+
+		Dot, Cross, Distance, Normalize, Length, ComponentMask,
+
+		Contrast, Desaturation, HueShift, Overlay, Screen,
+
+		Checker, Noise, Voronoi, Circle,
+
+		Count
 	};
+
+	// What a node kind looks like, shared by the graph (pin layout), the evaluator and the editor UI.
+	struct PinDef
+	{
+		const char* name;
+		float defaultValue = 0.f;   // value of an unconnected input, stored in Node::constant[index]
+		bool inlineDefault = false; // editor shows a small drag box next to the pin while it is unconnected
+		bool isUV = false;          // unconnected means "the texel being baked", not a constant
+	};
+
+	struct NodeDef
+	{
+		const char* name;
+		const char* category;
+		std::vector<PinDef> inputs;
+		std::vector<const char*> outputs;
+		bool generatesUV = false;   // varies per texel without any input (Texture Coordinate)
+	};
+
+	const NodeDef& GetNodeDef(NodeKind kind);
 
 	// Every evaluated value is a float4; scalar-producing nodes only fill [0]
 	// (and replicate it into [1],[2] where a node broadcasts a scalar against
@@ -66,11 +104,11 @@ namespace Ag::MaterialGraphNS
 
 		// TextureSample
 		std::string texturePath;
-		// ConstantScalar / ConstantVector (vector uses all 3 of [0..2]); also
-		// doubles as the default value for Multiply/Add/Lerp's unconnected
-		// inputs (constant[0]=A's default, [1]=B's, [2]=Lerp's T's).
-		float constant[3] = { 0.f, 0.f, 0.f };
-		// Clamp: min/max.
+		// ConstantScalar / ConstantVector / ConstantVector4 (uses [0..2] / [0..3]); also the default value of
+		// every unconnected input (constant[i] belongs to input pin i). Kinds without a value input reuse
+		// the slots for settings (Texture Coordinate tiling/offset, Component Mask flags).
+		float constant[5] = { 0.f, 0.f, 0.f, 0.f, 0.f };
+		// Clamp: min/max. Other kinds: Rotate UV centre, Checker tiles, Noise/Voronoi scale, Circle radius/softness.
 		float paramA = 0.f, paramB = 1.f;
 		// Output only: which fixed material socket this node represents.
 		RootChannel outputChannel = RootChannel::BaseColor;
@@ -137,6 +175,7 @@ namespace Ag::MaterialGraphNS
 		bool Save(const std::string& path) const;
 
 		static const char* NodeKindName(NodeKind k);
+		static bool IsAddable(NodeKind k) { return k != NodeKind::Output && k != NodeKind::Count; }
 		static const char* RootChannelName(RootChannel c);
 
 	private:

@@ -22,7 +22,6 @@ public:
 	{
 		Preview,
 		Properties,
-		PreviewSettings,
 		Graph,
 		Count
 	};
@@ -54,6 +53,7 @@ public:
 	bool HasTransformableSelection() override { return false; }
 
 private:
+	void DrawToolbar();
 	void DrawProperties();
 	void DrawGraph();
 	void DrawGraphNode(MaterialGraphNS::Node& node);

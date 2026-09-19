@@ -14,8 +14,11 @@ namespace ed = ax::NodeEditor;
 #include "age/Application.h"
 #include <age/settings/settings.h>
 #include <imgui.h>
+#include <IconFontHeaders/IconsLucide.h>
 
 #include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <filesystem>
 
 using namespace Ag;
@@ -79,8 +82,6 @@ void MaterialDocument::Init(std::string_view aPath)
 	myPanelWindowNames[(size_t)Panels::Preview] = buffer;
 	sprintf_s(buffer, "Material##Document:%s", aPath.data());
 	myPanelWindowNames[(size_t)Panels::Properties] = buffer;
-	sprintf_s(buffer, "Preview Settings##Document:%s", aPath.data());
-	myPanelWindowNames[(size_t)Panels::PreviewSettings] = buffer;
 	sprintf_s(buffer, "Graph##Document:%s", aPath.data());
 	myPanelWindowNames[(size_t)Panels::Graph] = buffer;
 
@@ -181,23 +182,27 @@ void MaterialDocument::Update(float aTimeDelta, InputManager& inputManager)
 			myState = Document::State::CloseRequested;
 		ImGui::PopStyleVar(2);
 
+		DrawToolbar();
+
 		ImVec2 docSpaceSize = ImGui::GetContentRegionAvail();
 		ImGuiID dockSpaceId = ImGui::GetID("Material Dockspace");
-		ImGui::DockSpace(dockSpaceId, docSpaceSize, ImGuiDockNodeFlags_None, &myDocumentWindowClass);
+		ImGui::DockSpace(dockSpaceId, docSpaceSize, ImGuiDockNodeFlags_AutoHideTabBar, &myDocumentWindowClass);
 
 		if (!myIsDockingInitialized && docSpaceSize.x > 0.0f && docSpaceSize.y > 0.0f)
 		{
-			ImGuiID center = 0, left = 0, right = 0;
+			ImGuiID center = 0, left = 0, leftBottom = 0;
 			ImGui::DockBuilderRemoveNode(dockSpaceId);
 			ImGui::DockBuilderAddNode(dockSpaceId, ImGuiDockNodeFlags_DockSpace);
 			ImGui::DockBuilderSetNodeSize(dockSpaceId, docSpaceSize);
 			center = dockSpaceId;
+			// Preview over the material's details on the left, the graph gets everything else.
 			ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.28f, &left, &center);
-			ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.30f, &right, &center);
-			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Properties].c_str(), left);
-			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::PreviewSettings].c_str(), right);
-			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Preview].c_str(), center);
+			ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.55f, &leftBottom, &left);
+			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Preview].c_str(), left);
+			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Properties].c_str(), leftBottom);
 			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Graph].c_str(), center);
+			if (ImGuiDockNode* graphNode = ImGui::DockBuilderGetNode(center))
+				graphNode->SetLocalFlags(graphNode->LocalFlags | ImGuiDockNodeFlags_AutoHideTabBar);
 			ImGui::DockBuilderFinish(dockSpaceId);
 			myIsDockingInitialized = true;
 		}
@@ -220,15 +225,43 @@ void MaterialDocument::Update(float aTimeDelta, InputManager& inputManager)
 	ImGui::End();
 
 	ImGui::SetNextWindowClass(&myDocumentWindowClass);
-	ImGui::Begin(myPanelWindowNames[(size_t)Panels::PreviewSettings].c_str());
-	if (myGraphics)
-		myGraphics->DrawPreviewSettings();
-	ImGui::End();
-
-	ImGui::SetNextWindowClass(&myDocumentWindowClass);
 	ImGui::Begin(myPanelWindowNames[(size_t)Panels::Graph].c_str());
 	DrawGraph();
 	ImGui::End();
+}
+
+void MaterialDocument::DrawToolbar()
+{
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.f, 5.f));
+	ImGui::BeginChild("##MaterialToolbar", ImVec2(0.f, 34.f), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar);
+	ImGui::PopStyleVar();
+
+	if (ImGui::Button(ICON_LC_SAVE " Save"))
+		Save();
+	ImGui::SameLine();
+	ImGui::TextDisabled("|");
+	ImGui::SameLine();
+	if (ImGui::Button(ICON_LC_HAMMER " Bake"))
+		Bake();
+	if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+		ImGui::SetTooltip("Evaluate the graph's connected outputs into real textures and save the material.");
+	ImGui::SameLine();
+	ImGui::SetNextItemWidth(64.f); ImGui::DragInt("##bw", &myBakeWidth, 32.f, 64, 4096);
+	ImGui::SameLine(0.f, 4.f); ImGui::TextDisabled("x");
+	ImGui::SameLine(0.f, 4.f); ImGui::SetNextItemWidth(64.f); ImGui::DragInt("##bh", &myBakeHeight, 32.f, 64, 4096);
+	ImGui::SameLine();
+	ImGui::TextDisabled("|");
+	ImGui::SameLine();
+	if (ImGui::Button(ICON_LC_SETTINGS " Preview"))
+		ImGui::OpenPopup("MaterialPreviewSettings");
+	if (ImGui::BeginPopup("MaterialPreviewSettings"))
+	{
+		if (myGraphics)
+			myGraphics->DrawPreviewSettings();
+		ImGui::EndPopup();
+	}
+
+	ImGui::EndChild();
 }
 
 void MaterialDocument::DrawProperties()
@@ -381,11 +414,6 @@ void MaterialDocument::DrawProperties()
 
 void MaterialDocument::DrawGraph()
 {
-	static const NodeKind kAddableNodeKinds[] = {
-		NodeKind::TextureSample, NodeKind::ConstantScalar, NodeKind::ConstantVector,
-		NodeKind::Multiply, NodeKind::Add, NodeKind::Lerp, NodeKind::Clamp,
-		NodeKind::OneMinus, NodeKind::SplitChannels, NodeKind::CombineChannels,
-	};
 	// Adds a node at (x,y) in grid space and wires up bookkeeping. Shared by
 	// the toolbar button's menu and the right-click canvas menu below.
 	auto addNodeAt = [&](NodeKind k, float x, float y)
@@ -395,16 +423,10 @@ void MaterialDocument::DrawGraph()
 		myGraph.Save(myGraphPath);
 	};
 
-	if (ImGui::Button("Add Node"))
+	if (ImGui::Button(ICON_LC_PLUS " Add Node"))
 		ImGui::OpenPopup("AddGraphNodeMenu");
 	ImGui::SameLine();
-	ImGui::SetNextItemWidth(70.f); ImGui::DragInt("##bw", &myBakeWidth, 32.f, 64, 4096);
-	ImGui::SameLine(0.f, 4.f); ImGui::TextUnformatted("x");
-	ImGui::SameLine(0.f, 4.f); ImGui::SetNextItemWidth(70.f); ImGui::DragInt("##bh", &myBakeHeight, 32.f, 64, 4096);
-	ImGui::SameLine();
-	if (ImGui::Button("Bake")) Bake();
-	if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-		ImGui::SetTooltip("Evaluate the graph's connected outputs into real _C/_N/_M/_FX textures and save the material.");
+	ImGui::TextDisabled("Right-click the graph to add a node");
 
 	ed::SetCurrentEditor(myGraphEditorContext);
 	ed::Begin("MaterialGraph");
@@ -517,13 +539,59 @@ void MaterialDocument::DrawGraph()
 	if (ImGui::BeginPopup("AddGraphNodeMenu"))
 	{
 		const ImVec2 openedAt = ImGui::GetMousePosOnOpeningCurrentPopup();
-		for (NodeKind k : kAddableNodeKinds)
+		static char nodeFilter[64] = "";
+		if (ImGui::IsWindowAppearing())
 		{
-			if (ImGui::Selectable(MaterialGraph::NodeKindName(k)))
+			nodeFilter[0] = '\0';
+			ImGui::SetKeyboardFocusHere();
+		}
+		ImGui::SetNextItemWidth(240.f);
+		ImGui::InputTextWithHint("##nodefilter", ICON_LC_SEARCH " Search nodes", nodeFilter, sizeof(nodeFilter));
+		ImGui::Separator();
+
+		std::string lowerFilter = nodeFilter;
+		for (char& c : lowerFilter) c = (char)std::tolower((unsigned char)c);
+		auto contains = [](const char* text, const std::string& what)
+		{
+			std::string lower = text;
+			for (char& c : lower) c = (char)std::tolower((unsigned char)c);
+			return lower.find(what) != std::string::npos;
+		};
+		auto pick = [&](NodeKind k)
+		{
+			hasPendingAdd = true;
+			pendingAddKind = k;
+			pendingAddScreenPos = openedAt;
+			ImGui::CloseCurrentPopup();
+		};
+
+		if (!lowerFilter.empty())
+		{
+			// Searching lists every match flat, with its category alongside.
+			for (int i = 0; i < (int)NodeKind::Count; ++i)
 			{
-				hasPendingAdd = true;
-				pendingAddKind = k;
-				pendingAddScreenPos = openedAt;
+				const NodeKind k = (NodeKind)i;
+				if (!MaterialGraph::IsAddable(k)) continue;
+				const NodeDef& def = GetNodeDef(k);
+				if (!contains(def.name, lowerFilter) && !contains(def.category, lowerFilter)) continue;
+				if (ImGui::Selectable(def.name)) pick(k);
+				ImGui::SameLine();
+				ImGui::TextDisabled("%s", def.category);
+			}
+		}
+		else
+		{
+			static const char* kCategories[] = { "Constants", "Math", "Vector", "Color", "Coordinates", "Procedural", "Texture" };
+			for (const char* category : kCategories)
+			{
+				if (!ImGui::BeginMenu(category)) continue;
+				for (int i = 0; i < (int)NodeKind::Count; ++i)
+				{
+					const NodeKind k = (NodeKind)i;
+					if (!MaterialGraph::IsAddable(k) || std::string(GetNodeDef(k).category) != category) continue;
+					if (ImGui::MenuItem(GetNodeDef(k).name)) pick(k);
+				}
+				ImGui::EndMenu();
 			}
 		}
 		ImGui::EndPopup();
@@ -566,6 +634,18 @@ void MaterialDocument::DrawGraph()
 	}
 }
 
+static ImVec4 CategoryColor(const std::string& category)
+{
+	if (category == "Math") return ImVec4(0.55f, 0.75f, 1.f, 1.f);
+	if (category == "Vector") return ImVec4(0.6f, 0.9f, 0.7f, 1.f);
+	if (category == "Color") return ImVec4(1.f, 0.75f, 0.5f, 1.f);
+	if (category == "Coordinates") return ImVec4(0.9f, 0.6f, 0.9f, 1.f);
+	if (category == "Procedural") return ImVec4(0.95f, 0.85f, 0.5f, 1.f);
+	if (category == "Texture") return ImVec4(0.6f, 0.9f, 1.f, 1.f);
+	if (category == "Constants") return ImVec4(0.75f, 0.75f, 0.75f, 1.f);
+	return ImVec4(1.f, 1.f, 1.f, 1.f);
+}
+
 void MaterialDocument::DrawGraphNode(MaterialGraphNS::Node& node)
 {
 	// Position is set exactly once, the first time this node is ever drawn
@@ -584,11 +664,12 @@ void MaterialDocument::DrawGraphNode(MaterialGraphNS::Node& node)
 	float contentWidth = 0.f;
 
 	const char* title = node.kind == NodeKind::Output ? MaterialGraph::RootChannelName(node.outputChannel) : MaterialGraph::NodeKindName(node.kind);
-	ImGui::TextUnformatted(title);
+	ImGui::TextColored(CategoryColor(node.kind == NodeKind::Output ? "" : GetNodeDef(node.kind).category), "%s", title);
 	contentWidth = std::max(contentWidth, ImGui::GetItemRectMax().x - nodeLeftScreenX);
 	ImGui::Dummy(ImVec2(0.f, 4.f));
 
 	bool changed = false;
+	const NodeDef& nodeDef = GetNodeDef(node.kind);
 	ImGui::PushItemWidth(120.f);
 	ImGui::PushID(node.id);
 	switch (node.kind)
@@ -609,6 +690,53 @@ void MaterialDocument::DrawGraphNode(MaterialGraphNS::Node& node)
 		break;
 	case NodeKind::ConstantVector:
 		changed |= ImGui::ColorEdit3("##value", node.constant, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_NoInputs);
+		break;
+	case NodeKind::ConstantVector4:
+		changed |= ImGui::ColorEdit4("##value", node.constant, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_NoInputs);
+		break;
+	case NodeKind::TexCoord:
+		ImGui::TextUnformatted("Tiling"); ImGui::SameLine(); changed |= ImGui::DragFloat2("##tiling", &node.constant[0], 0.01f);
+		ImGui::TextUnformatted("Offset"); ImGui::SameLine(); changed |= ImGui::DragFloat2("##offset", &node.constant[2], 0.01f);
+		break;
+	case NodeKind::RotateUV:
+	{
+		float center[2] = { node.paramA, node.paramB };
+		ImGui::TextUnformatted("Center"); ImGui::SameLine();
+		if (ImGui::DragFloat2("##center", center, 0.01f)) { node.paramA = center[0]; node.paramB = center[1]; changed = true; }
+		break;
+	}
+	case NodeKind::ComponentMask:
+	{
+		const char* names[4] = { "R", "G", "B", "A" };
+		for (int c = 0; c < 4; ++c)
+		{
+			if (c > 0) ImGui::SameLine();
+			bool enabled = node.constant[c] > 0.5f;
+			if (ImGui::Checkbox(names[c], &enabled)) { node.constant[c] = enabled ? 1.f : 0.f; changed = true; }
+		}
+		break;
+	}
+	case NodeKind::Checker:
+	{
+		float tiles[2] = { node.paramA, node.paramB };
+		ImGui::TextUnformatted("Tiles"); ImGui::SameLine();
+		if (ImGui::DragFloat2("##tiles", tiles, 0.1f, 1.f, 256.f)) { node.paramA = tiles[0]; node.paramB = tiles[1]; changed = true; }
+		break;
+	}
+	case NodeKind::Noise:
+	{
+		int octaves = (int)std::lround(node.paramB);
+		ImGui::TextUnformatted("Scale"); ImGui::SameLine(); changed |= ImGui::DragFloat("##scale", &node.paramA, 0.1f, 0.01f, 256.f);
+		ImGui::TextUnformatted("Octaves"); ImGui::SameLine();
+		if (ImGui::DragInt("##octaves", &octaves, 0.1f, 1, 8)) { node.paramB = (float)octaves; changed = true; }
+		break;
+	}
+	case NodeKind::Voronoi:
+		ImGui::TextUnformatted("Scale"); ImGui::SameLine(); changed |= ImGui::DragFloat("##scale", &node.paramA, 0.1f, 0.01f, 256.f);
+		break;
+	case NodeKind::Circle:
+		ImGui::TextUnformatted("Radius"); ImGui::SameLine(); changed |= ImGui::DragFloat("##radius", &node.paramA, 0.005f, 0.f, 1.f);
+		ImGui::TextUnformatted("Softness"); ImGui::SameLine(); changed |= ImGui::DragFloat("##softness", &node.paramB, 0.005f, 0.f, 0.5f);
 		break;
 	case NodeKind::Clamp:
 		ImGui::TextUnformatted("Min"); ImGui::SameLine(); changed |= ImGui::DragFloat("##min", &node.paramA, 0.01f);
@@ -650,7 +778,7 @@ void MaterialDocument::DrawGraphNode(MaterialGraphNS::Node& node)
 		// the actual drawing loop below -- account for that control's width
 		// too, or a long enough pin name plus its default box would overflow
 		// past the node's right edge instead of the node growing to fit it.
-		const bool usesConstantDefault = (node.kind == NodeKind::Multiply || node.kind == NodeKind::Add || node.kind == NodeKind::Lerp) && i < 3;
+		const bool usesConstantDefault = i < nodeDef.inputs.size() && nodeDef.inputs[i].inlineDefault && i < 5;
 		if (usesConstantDefault && !myGraph.IncomingLink(pinId))
 			rowWidth += 60.f + ImGui::GetStyle().ItemSpacing.x;
 		widthLeft = std::max(widthLeft, rowWidth);
@@ -698,7 +826,7 @@ void MaterialDocument::DrawGraphNode(MaterialGraphNS::Node& node)
 		// Multiply/Add/Lerp's A/B/T fall back to `constant[i]` when
 		// unconnected (see MaterialGraph::Evaluate) -- expose that default
 		// inline instead of forcing every input to be wired.
-		const bool usesConstantDefault = (node.kind == NodeKind::Multiply || node.kind == NodeKind::Add || node.kind == NodeKind::Lerp) && i < 3;
+		const bool usesConstantDefault = i < nodeDef.inputs.size() && nodeDef.inputs[i].inlineDefault && i < 5;
 		if (usesConstantDefault && !myGraph.IncomingLink(pinId))
 		{
 			ImGui::SameLine();
