@@ -151,6 +151,7 @@ void SceneObjectList::Draw()
 		ImGui::PopStyleColor(2);
 	}
 
+	bool pointerOverRow = false;
 	for (const uint32_t objectId : mySortedObjects)
 	{
 		const auto currentObject = allObjects.find(objectId);
@@ -352,18 +353,28 @@ void SceneObjectList::Draw()
 				SceneSelection::GetActiveSceneSelection()->ToggleSelect(objectId);
 				SetSelectedSceneLight(SceneLightSelection::None);
 			}
+			pointerOverRow |= ImGui::IsItemHovered();
+			if (myRenameObject != objectId && ImGui::IsItemClicked(ImGuiMouseButton_Right)
+				&& !SceneSelection::GetActiveSceneSelection()->Contains(objectId))
+			{
+				// Right-clicking an unselected row acts on that row, like every other editor.
+				SceneSelection::GetActiveSceneSelection()->ClearSelection();
+				SceneSelection::GetActiveSceneSelection()->AddToSelection(objectId);
+				SetSelectedSceneLight(SceneLightSelection::None);
+			}
 			if (myRenameObject != objectId && ImGui::BeginPopupContextItem("SceneObjectContext"))
 			{
-				if (ImGui::MenuItem("Rename", "F2"))
+				const size_t selectedCount = SceneSelection::GetActiveSceneSelection()->GetSelection().size();
+				if (ImGui::MenuItem(ICON_LC_PENCIL_LINE "  Rename", "F2", false, selectedCount <= 1))
 				{
 					strncpy_s(myRenameBuffer, object->GetName(), sizeof(myRenameBuffer));
 					myRenameObject = objectId;
 					myFocusRename = true;
 				}
-				if (ImGui::MenuItem("Duplicate"))
+				if (ImGui::MenuItem(ICON_LC_COPY "  Duplicate", "Ctrl+D"))
 				{
-				auto duplicate = std::make_shared<SceneObject>(*object);
-				std::string duplicateName = std::string(object->GetName()) + " Copy";
+					auto duplicate = std::make_shared<SceneObject>(*object);
+					const std::string duplicateName = std::string(object->GetName()) + " Copy";
 					duplicate->SetName(duplicateName.c_str());
 					std::vector<std::shared_ptr<SceneObject>> objects{ duplicate };
 					auto command = std::make_shared<AddSceneObjectsCommand>();
@@ -371,7 +382,11 @@ void SceneObjectList::Draw()
 					CommandManager::DoCommand(command);
 				}
 				ImGui::Separator();
-				if (ImGui::MenuItem("Delete", "Del")) objectsToDelete.push_back(objectId);
+				if (ImGui::MenuItem(ICON_LC_TRASH_2 "  Delete", "Del"))
+				{
+					for (const uint32_t selectedId : SceneSelection::GetActiveSceneSelection()->GetSelection())
+						if (allObjects.contains(selectedId)) objectsToDelete.push_back(selectedId);
+				}
 				ImGui::EndPopup();
 			}
 			ImGui::PopID();
@@ -382,6 +397,24 @@ void SceneObjectList::Draw()
 			}
 		}
 		previousPath = path;
+	}
+
+	// Right-click on empty space: what the Add button offers.
+	if (!pointerOverRow && ImGui::IsWindowHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Right))
+		ImGui::OpenPopup("OutlinerEmptyContext");
+	if (ImGui::BeginPopup("OutlinerEmptyContext"))
+	{
+		if (ImGui::MenuItem(ICON_LC_LIGHTBULB "  Add Point Light"))
+		{
+			AddLightObject(false);
+			mySceneDirty = true;
+		}
+		if (ImGui::MenuItem(ICON_LC_FLASHLIGHT "  Add Spot Light"))
+		{
+			AddLightObject(true);
+			mySceneDirty = true;
+		}
+		ImGui::EndPopup();
 	}
 
 	if (!objectsToDelete.empty())
