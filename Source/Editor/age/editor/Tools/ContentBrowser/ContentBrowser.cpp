@@ -18,6 +18,7 @@
 #include <age/editor/ObjectDefinition/ObjectDefinitionDocument.h>
 #include <age/editor/Scene/SceneDocument.h>
 #include <age/editor/Material/MaterialDocument.h>
+#include <age/editor/ParticleSystem/ParticleSystemDocument.h>
 #include <age/editor/Import/FbxConvert.h>
 #include <age/editor/Tools/ContentBrowser/AssetFileCommands.h>
 #include <age/editor/CommandManager/CommandManager.h>
@@ -485,6 +486,16 @@ void ContentBrowser::Draw()
 								std::unique_ptr<AnimationClipDocument> document = std::make_unique<AnimationClipDocument>();
 								document->Init(path.string());
 
+								Editor::GetEditor()->AddDocument(std::move(document));
+							}
+						}
+
+						if (absPath.extension() == ".tgps")
+						{
+							if (itemStatus.doubleClicked)
+							{
+								std::unique_ptr<ParticleSystemDocument> document = std::make_unique<ParticleSystemDocument>();
+								document->Init(path.string());
 								Editor::GetEditor()->AddDocument(std::move(document));
 							}
 						}

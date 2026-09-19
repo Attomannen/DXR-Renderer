@@ -34,7 +34,7 @@
 #include <age/EngineDefines.h>
 #include <age/physics/PhysicsWorld.h>
 #include <age/Particles/ParticleRenderer.h>
-#include <age/Particles/ParticleSystem.h>
+#include <age/particles/ParticleSystem.h>
 #include <age/script/ScriptRuntimeInstance.h>
 #include <age/script/Contexts/GameScriptContext.h>
 #include <Windows.h>

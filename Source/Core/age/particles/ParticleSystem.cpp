@@ -221,6 +221,23 @@ namespace Ag::Particles
 		Rebuild();
 	}
 
+	void SystemInstance::UpdateAsset(const SystemAsset& anAsset)
+	{
+		if (anAsset.emitters.size() != myEmitters.size())
+		{
+			SetAsset(anAsset);
+			return;
+		}
+		myAsset = anAsset;
+		myUser = myAsset.userParameters;
+		for (size_t i = 0; i < myEmitters.size(); ++i)
+		{
+			const size_t updateModules = myAsset.emitters[i].emitterUpdate.size();
+			myEmitters[i].accumulators.resize(updateModules, 0.f);
+			myEmitters[i].burstFired.resize(updateModules, 0);
+		}
+	}
+
 	void SystemInstance::Rebuild()
 	{
 		myEmitters.clear();

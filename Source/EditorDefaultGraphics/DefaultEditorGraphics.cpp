@@ -1,6 +1,8 @@
 #include "stdafx.h"
 #include "DefaultEditorGraphics.h"
 #include <age/render/CubemapPrefilter.h>
+#include <age/Particles/ParticleRenderer.h>
+#include <age/math/Photometry.h>
 
 #include <filesystem>
 #include <imgui.h>
@@ -1193,6 +1195,48 @@ DefaultEditorGraphics::DefaultEditorGraphics()
 		}
 		return true;
 	});
+}
+
+namespace
+{
+	// Draws a particle system into the editor viewport. The viewport is a plain forward colour pass (not the
+	// photometric HDR pipeline of the game), so brightness is scaled until the reference luminance is white.
+	class DefaultParticleEditorGraphics : public ParticleEditorGraphicsBase
+	{
+	public:
+		DefaultParticleEditorGraphics()
+		{
+			if (!GraphicsEngine::GetInstance())
+				GraphicsEngine::Start();
+		}
+
+		void Draw(const ParticleEditorDrawParameters& parameters) override
+		{
+			GraphicsEngine::GetInstance()->BeginFrame();
+
+			auto& stack = GraphicsEngine::GetInstance()->GetGraphicsStateStack();
+			stack.SetCamera(parameters.viewport->GetCamera());
+			stack.SetBlendState(Ag::BlendState::Disabled);
+
+			parameters.viewport->BeginDraw();
+			parameters.viewport->SetupColorPass();
+
+			constexpr float kReferenceNits = 2000.f;
+			if (parameters.system)
+				myRenderer.Render(*parameters.system, 1.f / Photometry::NitsToUnits(kReferenceNits));
+
+			parameters.viewport->EndDraw();
+			GraphicsEngine::GetInstance()->EndFrame();
+		}
+
+	private:
+		Particles::ParticleRenderer myRenderer;
+	};
+}
+
+std::unique_ptr<ParticleEditorGraphicsBase> DefaultEditorGraphics::CreateParticleGraphicsInterface() const
+{
+	return std::make_unique<DefaultParticleEditorGraphics>();
 }
 
 std::unique_ptr<ObjectDefinitionEditorGraphicsBase> DefaultEditorGraphics::CreateObjectDefinitionGraphicsInterface() const

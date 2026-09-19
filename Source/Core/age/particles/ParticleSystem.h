@@ -75,6 +75,9 @@ namespace Ag::Particles
 
 		// Replaces the asset (the editor calls this after every edit). Running particles are cleared.
 		void SetAsset(const SystemAsset& anAsset);
+		// Swaps in an edited asset without killing the particles that are alive, so an editor can tweak values while
+		// the effect keeps playing. Restarts only when the emitters themselves were added or removed.
+		void UpdateAsset(const SystemAsset& anAsset);
 		const SystemAsset& GetAsset() const { return myAsset; }
 
 		void Update(float aDeltaSeconds);

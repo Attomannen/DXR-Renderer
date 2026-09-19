@@ -100,6 +100,22 @@ public:
 };
 
 
+namespace Particles { class SystemInstance; }
+
+struct ParticleEditorDrawParameters
+{
+	EditorViewport* viewport;
+	const Particles::SystemInstance* system;
+};
+
+class ParticleEditorGraphicsBase
+{
+public:
+	virtual ~ParticleEditorGraphicsBase() = default;
+	virtual void Draw(const ParticleEditorDrawParameters& parameters) = 0;
+};
+
+
 class EditorGraphicsBase
 {
 public:
@@ -107,6 +123,8 @@ public:
 	virtual std::unique_ptr<SceneEditorGraphicsBase> CreateSceneGraphicsInterface() const = 0;
 	virtual std::unique_ptr<AnimationClipEditorGraphicsBase> CreateAnimationClipGraphicsInterface() const = 0;
 	virtual std::unique_ptr<MaterialEditorGraphicsBase> CreateMaterialGraphicsInterface() const = 0;
+	// Null when the backend has no particle preview.
+	virtual std::unique_ptr<ParticleEditorGraphicsBase> CreateParticleGraphicsInterface() const { return nullptr; }
 
 	virtual ImTextureID GetTextureID(std::string_view /*aTexturePath*/) const { return 0; }
 	virtual void DrawLines(const Color* /*someColors*/, const Vector3f* /*someFromPositions*/, const Vector3f* /*someToPositions*/, unsigned int /*aCount*/) const {}

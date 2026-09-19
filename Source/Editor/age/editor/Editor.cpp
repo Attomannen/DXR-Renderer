@@ -27,6 +27,7 @@
 #include <age/editor/ObjectDefinition/ObjectDefinitionDocument.h>
 #include <age/editor/Scene/SceneDocument.h>
 #include <age/editor/Material/MaterialDocument.h>
+#include <age/editor/ParticleSystem/ParticleSystemDocument.h>
 #include <age/editor/Import/FbxConvert.h>
 #include <age/editor/Scene/SceneSelection.h>
 #include <age/editor/ScriptEditor/ScriptEditor.h>
@@ -365,6 +366,10 @@ std::string Ag::Editor::CreateNewParticleSystem(const fs::path& path)
 	system.name = p.stem().string();
 	if (!system.Save(p.string()))
 		return "could not write '" + p.filename().string() + "'";
+
+	std::unique_ptr<ParticleSystemDocument> document = std::make_unique<ParticleSystemDocument>();
+	document->Init(p.string());
+	AddDocument(std::move(document));
 	return {};
 }
 

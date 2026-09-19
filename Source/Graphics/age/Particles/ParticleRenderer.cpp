@@ -33,7 +33,7 @@ namespace Ag::Particles
 		return mySharedData.emplace(aTexturePath, data).first->second;
 	}
 
-	void ParticleRenderer::Render(const SystemInstance& aSystem)
+	void ParticleRenderer::Render(const SystemInstance& aSystem, float aRadianceScale)
 	{
 		GraphicsStateStack& stack = GraphicsEngine::GetInstance()->GetGraphicsStateStack();
 		SpriteDrawer& spriteDrawer = GraphicsEngine::GetInstance()->GetSpriteDrawer();
@@ -72,7 +72,7 @@ namespace Ag::Particles
 				std::sort(myOrder.begin(), myOrder.end(), [this](uint32_t a, uint32_t b) { return myDepth[a] > myDepth[b]; });
 			}
 
-			const float brightness = Photometry::NitsToUnits(settings.brightness);
+			const float brightness = Photometry::NitsToUnits(settings.brightness) * aRadianceScale;
 			const int columns = std::max(1, settings.flipbookColumns);
 			const int rows = std::max(1, settings.flipbookRows);
 			const int frames = columns * rows;

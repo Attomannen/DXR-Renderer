@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ParticleSystem.h"
+#include <age/particles/ParticleSystem.h>
 
 #include <age/sprite/sprite.h>
 
@@ -15,7 +15,9 @@ namespace Ag::Particles
 	class ParticleRenderer
 	{
 	public:
-		void Render(const SystemInstance& aSystem);
+		// aRadianceScale multiplies every sprite's brightness. The game leaves it at 1 (its HDR pipeline is photometric);
+		// a low-dynamic-range preview passes 1 / NitsToUnits(reference) so that reference brightness maps to white.
+		void Render(const SystemInstance& aSystem, float aRadianceScale = 1.f);
 
 	private:
 		const SpriteSharedData& SharedDataFor(const std::string& aTexturePath);
