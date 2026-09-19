@@ -6,7 +6,12 @@ project (projectname)
 	location (dirs.projectfiles)
 	dependson { "Core", "External", "Application", "Game", "GameMain", "Editor" }
 		
-	kind "ConsoleApp"
+	-- WindowedApp so no console window is spawned alongside the game; the log
+	-- lives in the in-engine Console panel (grave key) instead. mainCRTStartup
+	-- keeps the ordinary int main(argc, argv) entry point and its arguments,
+	-- which the bench harness relies on.
+	kind "WindowedApp"
+	entrypoint "mainCRTStartup"
 	language "C++"
 	cppdialect "C++20"
 

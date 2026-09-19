@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <cstdio>
 #include <age/log/Log.h>
 #include <age/util/FixedStream.h>
 #include <iostream>
@@ -34,10 +35,43 @@ Log::~Log()
 }
 }
 
+namespace
+{
+	// Reconnect stdout/stderr to the terminal that launched us, if there was one.
+	//
+	// The executables are WindowedApp, so Windows gives them no console and the
+	// CRT's stdout goes nowhere. That is what we want for a double-click: no
+	// second window cluttering the desktop. But a run started from a shell --
+	// which is how the bench harness and every redirected `> log.txt` run
+	// works -- should still print where the user is looking.
+	//
+	// AttachConsole succeeds only in the shell case, so this gives both
+	// behaviours without a flag. Nothing here can fail in a way worth
+	// reporting: if it does not attach, the in-engine Console panel still has
+	// the whole log.
+	void AttachParentConsoleIfAny()
+	{
+		// If stdout already leads somewhere, leave it strictly alone. That
+		// "somewhere" is a pipe under `game.exe > log.txt` or `| grep`, and
+		// reopening it onto CONOUT$ would silently redirect the output away
+		// from the file the user asked for (which is exactly what happened the
+		// first time this was written).
+		const HANDLE existing = ::GetStdHandle(STD_OUTPUT_HANDLE);
+		if (existing != nullptr && existing != INVALID_HANDLE_VALUE) return;
+		if (!::AttachConsole(ATTACH_PARENT_PROCESS)) return;  // not launched from a shell
+
+		FILE* stream = nullptr;
+		freopen_s(&stream, "CONOUT$", "w", stdout);
+		freopen_s(&stream, "CONOUT$", "w", stderr);
+		freopen_s(&stream, "CONIN$",  "r", stdin);
+	}
+}
+
 void Ag::Log::Create()
 {
 	if (!ourInstance)
 	{
+		AttachParentConsoleIfAny();
 		ourInstance = new Log();
 	}
 }

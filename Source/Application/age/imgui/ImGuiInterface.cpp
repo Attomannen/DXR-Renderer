@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "ImGuiInterface.h"
+#include "age/imgui/ConsolePanel.h"
 #include <string>
 #include <age/application.h>
 #include <age/graphics/DX11.h>
@@ -327,6 +328,9 @@ void ImGuiInterface::PreFrame()
 
 void ImGuiInterface::Render()
 {
+	// Drawn here so both executables get it: this is the one ImGui hook they
+	// share. See ConsolePanel -- it replaces the Win32 console window.
+	ConsolePanel::Draw();
 #ifndef _RETAIL
 	ImGui::Render();
 
