@@ -58,7 +58,10 @@ void SceneDocument::Init(std::string_view path)
 	//myNavmeshCreationTool.Init();
 
 	myViewport.Init();
-	myViewport.GetGrid().SetGridLineExtreme(20.0f);   // metres
+	// A kilometre of reach, tiered: 1 m cells near the origin, 10 m out to
+	// 250 m, 100 m beyond. A level is hundreds of metres across (Bistro alone
+	// is 184 x 174 m), so a 20 m grid gave the eye nothing to judge it against.
+	myViewport.GetGrid().SetGridLineExtreme(1000.0f);
 
 	myScene = Editor::GetEditor()->GetEditorSceneManager().Get(path);
 	// EditorSceneManager::Get() returns null when the .tgs doesn't exist on

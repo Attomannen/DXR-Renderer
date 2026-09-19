@@ -235,9 +235,26 @@ namespace GameScene
 			if (tgoByStemBuilt) return;
 			tgoByStemBuilt = true;
 			std::error_code scanEc;
-			for (const fs::directory_entry& de : fs::recursive_directory_iterator(root, scanEc))
+			for (fs::recursive_directory_iterator it(root, scanEc), end; it != end; it.increment(scanEc))
 			{
-				if (de.is_regular_file() && de.path().extension() == ".tgo")
+				const fs::directory_entry& de = *it;
+				// Skip dot-prefixed folders, .trash above all.
+				//
+				// Deleting an asset in the editor moves it to GameContent/.trash
+				// rather than removing it, and this index takes the FIRST .tgo it
+				// finds for a given stem. '.' sorts before any letter, so the
+				// trashed copy was always indexed first and permanently shadowed
+				// the live asset: Bistro loaded its deleted .tgo, whose string
+				// lights were all green, while the editor -- which resolves by
+				// explicit path -- showed the correct ones.
+				std::error_code dirEc;
+				if (de.is_directory(dirEc))
+				{
+					const std::string name = de.path().filename().string();
+					if (!name.empty() && name[0] == '.') it.disable_recursion_pending();
+					continue;
+				}
+				if (de.is_regular_file(dirEc) && de.path().extension() == ".tgo")
 					tgoByStem.emplace(de.path().stem().string(), de.path());
 			}
 			if (scanEc)
