@@ -19,6 +19,15 @@ namespace ed = ax::NodeEditor;
 #include <filesystem>
 
 using namespace Ag;
+
+// The node editor derives node, pin and link ids from the same kind of Dear ImGui id, so a node 1 and
+// a pin 1 collide ("items with conflicting ID"). Each kind gets its own range.
+static constexpr uintptr_t kNodeIdSpace = 0x10000000u, kPinIdSpace = 0x20000000u, kLinkIdSpace = 0x30000000u, kEdIdMask = 0x0FFFFFFFu;
+static ed::NodeId EdNode(int id) { return ed::NodeId((uintptr_t)id | kNodeIdSpace); }
+static ed::PinId EdPin(int id) { return ed::PinId((uintptr_t)id | kPinIdSpace); }
+static ed::LinkId EdLink(int id) { return ed::LinkId((uintptr_t)id | kLinkIdSpace); }
+static int FromEd(uintptr_t id) { return (int)(id & kEdIdMask); }
+
 using namespace Ag::MaterialGraphNS;
 
 static const char* kPreviewMeshes[] = { "Sphere", "Cube", "Cylinder", "Cone", "Torus", "Plane" };
@@ -411,11 +420,11 @@ void MaterialDocument::DrawGraph()
 		// would still stomp an in-progress drag the same way, so the
 		// once-only guard is still required, just no longer timing-sensitive.
 		if (myGraphPositionedNodes.insert(node->id).second)
-			ed::SetNodePosition(ed::NodeId(node->id), ImVec2(node->posX, node->posY));
+			ed::SetNodePosition(EdNode(node->id), ImVec2(node->posX, node->posY));
 		DrawGraphNode(*node);
 	}
 	for (const Link& link : myGraph.Links())
-		ed::Link(ed::LinkId(link.id), ed::PinId(link.fromPin), ed::PinId(link.toPin));
+		ed::Link(EdLink(link.id), EdPin(link.fromPin), EdPin(link.toPin));
 
 	// Explicit event-query pattern (this library's replacement for imnodes'
 	// one-shot IsLinkCreated/IsLinkDestroyed/NumSelectedNodes+GetSelectedNodes):
@@ -428,8 +437,8 @@ void MaterialDocument::DrawGraph()
 		{
 			if (ed::AcceptNewItem())
 			{
-				const int startPin = (int)startPinId.Get();
-				const int endPin = (int)endPinId.Get();
+				const int startPin = FromEd(startPinId.Get());
+				const int endPin = FromEd(endPinId.Get());
 				// The library doesn't guarantee which end it reports first;
 				// AddLink() itself validates output->input direction and
 				// rejects the wrong one.
@@ -448,14 +457,14 @@ void MaterialDocument::DrawGraph()
 		{
 			if (ed::AcceptDeletedItem())
 			{
-				myGraph.RemoveLink((int)deletedLinkId.Get());
+				myGraph.RemoveLink(FromEd(deletedLinkId.Get()));
 				myGraph.Save(myGraphPath);
 			}
 		}
 		ed::NodeId deletedNodeId;
 		while (ed::QueryDeletedNode(&deletedNodeId))
 		{
-			const int nodeId = (int)deletedNodeId.Get();
+			const int nodeId = FromEd(deletedNodeId.Get());
 			const Node* node = myGraph.FindNode(nodeId);
 			if (node && node->kind == NodeKind::Output)
 			{
@@ -552,7 +561,7 @@ void MaterialDocument::DrawGraph()
 		if (!myGraphPositionedNodes.contains(constNode.id))
 			continue;
 		Node* node = myGraph.FindNode(constNode.id);
-		const ImVec2 pos = ed::GetNodePosition(ed::NodeId(node->id));
+		const ImVec2 pos = ed::GetNodePosition(EdNode(node->id));
 		node->posX = pos.x; node->posY = pos.y;
 	}
 }
@@ -564,7 +573,7 @@ void MaterialDocument::DrawGraphNode(MaterialGraphNS::Node& node)
 	// from then on. Roomier than the 8px default on all sides -- the default
 	// left content sitting flush against the dot/border.
 	ed::PushStyleVar(ed::StyleVar_NodePadding, ImVec4(14.f, 10.f, 14.f, 12.f));
-	ed::BeginNode(ed::NodeId(node.id));
+	ed::BeginNode(EdNode(node.id));
 	// Tracks the widest thing drawn so far, screen-space, so the output pin
 	// column below can be flush against the node's actual right edge (like
 	// Unreal's material graph) instead of just the widest output label --
@@ -665,7 +674,7 @@ void MaterialDocument::DrawGraphNode(MaterialGraphNS::Node& node)
 	{
 		const Id pinId = node.inputPins[i];
 		const Pin* pin = myGraph.FindPin(pinId);
-		ed::BeginPin(ed::PinId(pinId), ed::PinKind::Input);
+		ed::BeginPin(EdPin(pinId), ed::PinKind::Input);
 		NodeEditorPinIcon(kPinColor, myGraph.IncomingLink(pinId) != nullptr);
 		const ImVec2 iconMin = ImGui::GetItemRectMin();
 		const ImVec2 iconMax = ImGui::GetItemRectMax();
@@ -711,7 +720,7 @@ void MaterialDocument::DrawGraphNode(MaterialGraphNS::Node& node)
 	{
 		const Pin* pin = myGraph.FindPin(pinId);
 		ImGui::SetCursorPos(rowPos);
-		ed::BeginPin(ed::PinId(pinId), ed::PinKind::Output);
+		ed::BeginPin(EdPin(pinId), ed::PinKind::Output);
 		ImGui::SetCursorPosX(rowPos.x + (widthRight - ImGui::CalcTextSize(pin->name.c_str()).x));
 		ImGui::TextUnformatted(pin->name.c_str());
 		ImGui::SameLine();
