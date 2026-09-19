@@ -48,8 +48,6 @@ public:
 		Details,
 		Viewport,
 		EventGraph,
-		VisualPreviewSettings,
-		LivePreview,
 		Count
 	};
 

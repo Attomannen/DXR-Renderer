@@ -84,8 +84,6 @@ void ObjectDefinitionDocument::Init(std::string_view aPath)
 		{ Panels::Details, "Details" },
 		{ Panels::Viewport, "Viewport" },
 		{ Panels::EventGraph, "Event Graph" },
-		{ Panels::VisualPreviewSettings, "Preview Settings" },
-		{ Panels::LivePreview, "Live Preview" },
 	};
 	for (const auto& title : titles)
 	{
@@ -172,11 +170,11 @@ void ObjectDefinitionDocument::Update(float aTimeDelta, InputManager& inputManag
 		ImVec2 docSpaceSize = ImGui::GetContentRegionAvail();
 		ImGuiID dockSpaceId = ImGui::GetID("Document Dockspace");
 		// todo: ImGui::GetContentRegionAvail() returns wrong result first time it seems. What to do instead?
-		ImGui::DockSpace(dockSpaceId, docSpaceSize, ImGuiDockNodeFlags_None, &myDocumentWindowClass);
+		ImGui::DockSpace(dockSpaceId, docSpaceSize, ImGuiDockNodeFlags_AutoHideTabBar, &myDocumentWindowClass);
 
 		if (!myIsDockingInitialized && docSpaceSize.x > 0.0f && docSpaceSize.y > 0.0f)
 		{
-			ImGuiID center = 0, left = 0, right = 0, leftBottom = 0, rightBottom = 0;
+			ImGuiID center = 0, left = 0, right = 0, leftBottom = 0;
 
 			ImGui::DockBuilderRemoveNode(dockSpaceId); // clear any previous layout
 			ImGui::DockBuilderAddNode(dockSpaceId, ImGuiDockNodeFlags_DockSpace);
@@ -184,17 +182,14 @@ void ObjectDefinitionDocument::Update(float aTimeDelta, InputManager& inputManag
 
 			center = dockSpaceId;
 
-			// Components over My Blueprint on the left, Details over the previews on the right.
-			ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.20f, &left, &center);
-			ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.26f, &right, &center);
+			// Components over My Blueprint on the left, Details on the right.
+			ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.18f, &left, &center);
+			ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.22f, &right, &center);
 			ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.55f, &leftBottom, &left);
-			ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.30f, &rightBottom, &right);
 
 			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Components].c_str(), left);
 			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::MyBlueprint].c_str(), leftBottom);
 			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Details].c_str(), right);
-			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::LivePreview].c_str(), rightBottom);
-			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::VisualPreviewSettings].c_str(), rightBottom);
 			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::Viewport].c_str(), center);
 			ImGui::DockBuilderDockWindow(myPanelWindowNames[(size_t)Panels::EventGraph].c_str(), center);
 
@@ -253,20 +248,7 @@ void ObjectDefinitionDocument::Update(float aTimeDelta, InputManager& inputManag
 
 	ImGui::End();
 
-	ImGui::SetNextWindowClass(&myDocumentWindowClass);
-
-	ImGui::Begin(myPanelWindowNames[(size_t)Panels::VisualPreviewSettings].c_str());
-
-	if (myGraphics)
-	{
-		myGraphics->DrawVisualPreviewSettings();
-	}
-
-	ImGui::End();
-
-	ImGui::Begin(myPanelWindowNames[(size_t)Panels::LivePreview].c_str());
 	DrawAndUpdateLivePreview(aTimeDelta);
-	ImGui::End();
 }
 
 void ObjectDefinitionDocument::OnAction(CommandManager::Action action)
@@ -377,6 +359,24 @@ void ObjectDefinitionDocument::DrawToolbar()
 
 	ImGui::SameLine();
 	ImGui::TextDisabled("%s", running ? "Running" : (stopped ? "Stopped" : "Paused"));
+
+	if (myLivePreviewData.graph && myLivePreviewData.graph->GetScript().GetSequenceNumber() != myObjectDefinition->EditEventGraph().GetSequenceNumber())
+	{
+		ImGui::SameLine();
+		ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.3f, 1.f), ICON_LC_TRIANGLE_ALERT " Graph changed, stop and play again");
+	}
+
+	ImGui::SameLine();
+	if (ImGui::Button(ICON_LC_SETTINGS))
+		ImGui::OpenPopup("PreviewSettings");
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Preview settings");
+	if (ImGui::BeginPopup("PreviewSettings"))
+	{
+		if (myGraphics)
+			myGraphics->DrawVisualPreviewSettings();
+		ImGui::EndPopup();
+	}
 
 	ImGui::EndChild();
 }
@@ -812,11 +812,6 @@ void ObjectDefinitionDocument::DrawDetailsPanel()
 
 void ObjectDefinitionDocument::DrawAndUpdateLivePreview(float deltaTime)
 {
-	if (!myObjectDefinition->HasEventGraph())
-		ImGui::TextDisabled("The Event Graph is empty. Add nodes to it to preview.");
-	else if (myLivePreviewData.graph && myLivePreviewData.graph->GetScript().GetSequenceNumber() != myObjectDefinition->EditEventGraph().GetSequenceNumber())
-		ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.3f, 1.f), ICON_LC_TRIANGLE_ALERT " The running graph is out of date. Stop and play again to use the latest changes.");
-
 	if (myLivePreviewData.mode == LivePreviewMode::Running)
 	{
 		myLivePreviewData.frameNumber++;
