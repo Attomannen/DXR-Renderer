@@ -29,6 +29,7 @@
 #include <age/scene/ScenePropertyTypes.h>
 
 #include <age/editor/Editor.h>
+#include <age/editor/PlaySession.h>
 
 #include <age/editor/Tools/Viewport/Viewport.h>
 #include <age/editor/Tools/Viewport/CollisionOverlay.h>
@@ -130,7 +131,25 @@ void SceneDocument::Update(float aTimeDelta, InputManager& inputManager)
 		.scene = myScene,
 		.sceneSelection = &mySceneSelection,
 			};
-	myGraphics->Draw(params);
+	if (PlaySession::IsPlaying())
+	{
+		// The game composites into the same viewport target the editor's own
+		// scene view uses, so the panel, its docking and the toolbar are
+		// untouched -- only what is inside the image changes.
+		EditorViewport& vp = myViewport;
+		// Normally DefaultEditorGraphics::Draw does this; skipping that path
+		// left the target at its old size, so ImGui stretched a stale image
+		// whenever a dock was dragged.
+		vp.BeginDraw();
+		const Vector2ui res = vp.GetRenderTarget().GetResolution();
+		const Vector2i pos = vp.GetViewportPos();
+		PlaySession::Tick(aTimeDelta, &vp.GetRenderTarget(), &vp.GetColorDepthBuffer(),
+			pos.x, pos.y, res.x, res.y, vp.IsViewportHovered());
+	}
+	else
+	{
+		myGraphics->Draw(params);
+	}
 
 	char buffer[512];
 	char asterix[2] = {0, 0};
@@ -194,9 +213,46 @@ void SceneDocument::Update(float aTimeDelta, InputManager& inputManager)
 			Editor::GetEditor()->Save();
 		}
 		ImGui::SameLine();
-		if (ImGui::Selectable(ICON_LC_PLAY, false, 0, toolbarItemSize) || ImGui::IsKeyPressed(ImGuiKey_F5) || (ImGui::GetIO().KeyAlt && ImGui::IsKeyPressed(ImGuiKey_P, false)))
 		{
-			ProjectRunControls::ExecuteRun(*this);
+			const bool playing = PlaySession::IsPlaying();
+			const bool pressed = ImGui::Selectable(playing ? ICON_LC_SQUARE : ICON_LC_PLAY, playing, 0, toolbarItemSize)
+				|| ImGui::IsKeyPressed(ImGuiKey_F5)
+				|| (ImGui::GetIO().KeyAlt && ImGui::IsKeyPressed(ImGuiKey_P, false));
+			if (pressed)
+			{
+				if (playing)
+				{
+					// No reload. The session builds its own world from the .tgs
+					// on disk -- the editor's scene objects are a separate set
+					// and nothing the game did touched them, so dropping the
+					// session restores the editor view immediately, with the
+					// selection, camera and undo stack intact.
+					PlaySession::Stop();
+				}
+				else
+				{
+					// Save first, so what runs is what is on screen: the session
+					// builds its world from the .tgs on disk. ExecuteRun below
+					// has always done the same before launching.
+					Save();
+					const Vector2ui playRes = myViewport.GetRenderTarget().GetResolution();
+					if (!PlaySession::Start(GetPath().data(), playRes.x, playRes.y))
+					{
+						// No in-editor session available (a bare Editor build,
+						// or it failed to start) -- fall back to launching.
+						ProjectRunControls::ExecuteRun(*this);
+					}
+				}
+			}
+			// The toolbar runs under the icon-only font (pushed above), which has
+			// no Latin glyphs -- tooltip text drawn with it comes out as a row of
+			// fallback icons. Same restore the transform popup does below.
+			if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+			{
+				ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);
+				ImGui::SetTooltip("%s", playing ? "Stop (F5)" : "Play in viewport (F5)");
+				ImGui::PopFont();
+			}
 		}
 
 		toolbarSeparator();

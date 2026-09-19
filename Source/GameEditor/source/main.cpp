@@ -20,8 +20,14 @@ extern "C" {
 	const char* D3D12SDKPath = "AgilitySDK/";
 }
 
+// Defined in PlaySessionImpl.cpp: teaches the editor how to run a GameWorld in
+// its viewport. Declared here rather than in a header because it has exactly
+// one caller.
+void InstallPlaySession();
+
 int main(const int /*argc*/, const char* /*argc*/[])
 {
+	InstallPlaySession();
 	GoEditor(AGE_PROJECT_SETTINGS_FILE, DefaultEditorConfiguration, std::make_unique<Ag::DefaultEditorGraphics>());
 	return 0;
 }

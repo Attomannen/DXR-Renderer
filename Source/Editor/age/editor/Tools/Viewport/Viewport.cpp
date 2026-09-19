@@ -198,6 +198,7 @@ void EditorViewport::DrawAndUpdateViewportWindow(float aDeltaTime, ViewportInter
 		// raw-DX11 call standing between DX12 GameEditor and actually showing
 		// the 3D viewport at all.
 		ImGui::Image((ImTextureID)DX11::Rhi()->ImGuiTextureId(myRenderTarget.GetSrv()), ImGui::GetContentRegionAvail());
+		myViewportHovered = ImGui::IsItemHovered();
 		ImVec2 viewportSize = ImGui::GetItemRectSize();
 		ImVec2 viewportPos = ImGui::GetItemRectMin();
 

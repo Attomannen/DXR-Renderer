@@ -1,4 +1,5 @@
 #include <stdafx.h>
+#include <age/log/Log.h>
 
 #include "ScriptNodeTypeRegistry.h"
 
@@ -55,6 +56,17 @@ std::string_view Ag::ScriptNodeTypeRegistry::GetNodeTooltip(ScriptNodeTypeId typ
 
 ScriptNodeTypeRegistry::TypeInfo& ScriptNodeTypeRegistry::RegisterTypeInternal(const char* fullName, const char* toolTip)
 {
+	// Registering the same full name twice is benign and now expected: the
+	// editor hosting an in-viewport play session links both the editor's and
+	// the game's node translation units into one process, and they share this
+	// registry. Hand back the existing entry instead of adding a second one.
+	//
+	// A SHORT name colliding while the full name differs is still an authoring
+	// mistake -- two different nodes that cannot be told apart in a search box --
+	// and still asserts below.
+	if (const auto existing = ourStringToTypeId.find(fullName); existing != ourStringToTypeId.end())
+		return ourTypeInfos[existing->second.id];
+
 	ScriptNodeTypeId typeId = { (unsigned int)ourTypeInfos.size() };
 
 	TypeInfo& typeInfo = ourTypeInfos.emplace_back();
@@ -114,6 +126,9 @@ ScriptNodeTypeRegistry::TypeInfo& ScriptNodeTypeRegistry::RegisterTypeInternal(c
 
 	typeInfo.toolTip = toolTip;
 
+	if (ourStringToTypeId.find(typeInfo.shortName) != ourStringToTypeId.end())
+		ERROR_PRINT("script node '%s': short name '%s' is already registered by another node type",
+			typeInfo.fullName, typeInfo.shortName);
 	assert("Node type name (without category) already exists. Duplicates are not allowed" && ourStringToTypeId.find(typeInfo.shortName) == ourStringToTypeId.end());
 	assert("Node type name (including cagories) already exists. Duplicates are not allowed" && ourStringToTypeId.find(typeInfo.fullName) == ourStringToTypeId.end());
 

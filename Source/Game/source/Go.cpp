@@ -19,7 +19,10 @@
 
 #include <cstdlib>
 
-LRESULT WinProc([[maybe_unused]]HWND hWnd, UINT message, [[maybe_unused]]WPARAM wParam, [[maybe_unused]]LPARAM lParam)
+// static: the game and the editor each have a WinProc, and GameEditor links
+// both. Without internal linkage they collide the moment anything pulls in the
+// other translation unit -- which the in-viewport play session now does.
+static LRESULT WinProc([[maybe_unused]]HWND hWnd, UINT message, [[maybe_unused]]WPARAM wParam, [[maybe_unused]]LPARAM lParam)
 {
 	// Feed the benchmark's free-fly camera.
 	if (GameWorld* gw = GameWorld::Get())
@@ -56,6 +59,17 @@ namespace Ag
 std::string locStartupScene;
 
 const std::string& StartupScene() { return locStartupScene; }
+
+void SetStartupScene(const char* aScene)
+{
+	locStartupScene.clear();
+	if (!aScene || !*aScene) return;
+	locStartupScene = aScene;
+	std::replace(locStartupScene.begin(), locStartupScene.end(), '\\', '/');
+	if (locStartupScene.size() > 4 &&
+		locStartupScene.compare(locStartupScene.size() - 4, 4, ".tgs") == 0)
+		locStartupScene.resize(locStartupScene.size() - 4);
+}
 
 void Go(const char* aStartupScene)
 {

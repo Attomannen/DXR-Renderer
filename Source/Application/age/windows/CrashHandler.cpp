@@ -83,4 +83,35 @@ namespace Ag
 	{
 		SetUnhandledExceptionFilter(CrashHandlerFilter);
 	}
+
+	void PrintStackTrace(const char* aWhy)
+	{
+		HANDLE process = GetCurrentProcess();
+		SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_UNDNAME);
+		// Idempotent in practice: a second SymInitialize on an already
+		// initialised process simply fails, and the symbols stay loaded.
+		SymInitialize(process, nullptr, TRUE);
+
+		void* frames[32] = {};
+		const USHORT captured = CaptureStackBackTrace(1, 32, frames, nullptr);
+		ERROR_PRINT("STACK TRACE (%s):", aWhy ? aWhy : "");
+
+		alignas(SYMBOL_INFO) char symbolBuffer[sizeof(SYMBOL_INFO) + 256] = {};
+		SYMBOL_INFO* symbol = reinterpret_cast<SYMBOL_INFO*>(symbolBuffer);
+		symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+		symbol->MaxNameLen = 255;
+		for (USHORT i = 0; i < captured; ++i)
+		{
+			const DWORD64 pc = reinterpret_cast<DWORD64>(frames[i]);
+			DWORD64 displacement = 0;
+			const bool gotSymbol = SymFromAddr(process, pc, &displacement, symbol);
+			IMAGEHLP_LINE64 line = {};
+			line.SizeOfStruct = sizeof(line);
+			DWORD lineDisplacement = 0;
+			const bool gotLine = SymGetLineFromAddr64(process, pc, &lineDisplacement, &line);
+			ERROR_PRINT("  #%02d %s+0x%llX (%s:%lu)", (int)i,
+				gotSymbol ? symbol->Name : "???", displacement,
+				gotLine ? line.FileName : "???", gotLine ? line.LineNumber : 0u);
+		}
+	}
 }

@@ -3,6 +3,8 @@
 #include "age/rhi/dx12/Dx12Device.h"
 #include "age/rhi/Format.h"
 #include "age/graphics/DX11.h"   // GenerateMips: reuses DX11::Load{Vertex,Pixel}Shader (backend-agnostic since this session's shader-loading fix) for its fullscreen-copy blit shaders, rather than compiling anything new
+#include <age/windows/CrashHandler.h>
+#include <age/log/Log.h>
 #include <cassert>
 
 namespace Ag::rhi::dx12
@@ -107,6 +109,20 @@ namespace Ag::rhi::dx12
 			if (RtvRec* rtv = myDevice.GetRtv(rtvs[i]))
 				TransitionResource(rtv->texture, ResourceState::RenderTarget);
 			uint32_t* slot = myDevice.GetRtvSlot(rtvs[i]);
+			if (!slot)
+			{
+				// The assert alone names neither the handle nor the pass that
+				// bound it, and abort() skips the top-level crash filter, so
+				// walk the stack here while there still is one.
+				static bool traced = false;
+				if (!traced)
+				{
+					traced = true;
+					ERROR_PRINT("Dx12: invalid RtvHandle at index %u of %u (index=%u gen=%u)",
+						i, n, rtvs[i].index, rtvs[i].generation);
+					PrintStackTrace("SetRenderTargets: invalid RtvHandle");
+				}
+			}
 			assert(slot && "SetRenderTargets: invalid RtvHandle");
 			rtvHandles[i] = myDevice.RtvCpuHandle(slot ? *slot : 0);
 			myBoundRtvFormats[i] = myDevice.GetRtvFormat(rtvs[i]);

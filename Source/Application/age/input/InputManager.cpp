@@ -92,6 +92,23 @@ void InputManager::CaptureMouse() const
 	ClipCursor(&clipRect);
 }
 
+void InputManager::CaptureMouse(int aLeft, int aTop, int aRight, int aBottom) const
+{
+	if (aRight <= aLeft || aBottom <= aTop) { CaptureMouse(); return; }
+
+	POINT upperLeft{ aLeft, aTop };
+	POINT lowerRight{ aRight, aBottom };
+	MapWindowPoints(myOwnerHWND, nullptr, &upperLeft, 1);
+	MapWindowPoints(myOwnerHWND, nullptr, &lowerRight, 1);
+
+	RECT clipRect;
+	clipRect.left = upperLeft.x;
+	clipRect.top = upperLeft.y;
+	clipRect.right = lowerRight.x;
+	clipRect.bottom = lowerRight.y;
+	ClipCursor(&clipRect);
+}
+
 void InputManager::ReleaseMouse() const
 {
 	ClipCursor(nullptr);

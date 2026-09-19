@@ -9,3 +9,9 @@ void Go(const char* aStartupScene = nullptr);
 #include <string>
 // The normalised scene Go was asked for ("Scenes/TEST"), empty if none.
 const std::string& StartupScene();
+
+// Set the scene a following GameWorld::Init should load, in the editor's
+// spelling ("Scenes\TEST.tgs"); normalised the same way Go does. Used by the
+// editor's in-viewport play session, which constructs a GameWorld directly
+// instead of going through Go.
+void SetStartupScene(const char* aScene);

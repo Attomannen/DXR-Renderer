@@ -72,18 +72,35 @@ void GameWorld::Impl::UpdateFreeFly(float dt)
 	if (!input) return;
 	input->Update();
 
+	// Embedded in the editor viewport, WantCaptureMouse is always true -- the
+	// viewport is itself an ImGui window -- which froze the camera outright.
+	// There the host tells us instead whether the panel owns the mouse.
+	const bool embedded = IsEmbedded();
 #ifndef _RETAIL
 	// Don't drive the camera while the tuning panel has the cursor / keyboard.
-	const bool uiMouse = ImGui::GetIO().WantCaptureMouse;
-	const bool uiKeys  = ImGui::GetIO().WantCaptureKeyboard;
+	// Once the cursor is trapped it is ours until the button comes up, whatever
+	// the host reports about hovering.
+	const bool hostInput = embeddedInputActive || mouseTrapped;
+	const bool uiMouse = embedded ? !hostInput : ImGui::GetIO().WantCaptureMouse;
+	const bool uiKeys  = embedded ? !hostInput : ImGui::GetIO().WantCaptureKeyboard;
 #else
-	const bool uiMouse = false, uiKeys = false;
+	const bool hostInput = embeddedInputActive || mouseTrapped;
+	const bool uiMouse = embedded ? !hostInput : false;
+	const bool uiKeys  = embedded ? !hostInput : false;
 #endif
 	if (uiMouse) dt = 0.f;   // freeze movement/look; still process F-key shortcuts below
 
 	if (!uiMouse && input->IsKeyPressed(VK_RBUTTON) && !mouseTrapped)
 	{
-		input->HideMouse(); input->CaptureMouse(); mouseTrapped = true;
+		input->HideMouse();
+		// Embedded, confine the cursor to the panel rather than the window --
+		// otherwise a look-around drags it out over the editor's own UI.
+		if (embedded)
+			input->CaptureMouse(embeddedOrigin.x, embeddedOrigin.y,
+				embeddedOrigin.x + (int)embeddedSize.x, embeddedOrigin.y + (int)embeddedSize.y);
+		else
+			input->CaptureMouse();
+		mouseTrapped = true;
 	}
 	if (input->IsKeyReleased(VK_RBUTTON) && mouseTrapped)
 	{
@@ -115,12 +132,14 @@ void GameWorld::Impl::UpdateFreeFly(float dt)
 		camRot.x = std::clamp(camRot.x, -89.f, 89.f);
 	}
 	if (input->IsKeyPressed(VK_OEM_3)) debugUiOpen = !debugUiOpen;   // ` / ~ toggles the panel
-	if (!uiKeys && input->IsKeyPressed(VK_F5)) SaveCamera();
-	if (!uiKeys && input->IsKeyPressed(VK_F9)) { if (LoadCamera()) INFO_PRINT("bench: camera reloaded"); }
+	// Not while embedded: F5 is the editor's Play/Stop toggle.
+	if (!uiKeys && !embedded && input->IsKeyPressed(VK_F5)) SaveCamera();
+	if (!uiKeys && !embedded && input->IsKeyPressed(VK_F9)) { if (LoadCamera()) INFO_PRINT("bench: camera reloaded"); }
 	if (!uiKeys && input->IsKeyPressed(VK_F6))
 		INFO_PRINT("bench: camera pos (%.1f, %.1f, %.1f)  rot (%.2f, %.2f, %.2f)",
 			camPos.x, camPos.y, camPos.z, camRot.x, camRot.y, camRot.z);
-	if (input->IsKeyPressed(VK_ESCAPE)) PostQuitMessage(0);
+	// Embedded, Escape would take the whole editor down with it.
+	if (!embedded && input->IsKeyPressed(VK_ESCAPE)) PostQuitMessage(0);
 
 	if (freeFly)
 	{

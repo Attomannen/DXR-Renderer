@@ -61,6 +61,11 @@ public:
 	void HideMouse() const;
 
 	void CaptureMouse() const;
+	// Confines the cursor to a sub-rectangle of the window, in client
+	// coordinates. For a game rendering into a panel rather than the whole
+	// window -- an editor viewport -- where the full client rect would let the
+	// cursor wander over the surrounding UI mid-look.
+	void CaptureMouse(int aLeft, int aTop, int aRight, int aBottom) const;
 	void ReleaseMouse() const;
 
 	bool UpdateEvents(UINT message, WPARAM wParam, LPARAM lParam);

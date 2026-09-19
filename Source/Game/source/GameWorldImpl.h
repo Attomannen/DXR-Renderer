@@ -132,6 +132,29 @@ struct GameWorld::Impl
 	// camera projection in sync with it so a wider/taller window changes the
 	// visible frustum instead of distorting the existing image.
 	Vector2ui cameraProjectionSize{ 0, 0 };
+
+	// Editor "play in viewport": when set, Render composites here instead of the
+	// application backbuffer, and RenderSize() reports this rather than the
+	// window. See GameWorld::SetEmbeddedTarget.
+	Ag::RenderTarget* embeddedColor = nullptr;
+	Ag::DepthBuffer*  embeddedDepth = nullptr;
+	Vector2ui         embeddedSize{ 0, 0 };
+	// Top-left of the panel in window client coordinates; the cursor is
+	// confined to it while looking around.
+	Vector2i          embeddedOrigin{ 0, 0 };
+	// Set by the host each tick. Standalone runs leave it true.
+	bool              embeddedInputActive = true;
+	bool IsEmbedded() const { return embeddedSize.x > 0 && embeddedSize.y > 0; }
+
+	// The size the game should render and build its projection at.
+	Vector2ui RenderSize() const
+	{
+		// Keyed on the size, not the target pointer: an embedded session knows
+		// the viewport's resolution before it has a target to draw into, and
+		// Init has to size the camera and the deferred renderer with it.
+		if (embeddedSize.x > 0 && embeddedSize.y > 0) return embeddedSize;
+		return Ag::Application::GetInstance()->GetRenderSize();
+	}
 	std::unique_ptr<InputManager> input;
 
 	Vector3f sceneCenter{ 0,0,0 };
@@ -496,6 +519,12 @@ struct GameWorld::Impl
 	std::string pendingLevel;       // set by scripts; that level opens at the start of the next frame
 	bool restartRequested = false;
 	GameSettings gameSettings;
+	std::unique_ptr<Ag::Audio> audio;
+	Ag::Audio& GetAudio()
+	{
+		if (!audio) audio = std::make_unique<Ag::Audio>();
+		return *audio;
+	}
 	bool FindPlayerStart(const std::string& tag, Matrix4x4f& transform) const;
 	// Adds the Game Mode object and the pawn it spawns at a Player Start to the level's objects.
 	void SpawnGameModeEntries(std::vector<GameScene::SceneEntry>& entries);
@@ -510,12 +539,6 @@ struct GameWorld::Impl
 	std::vector<SceneParticleObject> sceneParticles;
 	Ag::Particles::ParticleRenderer particleRenderer;
 	void ClearSceneParticles();
-	std::unique_ptr<Ag::Audio> audio;
-	Ag::Audio& GetAudio()
-	{
-		if (!audio) audio = std::make_unique<Ag::Audio>();
-		return *audio;
-	}
 	void RegisterSceneParticles(const GameScene::SceneEntry& entry, size_t instanceIndex);
 	void UpdateSceneParticles(float deltaSeconds);
 	void DrawSceneParticles();   // during the forward pass

@@ -23,7 +23,18 @@
 GameWorld* GameWorld::ourInstance = nullptr;
 
 GameWorld::GameWorld() : myImpl(std::make_unique<Impl>()) { ourInstance = this; }
-GameWorld::~GameWorld() { ourInstance = nullptr; }
+GameWorld::~GameWorld()
+{
+	// Stopping a session mid-look would otherwise leave the cursor hidden and
+	// still clipped to the panel, with nothing left running to release it.
+	if (myImpl && myImpl->mouseTrapped && myImpl->input)
+	{
+		myImpl->input->ShowMouse();
+		myImpl->input->ReleaseMouse();
+		myImpl->mouseTrapped = false;
+	}
+	ourInstance = nullptr;
+}
 
 void GameWorld::OnWinProc(unsigned int aMessage, unsigned long long aWParam, long long aLParam)
 {
@@ -80,7 +91,7 @@ void GameWorld::Init()
 		.GetTexture(cubeName.c_str(), TextureSrgbMode::None);
 	s.fallbackCube = s.ambient.cubemap;
 
-	const Vector2ui res = Application::GetInstance()->GetRenderSize();
+	const Vector2ui res = s.RenderSize();
 	s.camera.SetPerspectiveProjection(s.cameraFov, { (float)res.x, (float)res.y }, 0.01f, 1000.f);
 	s.cameraProjectionSize = res;
 
@@ -172,7 +183,13 @@ void GameWorld::Init()
 		DeferredRenderer& dr = GraphicsEngine::GetInstance()->GetDeferredRenderer();
 		if (dr.IsReady())
 		{
-			dr.OnResize(res);
+			// Only when it actually differs. OnResize recreates every
+			// resolution-dependent resource including the NRD denoiser, and in
+			// an embedded session the editor already sized this renderer to the
+			// same viewport -- redoing it mid-frame tore down resources the
+			// open command list still referenced and hung the device.
+			if (res != dr.GetResolution())
+				dr.OnResize(res);
 			s.deferred = &dr;
 			auto& tun = dr.GetTunables();
 			BenchConfig::ApplyRendererOverrides(tun);
@@ -239,11 +256,71 @@ void GameWorld::Update(float aDeltaTime)
 }
 
 
+void GameWorld::SetEmbeddedTarget(Ag::RenderTarget* aColor, Ag::DepthBuffer* aDepth,
+                                  int aOriginX, int aOriginY,
+                                  unsigned int aWidth, unsigned int aHeight)
+{
+	Impl& s = *myImpl;
+	s.embeddedColor = aColor;
+	s.embeddedDepth = aDepth;
+	s.embeddedSize = { aWidth, aHeight };
+	s.embeddedOrigin = { aOriginX, aOriginY };
+	// While embedded, the deferred renderer follows the viewport, not the
+	// window -- otherwise GraphicsEngine::BeginFrame resizes it back.
+	if (aWidth > 0 && aHeight > 0)
+		Ag::GraphicsEngine::GetInstance()->SetDeferredFollowsWindowSize(false);
+}
+
+void GameWorld::SetEmbeddedInput(bool aActive)
+{
+	myImpl->embeddedInputActive = aActive;
+}
+
+namespace
+{
+	DeferredRenderer::Tunables locSavedTunables;
+	bool locHasSavedTunables = false;
+}
+
+void GameWorld::SaveSharedRendererState()
+{
+	DeferredRenderer& dr = GraphicsEngine::GetInstance()->GetDeferredRenderer();
+	if (!dr.IsReady()) return;
+	locSavedTunables = dr.GetTunables();
+	locHasSavedTunables = true;
+}
+
+void GameWorld::RestoreSharedRendererState()
+{
+	if (!locHasSavedTunables) return;
+	locHasSavedTunables = false;
+	DeferredRenderer& dr = GraphicsEngine::GetInstance()->GetDeferredRenderer();
+	if (dr.IsReady()) dr.GetTunables() = locSavedTunables;
+}
+
 void GameWorld::Render()
 {
 	Impl& s = *myImpl;
 	GraphicsEngine& ge = *GraphicsEngine::GetInstance();
 	GraphicsStateStack& gss = ge.GetGraphicsStateStack();
+
+	// Embedded play: point the globals the DeferredRenderer composites into at
+	// the editor's viewport target for the duration of this frame. Restored at
+	// the end so the editor's own passes are unaffected -- the same save/swap/
+	// restore DefaultEditorGraphics does for its scene view.
+	RenderTarget* savedBackBuffer = DX11::BackBuffer;
+	DepthBuffer*  savedDepthBuffer = DX11::DepthBuffer;
+	const bool embedded = s.embeddedColor != nullptr;
+	if (embedded)
+	{
+		DX11::BackBuffer = s.embeddedColor;
+		if (s.embeddedDepth) DX11::DepthBuffer = s.embeddedDepth;
+	}
+	struct TargetRestore
+	{
+		bool active; RenderTarget* color; DepthBuffer* depth;
+		~TargetRestore() { if (active) { DX11::BackBuffer = color; DX11::DepthBuffer = depth; } }
+	} restore{ embedded, savedBackBuffer, savedDepthBuffer };
 
 	// Open the GPU frame before any GPU work (GI probes, TLAS) so it is timed.
 	s.gpu.BeginFrame();
@@ -252,12 +329,18 @@ void GameWorld::Render()
 	// Application updates its render size after the OS resize message has been
 	// processed.  Rebuild the perspective matrix before submitting this frame;
 	// otherwise the old aspect ratio is rasterized across the new backbuffer.
-	const Vector2ui renderSize = Application::GetInstance()->GetRenderSize();
+	const Vector2ui renderSize = s.RenderSize();
 	if (renderSize != s.cameraProjectionSize && renderSize.x != 0 && renderSize.y != 0)
 	{
 		s.camera.SetPerspectiveProjection(s.cameraFov, { static_cast<float>(renderSize.x), static_cast<float>(renderSize.y) }, 0.01f, 1000.f);
 		s.cameraProjectionSize = renderSize;
 	}
+	// Embedded: nothing else follows the panel. GraphicsEngine::BeginFrame only
+	// tracks the window, and the editor's own draw path (which would resize to
+	// the viewport) is skipped while a session is running.
+	if (embedded && s.deferred && renderSize.x > 0 && renderSize.y > 0 &&
+		renderSize != s.deferred->GetResolution())
+		s.deferred->OnResize(renderSize);
 
 	// DX12 screenshot capture: DX11's own path (further down, in the
 	// screenshotPath block) reaches into DX11::SwapChain/DX11::Context

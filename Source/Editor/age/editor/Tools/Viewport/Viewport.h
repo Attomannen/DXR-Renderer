@@ -37,6 +37,11 @@ namespace Ag
 		RenderTarget& GetRenderTarget() { return myRenderTarget; }
 		DepthBuffer& GetColorDepthBuffer() { return myDepth; }
 
+		// Whether the 3D image was hovered last frame. A play session uses this
+		// instead of ImGui's global WantCaptureMouse, which is always true here
+		// -- the viewport IS an ImGui window.
+		bool IsViewportHovered() const { return myViewportHovered; }
+
 		inline const Vector2i& GetViewportSize() const;
 		inline const Vector2i& GetViewportPos() const;
 
@@ -73,6 +78,7 @@ namespace Ag
 		// Starts true so the render target is sized to the real panel on the
 		// first frame. Uninitialised, it was whatever the stack held.
 		bool myNeedsResize = true;
+		bool myViewportHovered = false;
 
 		float myFreeFlyMovementSpeed = 1.f;
 		Gizmos myGizmos;
