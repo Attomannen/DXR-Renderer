@@ -243,26 +243,42 @@ Ag::AssetListItemStatus Ag::AssetGridItem(fs::path anAssetPath, bool isSelected,
 		ImGui::EndDragDropSource();
 	}
 
-	// Draw the thumbnail/icon and wrapped label on top of the (otherwise
-	// blank) selectable, rather than as siblings after it -- SameLine() would
-	// go back to row-oriented layout, defeating the point of a tile.
+	// Everything is drawn straight onto the draw list on top of the (otherwise blank) selectable:
+	// a square preview area with the thumbnail or a big icon, and the name centred underneath.
+	ImDrawList* drawList = ImGui::GetWindowDrawList();
 	const ImVec2 tileMin = ImGui::GetItemRectMin();
+	const ImVec2 tileMax = ImGui::GetItemRectMax();
+	const ImU32 textColor = ImGui::GetColorU32(ImGuiCol_Text);
+
+	const float previewPadding = 6.f;
+	const ImVec2 previewMin(tileMin.x + previewPadding, tileMin.y + previewPadding);
+	const ImVec2 previewMax(tileMax.x - previewPadding, tileMin.y + aTileSize - previewPadding);
+	drawList->AddRectFilled(previewMin, previewMax, IM_COL32(255, 255, 255, 12), 6.f);
+
 	if (textureID != 0)
 	{
-		const float imgSize = aTileSize * 0.8f;
-		ImGui::SetCursorScreenPos(ImVec2(tileMin.x + (aTileSize - imgSize) * 0.5f, tileMin.y + 4.f));
-		ImGui::Image(textureID, ImVec2(imgSize, imgSize));
+		const float imgSize = aTileSize - previewPadding * 2.f - 8.f;
+		const ImVec2 imgMin(tileMin.x + (aTileSize - imgSize) * 0.5f, tileMin.y + (aTileSize - imgSize) * 0.5f);
+		drawList->AddImage(textureID, imgMin, ImVec2(imgMin.x + imgSize, imgMin.y + imgSize));
 	}
 	else
 	{
-		const float iconTextWidth = ImGui::CalcTextSize(anIcon.data()).x;
-		ImGui::SetCursorScreenPos(ImVec2(tileMin.x + (aTileSize - iconTextWidth) * 0.5f, tileMin.y + aTileSize * 0.5f - ImGui::GetFontSize()));
-		ImGui::Text("%s", anIcon.data());
+		// The icon font glyph scaled to the tile, so a bigger tile means a bigger icon.
+		ImFont* font = ImGui::GetFont();
+		const float iconSize = aTileSize * 0.42f;
+		const ImVec2 iconExtent = font->CalcTextSizeA(iconSize, FLT_MAX, 0.f, anIcon.data());
+		drawList->AddText(font, iconSize,
+			ImVec2(tileMin.x + (aTileSize - iconExtent.x) * 0.5f, tileMin.y + (aTileSize - iconExtent.y) * 0.5f),
+			ImGui::GetColorU32(ImGuiCol_Text, 0.8f), anIcon.data());
 	}
-	ImGui::SetCursorScreenPos(ImVec2(tileMin.x, tileMin.y + aTileSize));
-	ImGui::PushTextWrapPos(tileMin.x + aTileSize);
-	ImGui::TextWrapped("%s", filename.c_str());
-	ImGui::PopTextWrapPos();
+
+	const float labelWrap = aTileSize - 8.f;
+	const ImVec2 labelExtent = ImGui::CalcTextSize(filename.c_str(), nullptr, false, labelWrap);
+	drawList->PushClipRect(ImVec2(tileMin.x, tileMin.y + aTileSize), tileMax, true);
+	drawList->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
+		ImVec2(tileMin.x + (aTileSize - labelExtent.x) * 0.5f, tileMin.y + aTileSize + 1.f),
+		textColor, filename.c_str(), nullptr, labelWrap);
+	drawList->PopClipRect();
 
 	ImGui::PopID();
 	ImGui::EndGroup();

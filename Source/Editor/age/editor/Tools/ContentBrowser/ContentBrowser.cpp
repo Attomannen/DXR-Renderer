@@ -309,7 +309,9 @@ void ContentBrowser::Draw()
 		ImGui::TableSetupColumn("Assets", ImGuiTableColumnFlags_WidthStretch);
 		ImGui::TableNextRow();
 		ImGui::TableSetColumnIndex(0);
-		ImGui::BeginChild("##Folders", ImVec2(0.f, ImGui::GetContentRegionAvail().y));
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.f, 6.f));
+		ImGui::BeginChild("##Folders", ImVec2(0.f, ImGui::GetContentRegionAvail().y), ImGuiChildFlags_AlwaysUseWindowPadding);
+		ImGui::PopStyleVar();
 	{
 		ImGuiTreeNodeFlags node_flags = ImGuiTreeNodeFlags_SpanAvailWidth;
 		node_flags |= ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_OpenOnArrow;
@@ -327,7 +329,9 @@ void ContentBrowser::Draw()
 	ImGui::EndChild();
 
 	ImGui::TableSetColumnIndex(1);
-	ImGui::BeginChild("##Assets", ImVec2(0.f, ImGui::GetContentRegionAvail().y));
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.f, 8.f));
+	ImGui::BeginChild("##Assets", ImVec2(0.f, ImGui::GetContentRegionAvail().y), ImGuiChildFlags_AlwaysUseWindowPadding);
+	ImGui::PopStyleVar();
 	{
 		// Set when the pointer is over a tile or folder, so an item's right-click menu and the
 		// empty-space menu never open on the same click.
@@ -339,12 +343,14 @@ void ContentBrowser::Draw()
 		ImGui::SameLine();
 		if (myGridView)
 		{
-			ImGui::SetNextItemWidth(90.f);
-			ImGui::SliderFloat("##TileSize", &myGridTileSize, 64.f, 192.f, "%.0fpx");
+			ImGui::SetNextItemWidth(110.f);
+			ImGui::SliderFloat("##TileSize", &myGridTileSize, 72.f, 200.f, "%.0f");
+			if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+				ImGui::SetTooltip("Thumbnail size");
 			ImGui::SameLine();
 		}
 		ImGui::SetNextItemWidth(-105.f);
-		ImGui::InputTextWithHint("##AssetSearch", "Search assets…", mySearchBuffer, IM_ARRAYSIZE(mySearchBuffer));
+		ImGui::InputTextWithHint("##AssetSearch", ICON_LC_SEARCH " Search assets", mySearchBuffer, IM_ARRAYSIZE(mySearchBuffer));
 		ImGui::SameLine();
 		const char* assetTypes[] = { "All", "Materials", "Textures", "Scenes", "Meshes", "Other" };
 		ImGui::SetNextItemWidth(100.f);
