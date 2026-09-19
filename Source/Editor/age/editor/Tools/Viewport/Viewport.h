@@ -70,7 +70,9 @@ namespace Ag
 		Vector2f myPreviousMousePos;
 		Vector2i myViewportPos;
 		Vector2i myViewportSize;
-		bool myNeedsResize;
+		// Starts true so the render target is sized to the real panel on the
+		// first frame. Uninitialised, it was whatever the stack held.
+		bool myNeedsResize = true;
 
 		float myFreeFlyMovementSpeed = 1.f;
 		Gizmos myGizmos;

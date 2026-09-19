@@ -537,6 +537,15 @@ bool DeferredRenderer::OnResize(Vector2ui aResolution)
 	if (myClusterCS) CreateClusterBuffers(aResolution);
 	if (myCompositePs) CreatePostFxTargets(aResolution);
 	if (myAtmospherePs && !CreateAtmosphereTargets(aResolution)) return false;
+	// The cloud volume and its two history buffers are resolution-dependent
+	// like everything above, but used to be built only by Init -- DispatchClouds
+	// rebuilt them solely when the cloudResolution divisor changed, never when
+	// the resolution did. After any resize the pass went on dispatching
+	// myResolution/divisor threads into textures still sized for the startup
+	// resolution, so only a sub-rect of the sky was written and the rest kept
+	// stale content at the old scale. Invisible while the sky was black, which
+	// is why it only ever showed up with volumetric clouds or an HDRI sky.
+	if (myCloudsVolumeCS && !CreateCloudTargets(aResolution)) return false;
 	if (myDxrLightingCS && !CreateDxrLightingTargets(aResolution)) return false;
 	return true;
 }
