@@ -1,0 +1,4 @@
+#include "age/windows/EngineResources.h"
+
+IDI_APP_ICON   ICON    "../../../EngineAssets/Branding/attoengine.ico"
+IDR_SPLASH_PNG RCDATA  "../../../EngineAssets/Branding/attoengine-splash.png"

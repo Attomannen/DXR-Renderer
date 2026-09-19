@@ -9,6 +9,7 @@
 #include <fstream>
 #include <cstdlib>
 #include <age/windows/WindowsWindow.h>
+#include <age/windows/SplashScreen.h>
 #include <nlohmann/json.hpp>
 #include <age/util/StringCast.h>
 
@@ -521,6 +522,12 @@ void DX11::EndFrame(bool aEnableVSync)
 		const double ms = std::chrono::duration<double, std::milli>(
 			std::chrono::steady_clock::now() - Application::ourWindowCreatedAt).count();
 		INFO_PRINT("startup: window to first presented frame %.0f ms", ms);
+		// Reveal the main window only now. It was created hidden, so everything
+		// up to this point happened behind the splash on a clean desktop; the
+		// window appears already carrying a rendered frame, and the splash then
+		// fades off the top of it.
+		if (Application* app = Application::GetInstance()) app->RevealWindow();
+		SplashScreen::Hide();
 	}
 
 	// DX12's Dx12Device::EndFrame does the real present (it owns the swapchain);

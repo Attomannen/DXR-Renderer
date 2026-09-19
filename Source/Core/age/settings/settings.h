@@ -15,7 +15,8 @@
 #endif
 #include <Windows.h>
 namespace fs = std::filesystem;
-#define TGA_DEFAULT_CRYSTAL_BLUE { 3.0f / 255.0f, 153.0f / 255.0f, 176.0f / 255.0f, 1.0f }
+// The near-black the logo mark sits on; see the ImGui palette.
+#define AG_DEFAULT_BACKGROUND { 11.0f / 255.0f, 11.0f / 255.0f, 13.0f / 255.0f, 1.0f }
 
 namespace Ag
 {
@@ -67,7 +68,7 @@ namespace Ag
             renderSize = windowSize;
             startInFullScreen = false;
             startMaximized = false;
-            clearColor = TGA_DEFAULT_CRYSTAL_BLUE;
+            clearColor = AG_DEFAULT_BACKGROUND;
             applicationName = L"AttoEngine";
             borderless = false;
 			keepAspectRatio = false;

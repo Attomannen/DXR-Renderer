@@ -69,6 +69,11 @@ namespace Ag
 
         FileWatcher* GetFileWatcher() { return myFileWatcher.get(); }
 
+		// Put the main window on screen for the first time. It is created hidden
+		// so the splash covers a clean desktop instead of an empty rectangle;
+		// the first present calls this, then dismisses the splash over it.
+		void RevealWindow();
+
     private:    // Private interface
         Application();
         ~Application();

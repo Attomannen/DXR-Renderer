@@ -10,6 +10,7 @@
 #include <age/rhi/Device.h>
 
 #include <age/windows/WindowsWindow.h>
+#include <age/windows/SplashScreen.h>
 #include <age/settings/settings.h>
 
 #define WIN32_LEAN_AND_MEAN 
@@ -110,10 +111,20 @@ bool Application::Start()
 	return false;
 }
 
+void Application::RevealWindow()
+{
+	if (myWindow) myWindow->RevealDeferred();
+}
+
 bool Application::InternalStart()
 {
 	INFO_PRINT("%s", "#########################################");
 	INFO_PRINT("%s", "---AttoEngine Starting, dream big and dare to fail---");
+
+	// Up before anything else, because everything else is what it is covering:
+	// the device, Streamline, the graphics engine and the scene load all happen
+	// below this line, and the main window sits blank for all of it.
+	SplashScreen::Show();
 
 #ifdef USE_LIVE_PP
 	locLppAgent = lpp::LppCreateSynchronizedAgent(nullptr, L"../Source/External/LivePP");

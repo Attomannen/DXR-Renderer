@@ -22,6 +22,13 @@ namespace Ag
 		~WindowsWindow(void);
 		bool Init(const ApplicationConfiguration& aWndCfg, HINSTANCE& aHInstanceToFill, HWND*& aHwnd);
 		HWND GetWindowHandle() const {return myWindowHandle;}
+		// Put the window on screen for the first time.
+		//
+		// Init deliberately leaves it hidden: between creation and the first
+		// present the client area is an empty system-coloured rectangle, and the
+		// splash is what the user should be looking at instead. Called once, from
+		// the first present. A second call does nothing.
+		void RevealDeferred();
 		void SetResolution(Vector2ui aResolution);
 		void Close();
 		// The swapchain must follow the physical client area, not the startup
@@ -37,6 +44,9 @@ namespace Ag
 		callback_function_wndProc myWndProcCallback;
 		Vector2ui myResolution;
 		Vector2ui myResolutionWithBorderDifference;
+		// Show command Init would have used, replayed by RevealDeferred.
+		int  myDeferredShowCmd = 0;
+		bool myRevealed = false;
 		bool myKeepAspectRatio = false;
 		float myClientAspectRatio = 1.0f;
 	};

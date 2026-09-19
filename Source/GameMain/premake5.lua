@@ -27,6 +27,7 @@ project (projectname)
 	files {
 		"source/**.h",
 		"source/**.cpp",
+		"source/**.rc",
 	}
 
 	-- NRD's NRI needs Agility SDK 619; the system D3D12 runtime is older and the

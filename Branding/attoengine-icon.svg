@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="attoEngine">
+  <rect width="256" height="256" fill="#0b0b0d"/>
+  <g color="#ffffff" transform="translate(28 28) scale(0.78125)">
+  <defs>
+    <mask id="ringcut" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <rect width="256" height="256" fill="#fff"/>
+      <rect x="-60" y="115" width="376" height="26" fill="#000" transform="rotate(-38 128 128)"/>
+    </mask>
+    <mask id="slashcut" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <rect width="256" height="256" fill="#fff"/>
+      <path d="M104 62 H152 L200 192 H158 L150 168 H106 L98 192 H56 Z M128 108 L142 142 H114 Z" fill="#000" stroke="#000" stroke-width="16" stroke-linejoin="miter"/>
+    </mask>
+  </defs>
+  <circle cx="128" cy="128" r="106" fill="none" stroke="currentColor" stroke-width="14" mask="url(#ringcut)"/>
+  <g mask="url(#slashcut)">
+    <rect x="10" y="124" width="236" height="8" fill="currentColor" transform="rotate(-38 128 128)" clip-path="none"/>
+  </g>
+  <path d="M104 62 H152 L200 192 H158 L150 168 H106 L98 192 H56 Z M128 108 L142 142 H114 Z" fill="currentColor" fill-rule="evenodd"/>
+  </g>
+</svg>

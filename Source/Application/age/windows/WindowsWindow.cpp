@@ -1,6 +1,6 @@
 #include "stdafx.h"
 #include <age/windows/WindowsWindow.h>
-#include "resource.h"
+#include "age/windows/EngineResources.h"
 #include <WinUser.h>
 #include <age/ImGui/ImGuiInterface.h>
 
@@ -33,10 +33,10 @@ bool WindowsWindow::Init(const ApplicationConfiguration &aWindowConfig, HINSTANC
 	myWindowClass.lpfnWndProc = WindowProc;
 	myWindowClass.hInstance = instance;
 	myWindowClass.hCursor = LoadCursor(NULL, IDC_ARROW);
-	myWindowClass.hbrBackground = (HBRUSH)COLOR_WINDOW;
+	myWindowClass.hbrBackground = ::CreateSolidBrush(RGB(11, 11, 13));   // never the system light colour
 	myWindowClass.lpszClassName = L"WindowClass1";
-	myWindowClass.hIcon = ::LoadIcon(instance, MAKEINTRESOURCE(IDI_ICON1));
-	myWindowClass.hIconSm = LoadIcon(instance, MAKEINTRESOURCE(IDI_ICON1));
+	myWindowClass.hIcon = ::LoadIcon(instance, MAKEINTRESOURCE(IDI_APP_ICON));
+	myWindowClass.hIconSm = LoadIcon(instance, MAKEINTRESOURCE(IDI_APP_ICON));
 	RegisterClassEx(&myWindowClass);
 
 	const auto& windowSize = aWindowConfig.windowSize;
@@ -47,7 +47,7 @@ bool WindowsWindow::Init(const ApplicationConfiguration &aWindowConfig, HINSTANC
 	DWORD windowStyle = 0;
 	if (aWindowConfig.borderless || aWindowConfig.startInFullScreen)
 	{
-		windowStyle = WS_VISIBLE | WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
+		windowStyle = WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN;   // WS_VISIBLE deferred, see RevealDeferred
 	}
 	else
 	{
@@ -71,7 +71,29 @@ bool WindowsWindow::Init(const ApplicationConfiguration &aWindowConfig, HINSTANC
 			instance,    // application handle
 			NULL);    // used with multiple windows, NULL
 		
-		ShowWindow(myWindowHandle, (aWindowConfig.startInFullScreen || aWindowConfig.startMaximized) ? SW_MAXIMIZE : SW_SHOWDEFAULT);
+		// Dark title bar and border to match the editor chrome. Without this the
+		// window wears the system light frame around a near-black client area,
+		// which is the single most obvious way a dark tool still looks unfinished.
+		//
+		// Resolved dynamically because the attribute is only honoured from
+		// Windows 10 20H1 onward, and the constant moved from 19 to 20 between
+		// builds -- setting the wrong one is harmless, so both are attempted.
+		if (HMODULE dwm = ::LoadLibraryW(L"dwmapi.dll"))
+		{
+			using SetAttrFn = HRESULT(WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
+			if (auto setAttr = reinterpret_cast<SetAttrFn>(::GetProcAddress(dwm, "DwmSetWindowAttribute")))
+			{
+				const BOOL useDark = TRUE;
+				setAttr(myWindowHandle, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &useDark, sizeof(useDark));
+				setAttr(myWindowHandle, 19 /* pre-20H1 spelling of the same */, &useDark, sizeof(useDark));
+			}
+			::FreeLibrary(dwm);
+		}
+
+		// Remembered, not applied. The window stays hidden until the first frame
+		// is actually on the swapchain, so the splash covers a clean desktop
+		// rather than an empty rectangle. See RevealDeferred.
+		myDeferredShowCmd = (aWindowConfig.startInFullScreen || aWindowConfig.startMaximized) ? SW_MAXIMIZE : SW_SHOWDEFAULT;
 		aHwnd = &myWindowHandle;
 	}
 	else
@@ -234,6 +256,17 @@ unsigned int Ag::WindowsWindow::GetHeight() const
 		if (height > 0) return static_cast<unsigned int>(height);
 	}
 	return myResolution.y;
+}
+
+void Ag::WindowsWindow::RevealDeferred()
+{
+	if (myRevealed || !myWindowHandle) return;
+	myRevealed = true;
+	// An externally supplied HWND (the editor embedding case) was never ours to
+	// hide, so there is nothing to reveal.
+	if (myDeferredShowCmd == 0) return;
+	::ShowWindow(myWindowHandle, myDeferredShowCmd);
+	::SetForegroundWindow(myWindowHandle);
 }
 
 void Ag::WindowsWindow::Close()

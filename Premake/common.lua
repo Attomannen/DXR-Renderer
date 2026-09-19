@@ -62,7 +62,7 @@ function default_settings()
 			render_size = {w=1600, h=900},
 			target_size = {w=1600, h=900},
 			title = "AttoEngine 0.1",
-	 		clear_color = {r=0.0, g=0.2, b=0.25, a=1.0},
+	 		clear_color = {r=0.043, g=0.043, b=0.051, a=1.0},
 
 			keep_aspect_ratio = true,
 			aspect_ratio = 1.7,

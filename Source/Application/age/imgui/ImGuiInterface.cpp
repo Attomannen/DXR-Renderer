@@ -217,13 +217,21 @@ void ImGuiInterface::Init()
 
 	auto& colors = ImGui::GetStyle().Colors;
 
-	ImVec4 darkest = ImVec4{ 0.1f, 0.1f, 0.1f, 1.0f };
-	ImVec4 darker = ImVec4{ 0.13f, 0.13f, 0.13f, 1.0f };
-	ImVec4 dark = ImVec4{ 0.16f, 0.16f, 0.16f, 1.0f };
-	ImVec4 darkish = ImVec4{ 0.24f, 0.24f, 0.24f, 1.0f };
+	// AttoEngine dark. The surface ramp is anchored on #0b0b0d, the same
+	// near-black the logo mark sits on, so the editor chrome and the brand are
+	// the same colour rather than two different dark greys.
+	//
+	// The accent is neutral by design. The mark is monochrome, and a saturated
+	// hue (this was The Game Assembly's purple) fights it wherever the two
+	// appear together. Selection reads through value rather than hue, which is
+	// also what keeps a viewport-dominated tool from tinting the work inside it.
+	ImVec4 darkest = ImVec4{ 0.043f, 0.043f, 0.051f, 1.0f };   // #0b0b0d
+	ImVec4 darker  = ImVec4{ 0.078f, 0.078f, 0.086f, 1.0f };   // #141416
+	ImVec4 dark    = ImVec4{ 0.110f, 0.110f, 0.125f, 1.0f };   // #1c1c20
+	ImVec4 darkish = ImVec4{ 0.165f, 0.165f, 0.188f, 1.0f };   // #2a2a30
 
-	ImVec4 light = ImVec4{ 0.37f, 0.13f, 0.33f, 1.0f };// ImVec4{ 0.28f, 0.13f, 0.24f, 1.0f };
-	ImVec4 lighter = ImVec4{ 0.50f, 0.18f, 0.45f, 1.0f };//ImVec4{ 0.44f, 0.18f, 0.38f, 1.0f };
+	ImVec4 light   = ImVec4{ 0.229f, 0.229f, 0.267f, 1.0f };   // #3a3a44  selected
+	ImVec4 lighter = ImVec4{ 0.322f, 0.322f, 0.373f, 1.0f };   // #52525f  hovered
 	
 	colors[ImGuiCol_TextDisabled] = dark;
 
@@ -248,14 +256,14 @@ void ImGuiInterface::Init()
 	colors[ImGuiCol_Button] = darker;
 	colors[ImGuiCol_ButtonHovered] = lighter;
 	colors[ImGuiCol_ButtonActive] = dark;
-	colors[ImGuiCol_CheckMark] = lighter;
+	colors[ImGuiCol_CheckMark] = ImVec4{ 0.85f, 0.85f, 0.88f, 1.0f };
 
 	// Popups
 	colors[ImGuiCol_PopupBg] = ImVec4{ darkest.x, darkest.y, darkest.z, 0.92f };
 
 	// Slider
-	colors[ImGuiCol_SliderGrab] = lighter;
-	colors[ImGuiCol_SliderGrabActive] = lighter;
+	colors[ImGuiCol_SliderGrab] = ImVec4{ 0.68f, 0.68f, 0.72f, 1.0f };
+	colors[ImGuiCol_SliderGrabActive] = ImVec4{ 0.85f, 0.85f, 0.88f, 1.0f };
 
 	// Frame BG
 	colors[ImGuiCol_FrameBg] = darker;
@@ -266,7 +274,7 @@ void ImGuiInterface::Init()
 	colors[ImGuiCol_Tab] = dark;
 	colors[ImGuiCol_TabHovered] = lighter;
 	colors[ImGuiCol_TabSelected] = darkish;
-	colors[ImGuiCol_TabSelectedOverline] = lighter;
+	colors[ImGuiCol_TabSelectedOverline] = ImVec4{ 0.85f, 0.85f, 0.88f, 1.0f };
 	colors[ImGuiCol_TabUnfocused] = dark;
 	colors[ImGuiCol_TabUnfocusedActive] = darkish;
 
