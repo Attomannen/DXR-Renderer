@@ -2,9 +2,9 @@
 
 // Runtime-loaded Streamline bridge.  Keeping this dynamically linked avoids
 // making the engine depend on DLSS on non-NVIDIA machines.
-#include "../../../../Dependencies/StreamlineSdk/include/sl.h"
-#include "../../../../Dependencies/StreamlineSdk/include/sl_dlss.h"
-#include "../../../../Dependencies/StreamlineSdk/include/sl_dlss_d.h"
+#include "../../../../ThirdParty/Dependencies/StreamlineSdk/include/sl.h"
+#include "../../../../ThirdParty/Dependencies/StreamlineSdk/include/sl_dlss.h"
+#include "../../../../ThirdParty/Dependencies/StreamlineSdk/include/sl_dlss_d.h"
 
 namespace Ag
 {

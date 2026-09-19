@@ -13,7 +13,7 @@ project "SceneScriptCore"
 	pchsource "stdafx.cpp"
 	
 	debugdir "%{dirs.bin}"
-	targetdir ("%{dirs.bin}")
+	targetdir ("%{dirs.lib}")
 	targetname("%{prj.name}_%{cfg.buildcfg}")
 	objdir ("%{dirs.temp}/%{prj.name}/%{cfg.buildcfg}")
 

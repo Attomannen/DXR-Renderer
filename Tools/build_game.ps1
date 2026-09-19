@@ -6,13 +6,13 @@ param(
     [ValidateSet('x64')]
     [string]$Platform = 'x64',
 
-    [string]$Solution = 'Game.sln',
+    [string]$Solution = 'Build/Solutions/Game.sln',
 
     [string]$Target = 'Build'
 )
 
 $ErrorActionPreference = 'Stop'
-$workspace = $PSScriptRoot
+$workspace = Split-Path -Parent $PSScriptRoot
 $solutionPath = Join-Path $workspace $Solution
 if (-not (Test-Path -LiteralPath $solutionPath)) {
     throw "Solution was not found at '$solutionPath'."

@@ -11,7 +11,7 @@ project (projectname)
 	cppdialect "C++20"
 
 	debugdir "%{dirs.bin}"
-	targetdir ("%{dirs.bin}")
+	targetdir ("%{dirs.lib}")
 	targetname("%{prj.name}_%{cfg.buildcfg}")
 	objdir ("%{dirs.temp}/%{prj.name}/%{cfg.buildcfg}")
 
@@ -99,4 +99,4 @@ project (projectname)
 		editandcontinue "Off"
 		buildoptions { "/Gm-" }
 		buildoptions { "/Gy" }
-		buildoptions { "/Gw" }
+		buildoptions { "/Gw" }

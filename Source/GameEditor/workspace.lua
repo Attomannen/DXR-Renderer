@@ -1,7 +1,10 @@
 include "../../Premake/extensions.lua"
+-- Included up here, not below the workspace block: the workspace needs
+-- dirs.solutions for its location.
+include "../../Premake/common.lua"
 
 workspace "GameEditor"
-	location "../../"
+	location (dirs.solutions)
 	startproject "GameEditor"
 	architecture "x64"
 	toolset "v145"
@@ -12,8 +15,6 @@ workspace "GameEditor"
 		"Retail"
 	}
 
--- include for common stuff 
-include "../../Premake/common.lua"
 
 include (dirs.game)
 include (dirs.gamemain)

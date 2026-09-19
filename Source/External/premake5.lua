@@ -1,12 +1,14 @@
+include "../../Premake/common.lua"
+
 project "External"
-	location "%{wks.location}/Local/"
+	location (dirs.projectfiles)
 		
 	language "C++"
 	cppdialect "C++20"
 
-	targetdir ("../../Lib/")
+	targetdir ("%{dirs.lib}")
 	targetname("%{prj.name}_%{cfg.buildcfg}")
-	objdir ("../../Temp/%{prj.name}/%{cfg.buildcfg}")
+	objdir ("%{dirs.temp}/%{prj.name}/%{cfg.buildcfg}")
 
 	--pchheader "stdafx.h"
 	--pchsource "Source/%{prj.name}/stdafx.cpp"

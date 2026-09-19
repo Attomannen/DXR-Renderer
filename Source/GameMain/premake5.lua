@@ -41,16 +41,16 @@ project (projectname)
 	-- sit next to the executable.
 	postbuildcommands {
 		'{MKDIR} "%{dirs.bin}/AgilitySDK"',
-		'{COPYFILE} "%{dirs.root}/NRD/NRD/NRD-4.17.3/_Bin/Release/AgilitySDK/D3D12Core.dll" "%{dirs.bin}/AgilitySDK/"',
-		'{COPYFILE} "%{dirs.root}/NRD/NRD/NRD-4.17.3/_Bin/Release/AgilitySDK/d3d12SDKLayers.dll" "%{dirs.bin}/AgilitySDK/"',
+		'{COPYFILE} "%{dirs.nrd}/_Bin/Release/AgilitySDK/D3D12Core.dll" "%{dirs.bin}/AgilitySDK/"',
+		'{COPYFILE} "%{dirs.nrd}/_Bin/Release/AgilitySDK/d3d12SDKLayers.dll" "%{dirs.bin}/AgilitySDK/"',
 	}
 
 	libdirs { 
 		dirs.lib, 
 		dirs.dependencies, 
-		dirs.root .. "NRD/NRD/NRD-4.17.3/_NRD_SDK/Lib/%{cfg.buildcfg}", 
-		dirs.root .. "NRD/NRD/NRD-4.17.3/_NRI_SDK/Lib/%{cfg.buildcfg}",
-		dirs.root .. "NRD/NRD/NRD-4.17.3/_Bin/%{cfg.buildcfg}" 
+		dirs.nrd .. "_NRD_SDK/Lib/%{cfg.buildcfg}", 
+		dirs.nrd .. "_NRI_SDK/Lib/%{cfg.buildcfg}",
+		dirs.nrd .. "_Bin/%{cfg.buildcfg}" 
 	}
 	
 	filter "configurations:Debug"

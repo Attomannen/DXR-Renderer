@@ -11,7 +11,7 @@ project "CoreTests"
 	cppdialect "C++20"
 
 	debugdir "%{dirs.bin}"
-	targetdir ("%{dirs.bin}")
+	targetdir ("%{dirs.lib}")
 	targetname("%{prj.name}_%{cfg.buildcfg}")
 	objdir ("%{dirs.temp}/%{prj.name}/%{cfg.buildcfg}")
 

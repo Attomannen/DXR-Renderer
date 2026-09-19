@@ -1,6 +1,6 @@
 #include "stdafx.h"
 #include "age/graphics/StreamlineDLSS.h"
-#include "../../../../Dependencies/StreamlineSdk/include/sl_helpers.h"
+#include "../../../../ThirdParty/Dependencies/StreamlineSdk/include/sl_helpers.h"
 #include <age/log/Log.h>
 #include <windows.h>
 #include <d3d12.h>

@@ -1,8 +1,31 @@
-# Build output / generated
-Bin/
-Lib/
-Local/
-Temp/
+# Everything the build generates. Solutions, .vcxproj, intermediates and
+# static libs all land under here, so one rule covers the lot.
+Build/
+
+# The game's runtime directory: executable, DLLs, cooked assets, settings.
+# Produced by building and cooking, never by hand.
+Run/
+
+# The game's own content. Large, binary, and not engine source.
+GameContent/
+
+# SDK drops fetched separately rather than committed (Dependencies carries its
+# own git repository; NRD-4.17.3 is a submodule and IS tracked, hence the
+# negation).
+ThirdParty/
+!ThirdParty/NRD-4.17.3
+
+# Vendored SDK binaries that ship with the FBX importer. Previously hidden by
+# accident, as a side effect of a blanket `Lib/` rule that also caught the
+# engine's own output directory; named explicitly now that output lives in Build/.
+Source/External/TGAFBXImporter/FBXSDK/lib/
+
+# Sample/tutorial content: not engine source, no need for history.
+Source/Tutorials/
+Source/Examples/
+
+# Visual Studio and MSBuild leavings, wherever they appear.
+.vs/
 *.pdb
 *.obj
 *.ilk
@@ -17,30 +40,21 @@ Temp/
 *.vcxproj.user
 *.sln
 *.suo
-.vs/
+*.aps
 
-# Large game/tutorial/example content - not engine source, don't need history
-Source/Game/data/
-Source/Tutorials/
-Source/Examples/
-
-# Bench/debug scratch produced while iterating
-Bin/*.png
+# Bench/debug scratch produced while iterating.
 *_bench.json
 bench_report.json
 
-# Editor/runtime state
+# Editor/runtime state.
 imgui.ini
 
-# SDK drops fetched separately (contains its own git repository)
-Dependencies/
-
-# Anything that is not engine source but lives next to it: name the folder like this and it
-# is ignored wherever it is. Use for placeholder art, test scenes, captured data, big
-# downloads. (Source/Game/data/ above is the same idea for the sample game.)
+# Anything that is not engine source but lives next to it: name the folder like
+# this and it is ignored wherever it is. Use for placeholder art, test scenes,
+# captured data, big downloads.
 **/*.local/
 **/_local/
 **/_placeholder/
 
-# Too big for git (32 MB); the other EngineAssets textures are tracked
+# Too big for git (32 MB); the other EngineAssets textures are tracked.
 EngineAssets/Textures/horizonCubeMap.dds

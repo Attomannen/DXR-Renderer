@@ -25,9 +25,9 @@ project (projectname)
 	libdirs { 
 		dirs.lib, 
 		dirs.dependencies,
-		dirs.root .. "NRD/NRD/NRD-4.17.3/_NRD_SDK/Lib/Release",
-		dirs.root .. "NRD/NRD/NRD-4.17.3/_NRI_SDK/Lib/Release",
-		dirs.root .. "NRD/NRD/NRD-4.17.3/_Bin/Release"
+		dirs.nrd .. "_NRD_SDK/Lib/Release",
+		dirs.nrd .. "_NRI_SDK/Lib/Release",
+		dirs.nrd .. "_Bin/Release"
 	}
 	
 	includedirs { 
@@ -54,8 +54,8 @@ project (projectname)
 	-- first diagnosed and fixed.
 	postbuildcommands {
 		'{MKDIR} "%{dirs.bin}/AgilitySDK"',
-		'{COPYFILE} "%{dirs.root}/NRD/NRD/NRD-4.17.3/_Bin/Release/AgilitySDK/D3D12Core.dll" "%{dirs.bin}/AgilitySDK/"',
-		'{COPYFILE} "%{dirs.root}/NRD/NRD/NRD-4.17.3/_Bin/Release/AgilitySDK/d3d12SDKLayers.dll" "%{dirs.bin}/AgilitySDK/"',
+		'{COPYFILE} "%{dirs.nrd}/_Bin/Release/AgilitySDK/D3D12Core.dll" "%{dirs.bin}/AgilitySDK/"',
+		'{COPYFILE} "%{dirs.nrd}/_Bin/Release/AgilitySDK/d3d12SDKLayers.dll" "%{dirs.bin}/AgilitySDK/"',
 	}
 
 	defines

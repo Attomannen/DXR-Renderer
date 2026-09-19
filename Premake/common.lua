@@ -2,14 +2,33 @@
 -- the dirs table is a listing of absolute paths, since we generate projects
 -- and files it makes a lot of sense to make them absolute to avoid problems
 outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}"
+
+-- Everything the build generates lives under Build/, and everything the game
+-- needs at runtime lives under Run/. Those two rules are what keep the repo
+-- root readable: before this, solutions, .vcxproj, intermediates, static libs
+-- and the executable all landed in or beside the root, and Bin/ in particular
+-- was sixty .lib/.pdb files stirred in with the DLLs and the cooked assets.
+--
+-- os.realpath resolves against the filesystem, so the directories have to
+-- exist before it is asked about them.
+local root = os.realpath("../")
+for _, d in ipairs({ "Build", "Build/Projects", "Build/Solutions", "Build/Obj", "Build/Lib", "Run" }) do
+	if not os.isdir(root .. d) then os.mkdir(root .. d) end
+end
+
 dirs = {}
-dirs["root"] 			= os.realpath("../")
-dirs["bin"]				= os.realpath(dirs.root .. "Bin/")
-dirs["temp"]			= os.realpath(dirs.root .. "Temp/")
-dirs["lib"]				= os.realpath(dirs.root .. "Lib/")
-dirs["projectfiles"]	= os.realpath(dirs.root .. "Local/")
+dirs["root"] 			= root
+dirs["build"]			= os.realpath(root .. "Build/")
+dirs["projectfiles"]	= os.realpath(root .. "Build/Projects/")
+dirs["solutions"]		= os.realpath(root .. "Build/Solutions/")
+dirs["temp"]			= os.realpath(root .. "Build/Obj/")
+dirs["lib"]				= os.realpath(root .. "Build/Lib/")
+dirs["bin"]				= os.realpath(root .. "Run/")
 dirs["source"] 			= os.realpath(dirs.root .. "Source/")
-dirs["dependencies"]	= os.realpath(dirs.root .. "Dependencies/")
+dirs["thirdparty"]		= os.realpath(dirs.root .. "ThirdParty/")
+dirs["dependencies"]	= os.realpath(dirs.root .. "ThirdParty/Dependencies/")
+dirs["nrd"]				= os.realpath(dirs.root .. "ThirdParty/NRD-4.17.3/")
+dirs["game_content"]	= os.realpath(dirs.root .. "GameContent/")
 dirs["external"]		= os.realpath(dirs.root .. "Source/External/")
 dirs["application"]				= os.realpath(dirs.root .. "Source/Application")
 dirs["core"]					= os.realpath(dirs.root .. "Source/Core")
@@ -17,15 +36,15 @@ dirs["editor_default_graphics"]	= os.realpath(dirs.root .. "Source/EditorDefault
 dirs["editor"]					= os.realpath(dirs.root .. "Source/Editor")
 dirs["graphics"]				= os.realpath(dirs.root .. "Source/Graphics")
 dirs["scene_script_core"]		= os.realpath(dirs.root .. "Source/SceneScriptCore")
-dirs["settings"]		= os.realpath(dirs.root .. "Bin/settings/")
+dirs["settings"]		= os.realpath(dirs.root .. "Run/settings/")
 dirs["engine_assets"] 	= os.realpath(dirs.root .. "EngineAssets/")
 dirs["game"]			= os.realpath(dirs.root .. "Source/Game/")
 dirs["gamemain"]		= os.realpath(dirs.root .. "Source/GameMain")
 dirs["texture_cooker"]	= os.realpath(dirs.root .. "Source/TextureCooker")
 dirs["jolt"]			= os.realpath(dirs.root .. "Source/External/Jolt")
 dirs["physics"]			= os.realpath(dirs.root .. "Source/Physics")
-dirs["cooked_assets"]	= os.realpath(dirs.root .. "Bin/CookedAssets/")
-dirs["shader_dir"] 		= os.realpath(dirs.root .. "Bin/CookedAssets/Shaders/")
+dirs["cooked_assets"]	= os.realpath(dirs.root .. "Run/CookedAssets/")
+dirs["shader_dir"] 		= os.realpath(dirs.root .. "Run/CookedAssets/Shaders/")
 
 -----------------------------------------------------------------------
 -- Jolt's headers change layout with these macros, so the SAME set must be
@@ -53,7 +72,7 @@ function default_settings()
 	return {
 		assets_path = {
 			engine = path.getrelative(dirs.bin, dirs.engine_assets) .. "/",
-			game = path.getrelative(dirs.bin, os.realpath("./data/")) .. "/",
+			game = path.getrelative(dirs.bin, dirs.game_content) .. "/",
 			cooked = path.getrelative(dirs.bin, dirs.cooked_assets) .. "/"
 		},
 
@@ -100,7 +119,7 @@ function verify_or_create_settings(game_name)
 		end
 
 		settings.assets_path.engine = path.getrelative(dirs.bin, dirs.engine_assets) .. "/"
-		settings.assets_path.game = path.getrelative(dirs.bin, os.realpath("./data/")) .. "/"
+		settings.assets_path.game = path.getrelative(dirs.bin, dirs.game_content) .. "/"
 		-- settings.assets_path.application = path.translate(dirs.application_assets, "/")
 		-- settings.assets_path.game = path.translate(os.realpath("./data/"), "/")
 	end

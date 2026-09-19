@@ -13,14 +13,14 @@ if not exist "%CMAKE_PATH%" (
 )
 
 REM NRD is a git submodule pinned to v4.17.3; fetch it on a fresh clone.
-git submodule update --init NRD/NRD/NRD-4.17.3
+git submodule update --init ThirdParty/NRD-4.17.3
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Could not fetch the NRD submodule.
     pause
     exit /B %ERRORLEVEL%
 )
 
-cd NRD\NRD\NRD-4.17.3
+cd ThirdParty\NRD-4.17.3
 
 echo.
 echo [1/3] Deploying Submodules and Generating CMake Files...

@@ -13,7 +13,7 @@ project "Graphics"
 	pchsource "stdafx.cpp"
 	
 	debugdir "%{dirs.bin}"
-	targetdir ("%{dirs.bin}")
+	targetdir ("%{dirs.lib}")
 	targetname("%{prj.name}_%{cfg.buildcfg}")
 	objdir ("%{dirs.temp}/%{prj.name}/%{cfg.buildcfg}")
 
@@ -38,9 +38,9 @@ project "Graphics"
 		dirs.external .. "ffmpeg-2.0/",
 		dirs.application,
 		dirs.core,
-		dirs.root .. "NRD/NRD/NRD-4.17.3/_NRD_SDK/Include",
-		dirs.root .. "NRD/NRD/NRD-4.17.3/_NRD_SDK/Integration",
-		dirs.root .. "NRD/NRD/NRD-4.17.3/_Build/_deps/nri-src/Include",
+		dirs.nrd .. "_NRD_SDK/Include",
+		dirs.nrd .. "_NRD_SDK/Integration",
+		dirs.nrd .. "_Build/_deps/nri-src/Include",
 	}
 
 	files {
@@ -48,7 +48,7 @@ project "Graphics"
 		"**.cpp",
 	}
 
-	libdirs { dirs.lib, dirs.dependencies, dirs.root .. "NRD/NRD/NRD-4.17.3/_NRD_SDK/Lib/Release" }
+	libdirs { dirs.lib, dirs.dependencies, dirs.nrd .. "_NRD_SDK/Lib/Release" }
 
 	verify_or_create_settings("Graphics")
 	 
